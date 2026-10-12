@@ -24,10 +24,18 @@
 用 **skills-manager**（本包在 NAS 上，无 GitHub 镜像）：
 
 ```bash
-~/.skills-manager/bin/skills-manager-cli skills install \
-  "ssh://wangfanlin1@10.10.74.242/volume1/homes/wangfanlin1/AgentSkill/AgentSkill-DoingSDSPage.git"
+# 装法用 adopt（install 对这一层的包只认到 skills/ 这一级，会把整层 skills/ 拷进安装副本；
+# adopt 能显式给出 skill 在仓库里的子路径）
+~/.skills-manager/bin/skills-manager-cli skills adopt \
+  --git-url "ssh://wangfanlin1@100.107.237.60/volume1/homes/wangfanlin1/AgentSkill/AgentSkill-DoingSDSPage.git" \
+  --git-subpath skills/doing-sds-page \
+  ~/Documents/AgentSkill/AgentSkill-DoingSDSPage/skills/doing-sds-page
+~/.skills-manager/bin/skills-manager-cli skills update doing-sds-page      # 记下远端 revision
 ~/.skills-manager/bin/skills-manager-cli skills deploy --agent hermes-default doing-sds-page
 ```
+
+装完三件回读：`skills show doing-sds-page` 的 `deployed_to` 含 `hermes-default`、
+`skills update` 报 `up_to_date`、部署副本 `diff -rq` 与 clone 一致（部署是软链到 `~/.skills-manager/skills/`）。
 
 （也可以走 hermes 自己的 hub：`hermes skills install "flmaximwang/AgentSkill-DoingSDSPage/skills/doing-sds-page" -y`，
 但本包默认只推 NAS。）
