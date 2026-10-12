@@ -19,12 +19,17 @@
 | `font` | 字体名，空 = 应用默认 | 无 |
 | `size` | 所有 marker 标签的字号 (pt) | 16 |
 | `color` | 默认颜色 | `#000000` |
-| `gap` | 文字靠泳道那一侧的边缘与泳道边缘的水平间距 (pt) | 4 |
-| `marker_lane` | marker 泳道是**左起第几条**参考线（1 起）；`0` = 第 1 条左边一条泳道宽处 | 1 |
+| `gap` | 文字靠泳道那一侧的边缘与**泳道带边缘**的水平间距 (pt) | 4 |
+| `marker_lane` | marker 泳道是**左起第几条**参考线（1 起）；`0` = 第 1 条左边一条泳道带处 | 1 |
 | `marker_lane_x` | 直接给 marker 泳道的 x（给了就压过 `marker_lane`） | 无 |
-| `lane_width` | 泳道宽 (pt)，只用于算泳道边缘；不给就按「胶图宽 ÷ 泳道数」 | 自动 |
-| `lane_edge` | `inner` = 用泳道中心当边缘（不偏半个泳道宽） | 无 |
+| `lane_width` | 泳道带宽 (pt)，手给的值；**不给就按相邻泳道中心距的中位数自动算** | 自动 |
+| `lane_edge` | `inner` = 用泳道中心当边缘（不偏半个带宽） | 无 |
 | `labels` | **从上到下**，每个条带一项：`{"text":..., "size":..., "color":..., "font":...}`（后三个可省） | — |
+
+**`gap` 是量到「带边」的，所以带宽怎么算直接决定它看起来有没有生效。** 带宽 = 相邻泳道中心距
+（`lane_pitch()`，取中位数以抗一条拖歪的参考线）；**不要用「胶图宽 ÷ 泳道数」**——胶图对象常比泳道区宽
+（照片自带白边），那样算会把带宽放大一倍以上，于是标签飘远、`gap` 像没生效。实测对照：同一个 `gap: 4`，
+带宽按泳道距算 = 36.6 pt 时空隙 **4.5 pt**；按胶图宽算 = 64.4 pt 时空隙 **18.0 pt**。
 
 ## 3. 泳道配置（`lanes.json`）
 
@@ -37,10 +42,15 @@
 
 ## 4. 对齐规则（marker 标签往哪边靠）
 
-marker 泳道中心在**胶图左半边** ⇒ marker 标签 **右对齐**、右边缘贴泳道左边；
-在**右半边** ⇒ 自动翻成**左对齐**、贴泳道右边。间距都是 `gap`。
-这条规则是「标签写进图外面、不压条带」的实现方式；marker 泳道在中间时按半边判，要更细地控就改用
-`marker_lane_x` 自己给一个 x。
+marker 泳道中心在**泳道区的左半边** ⇒ marker 标签 **右对齐**、右边缘贴泳道带左边；
+在**右半边** ⇒ 自动翻成**左对齐**、贴泳道带右边。间距都是 `gap`。
+
+两边各有一处「拿什么当中线/边缘」的选择，都实测踩过：
+
+- **中线按泳道区算**（`(min+max)/2` of 泳道参考线），**不按胶图对象的中线**：胶图对象比泳道区宽时，
+  按它会把一个明确在左边的泳道误判成右半边，标签就翻到另一边去。
+- **带边按带宽算**：`lane_edge: "inner"` 则取消这半个带宽、直接用泳道中心当边缘。
+  marker 泳道不在最左/最右、想自己给位置时，用 `marker_lane_x`。
 
 ## 5. 本机实例（2026-10-12 的实跑，路径是这台机器的）
 
@@ -48,21 +58,26 @@ marker 泳道中心在**胶图左半边** ⇒ marker 标签 **右对齐**、右�
 
 ```
 /Users/maxim/Documents/Lab/zsqlab_10_gammaPFD-Fiber_2026.06.25/Obsidian_zsqlab_10/Logs/2026/10/09/Purification-010/asset/
-├── Probe1.1_2026.10.12.vectorcraft          # 标好参考线的工程
+├── Probe1.1_2026.10.12.vectorcraft          # 标好 11 横 + 8 竖参考线的工程
 ├── 10%-Tris-Tricine.json                    # → --markers（11 条分子量，250…10 kD）
 ├── Probe1.1_2026.10.12.json                 # → --lanes（8 条：M + Total/Sup/Soni/HP 各两条）
-└── Probe1.1_2026.10.12_labeled.vectorcraft  # 输出
+├── Probe1.1_2026.10.12_labeled.vectorcraft  # 输出（工程）
+└── Probe1.1_2026.10.12_labeled.png          # 输出（导出图，已裁白边）
 ```
 
-可复制命令：
+可复制命令（子命令名是 `label`）：
 
 ```bash
 cd "/Users/maxim/Documents/Lab/zsqlab_10_gammaPFD-Fiber_2026.06.25/Obsidian_zsqlab_10/Logs/2026/10/09/Purification-010/asset"
-python3 label_gel.py Probe1.1_2026.10.12.vectorcraft \
+python3 label_gel.py label Probe1.1_2026.10.12.vectorcraft \
         --markers "10%-Tris-Tricine.json" \
-        --lanes   "Probe1.1_2026.10.12.json" \
-        --clear-text-in "Layer 1" \
-        --preview gel_labeled.png
+        --lanes   "Probe1.1_2026.10.12.json"
+# 这一跑会产出 Probe1.1_2026.10.12_labeled.vectorcraft + 同名 .png（已裁掉四周白边）
+
+# 第一次还要清掉手打的老标签时，加 --clear-text-in "Layer 1"（只删文字、不动胶图）
+# 只想要工程、不要导出图：加 --no-preview
+# 导出图换个路径：加 --preview /tmp/xxx.png
 ```
 
-`--clear-text-in "Layer 1"` 只在第一次（清掉手打的老标签）需要，之后不用带。
+新建一套配置：`python3 label_gel.py generate_template --dir . --lanes 8`（已有同名文件时默认拒绝覆盖）。
+自检（不用开 VectorCraft）：`python3 label_gel.py selftest`。

@@ -51,3 +51,8 @@
 - 参考线与对象坐标同一套（文档坐标系，原点在左下），所以参考线的 `pos` 可以直接当条带高度 / 泳道中心用。
 - 预览导出：`file.exportAs {path, format:"png", scale:2, background:…}`；默认白底，`--preview-background` 可换
   `transparent` / `black` / `#rrggbb`。
+- **导出图的形状（实测）**：1191×1684 px（scale 2 的 A4 页）、8-bit、非隔行；白底时 `colortype=2`（RGB）、
+  透明底时 `colortype=6`（RGBA）。**同一张图里 5 种行滤波器都会出现**（实测分布：filter2 1025 行、filter4 589、
+  filter1 34、filter3 30、filter0 6）—— 所以任何自己写的 PNG 解码器都得把 5 种全实现，只跑通 filter 0 会在真图上出灰块。
+- **导出是整页导出**，没有「导出裁好的内容区」这种选项；要没有白边就在导出后自己按像素裁（脚本的
+  `trim_png()` 就是这么做的：白底看三通道是否都 ≥250、透明底看 alpha>0，裁完原地重写 PNG）。

@@ -43,6 +43,27 @@
       "prompt": "工程里已经有一层叫 marker labels (auto) 的旧文字，我再跑一次会不会叠一层？",
       "expected_behavior": "不会：脚本写入前会先清空该 auto 图层（不管里面有几条），写完再校验条数。前提是输出用同一个图层名（--marker-layer / --lane-layer 可改）；若把 auto 图层名起得和胶图那层一样，脚本会报错停下。",
       "notes": ""
+    },
+    {
+      "id": "should-trigger-07",
+      "type": "should_trigger",
+      "prompt": "跑完给我一张能直接放汇报里的图，不要边上那一圈白底；工程文件也留着。",
+      "expected_behavior": "本 skill 的默认行为：label 子命令在另存工程之后会自动导出 <输出名>.png 并裁掉四周白边（像素检测，纯 stdlib），日志里会打「裁白边 1191×1684 → 695×742 px」。要纯工程文件才加 --no-preview；要换导出路径用 --preview。",
+      "notes": "导出+裁边是默认，不用额外开关。"
+    },
+    {
+      "id": "should-trigger-08",
+      "type": "should_trigger",
+      "prompt": "我这份胶图的 marker 标签离胶图还是太远，gap 我写了 4 但看着有 20 pt。",
+      "expected_behavior": "属本 skill 且是已修的坑：泳道带宽不能按「胶图宽 ÷ 泳道数」算（胶图对象常比泳道区宽），脚本现在按相邻泳道中心距的中位数算（lane_pitch），带边 = 泳道中心 ± 半带宽，gap 就量在带边上。先看 --dry-run 打出的「泳道带宽 ≈N pt」：若这个数是胶图宽/n，说明用的是老版本或给了 lane_width；要手给带宽就写 lane_width，要取消半个带宽的偏移就写 lane_edge: \"inner\"。",
+      "notes": "对应 2026-10-12 修的 bug：gap 看似失效。"
+    },
+    {
+      "id": "should-not-trigger-09",
+      "type": "should_not_trigger",
+      "prompt": "帮我把这张胶图的条带从图片里认出来，按分子量自动判读，不要我手动标。",
+      "expected_behavior": "越界：本 skill 不读图认条带，位置必须由人在 GUI 里标（参考线或图层短线）。可以做的替代是「用户标完位置、脚本只负责写字与导出」。",
+      "notes": "诱饵：题面里全是本 skill 的关键词（胶图 / 条带 / 分子量），但它要的是自动判读。"
     }
   ]
 }
