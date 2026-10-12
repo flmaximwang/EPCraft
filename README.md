@@ -37,8 +37,9 @@
 装完三件回读：`skills show doing-sds-page` 的 `deployed_to` 含 `hermes-default`、
 `skills update` 报 `up_to_date`、部署副本 `diff -rq` 与 clone 一致（部署是软链到 `~/.skills-manager/skills/`）。
 
-（也可以走 hermes 自己的 hub：`hermes skills install "flmaximwang/AgentSkill-DoingSDSPage/skills/doing-sds-page" -y`，
-但本包默认只推 NAS。）
+**AgentSkill-\* 一律 NAS-only**：remote 只有 `lab`（LAN 地址）与 `tailscale`（同一 NAS 仓库的第二条路），
+**没有 GitHub `origin`** —— 所以 hub 那套三段式标识符（`owner/repo/skills/<名>`）不适用于本包，
+装法只有上面 skills-manager 这一条。
 
 ## remote
 
