@@ -19,11 +19,13 @@
     该图层里 竖长的小图形 = 泳道中心，横长的小图形 = marker 条带高度
 
 用法：
-  python3 label_gel.py generate_template --lanes 8       # 先出两个配置模版，改成自己的
-  python3 label_gel.py label gel.vectorcraft             # 用同目录的 markers.json / lanes.json
+  python3 label_gel.py generate_template --list-presets    # 看内置的 marker 预设（雅酶 WJ101/WJ103…）
+  python3 label_gel.py generate_template --preset yasen-wj103-10-250kd --dir .   # 用预设出配置
+  python3 label_gel.py generate_template --lanes 8        # 不用预设就出通用模版
+  python3 label_gel.py label gel.vectorcraft              # 用同目录的 markers.json / lanes.json
   python3 label_gel.py label gel.vectorcraft --markers m.json --lanes l.json --out out.vectorcraft
-  python3 label_gel.py label gel.vectorcraft --dry-run   # 只算位置，不写字、不导出
-  python3 label_gel.py label gel.vectorcraft --no-preview  # 不导出预览 PNG
+  python3 label_gel.py label gel.vectorcraft --dry-run    # 只算位置，不写字、不导出
+  python3 label_gel.py label gel.vectorcraft --no-preview # 不导出预览 PNG
   python3 label_gel.py selftest
 
 输出：默认另存为 <名字>_labeled.vectorcraft（原文件不动），并导出同名 .png（已裁掉四周白边）。
@@ -46,6 +48,8 @@ DEFAULT_APP = "/Applications/VectorCraft.app/Contents/MacOS/VectorCraft"
 DEFAULT_PORT = 7981
 LABEL_LAYERS = ("marker labels (auto)", "lane labels (auto)")   # marker / 泳道名各占一个图层
 BG_LEVEL = 250            # 每个通道都 ≥ 这个值 = 白底（裁边只看这一条）
+# 内置 marker 预设：与本脚本同包（<skill>/assets/markers/*.json），文件名（去 .json）= 预设名
+PRESET_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "markers")
 
 
 # --------------------------------------------------------------------------- #
@@ -458,10 +462,41 @@ def load_cfg(path, what):
 # --------------------------------------------------------------------------- #
 # 子命令：generate_template
 # --------------------------------------------------------------------------- #
+def list_presets():
+    if not os.path.isdir(PRESET_DIR):
+        return []
+    return sorted(f[:-5] for f in os.listdir(PRESET_DIR) if f.endswith(".json"))
+
+
+def preset_cfg(name):
+    """读内置预设（<skill>/assets/markers/<名字>.json）。找不到就把可选项列出来。"""
+    path = os.path.join(PRESET_DIR, name if name.endswith(".json") else name + ".json")
+    if not os.path.isfile(path):
+        have = list_presets()
+        sys.exit(f"没有这个内置预设：{name}\n可选：" + ("、".join(have) if have else f"{PRESET_DIR} 下没有预设"))
+    with open(path, "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+    if not (cfg.get("labels") or []):
+        sys.exit(f"内置预设 {path} 里没有 labels（预设文件坏了？）")
+    return cfg, path
+
+
 def cmd_generate_template(args):
+    if args.list_presets:
+        have = list_presets()
+        print(f"内置 marker 预设（{PRESET_DIR}）：" if have else f"（{PRESET_DIR} 下没有预设）")
+        for n in have:
+            cfg, _ = preset_cfg(n)
+            print(f"  {n:32} {len(cfg['labels'])} 条带 · {cfg.get('_preset', '')}")
+        return
     folder = os.path.abspath(os.path.expanduser(args.dir))
     os.makedirs(folder, exist_ok=True)
-    todo = [(os.path.join(folder, args.markers_name), marker_template()),
+    if args.preset:
+        m_cfg, m_from = preset_cfg(args.preset)
+        print(f"[i] marker 用内置预设 “{args.preset}”（{m_from}）")
+    else:
+        m_cfg = marker_template()
+    todo = [(os.path.join(folder, args.markers_name), m_cfg),
             (os.path.join(folder, args.lanes_name), lane_template(max(2, args.lanes)))]
     for path, _ in todo:                       # 先全查再写，别写了一个才失败
         if os.path.exists(path) and not args.force:
@@ -575,7 +610,17 @@ def cmd_selftest(args):
     ok("lane_pitch 抗歪一条", lane_pitch([0, 10, 20, 30, 200]) == 10, str(lane_pitch([0, 10, 20, 30, 200])))
     ok("lane_pitch 单泳道 = 0", lane_pitch([5]) == 0)
 
-    # 5. 编码器自回环
+    # 5. 内置 marker 预设：能读出、每条带都有 text（预设文件坏了要当场报出来）
+    have = list_presets()
+    bad = []
+    for n in have:
+        with open(os.path.join(PRESET_DIR, n + ".json"), encoding="utf-8") as f:
+            c = json.load(f)
+        if not (c.get("labels") or []) or any(not str(x.get("text", "")).strip() for x in c["labels"]):
+            bad.append(n)
+    ok(f"内置预设可读且每条都有 text（{len(have)} 个）", bool(have) and not bad, "、".join(bad))
+
+    # 6. 编码器自回环
     p4 = os.path.join(tmp, "roundtrip.png")
     png_encode(p4, 3, 2, 3, bytearray(b"\x01\x02\x03" * 6))
     w4, h4, ch4, px4 = png_decode(p4)
@@ -779,8 +824,11 @@ def build_parser():
     lp.add_argument("--dry-run", action="store_true", help="只打印将要写的内容和位置，不改文件、不导出")
     lp.set_defaults(func=cmd_label)
 
-    gp = sub.add_parser("generate_template", help="生成 markers.json / lanes.json 模版")
+    gp = sub.add_parser("generate_template", help="生成 markers.json / lanes.json 配置（可用内置 marker 预设）")
     gp.add_argument("--dir", default=".", help="写到哪个目录（默认当前目录）")
+    gp.add_argument("--preset", default=None,
+                    help="marker 用内置预设（名字见 --list-presets；预设是 <skill>/assets/markers/<名>.json）")
+    gp.add_argument("--list-presets", action="store_true", help="列出内置 marker 预设后退出")
     gp.add_argument("--lanes", type=int, default=8, help="泳道条数（默认 8：M + Sample 1…N-1）")
     gp.add_argument("--markers-name", default="markers.json", help="marker 模版文件名")
     gp.add_argument("--lanes-name", default="lanes.json", help="泳道模版文件名")

@@ -45,12 +45,16 @@ description: 给 SDS-PAGE 胶图的 VectorCraft 工程自动标 marker 分子量
 
 **Step 3 · 写/核对两个 JSON**（字段表见 `references/labeling-conventions.md`）
 
-没有现成配置文件时先出模版，再按这台胶的实际情况改：
+没有现成配置文件时先出配置，再按这台胶的实际情况改：
 
 ```bash
-python3 scripts/label_gel.py generate_template --dir . --lanes 8
+python3 scripts/label_gel.py generate_template --list-presets             # 看内置 marker 预设
+python3 scripts/label_gel.py generate_template --preset <预设名> --dir .  # marker 用内置预设
+python3 scripts/label_gel.py generate_template --dir . --lanes 8          # 没有对应预设就用通用模版
 ```
 它默认**不覆盖**已有文件（要覆盖得加 `--force`），写完会回读一遍确认是合法 JSON。
+内置预设（`assets/markers/*.json`）是照**厂商页面**抄的条带表，出处与取用日期写在文件里的 `_source`；
+预设只是起手模板 —— 出完要对着这台胶实际用的那管 marker 核一遍条带（本机就有一处出入，见 references §6）。
 
 **Step 4 · 跑**
 
@@ -112,6 +116,7 @@ python3 scripts/label_gel.py label <工程.vectorcraft> \
 | 文件 | 承担什么 |
 |---|---|
 | `scripts/label_gel.py` | 全部实现：控制口客户端 + 读标记 + 写字 + 校验 + 另存 + PNG 解码/裁边/编码，三个子命令 |
-| `references/labeling-conventions.md` | 标记约定、两个 JSON 的字段表、本机实例（路径与可复制命令） |
+| `assets/markers/*.json` | 内置 marker 预设（文件名 = 预设名，`--preset` 用；每个文件里 `_source` 写出处与取用日期） |
+| `references/labeling-conventions.md` | 标记约定、两个 JSON 的字段表、内置预设清单、本机实例（路径与可复制命令） |
 | `references/vectorcraft-control-channel.md` | 控制口机制、图层/字号/导出的坑与它们为什么存在 |
 | `test-prompts.json` | 触发与分界的测试题面 |
