@@ -53,8 +53,9 @@ python3 scripts/label_gel.py generate_template --preset <预设名> --dir .  # m
 python3 scripts/label_gel.py generate_template --dir . --lanes 8          # 没有对应预设就用通用模版
 ```
 它默认**不覆盖**已有文件（要覆盖得加 `--force`），写完会回读一遍确认是合法 JSON。
-内置预设（`assets/markers/*.json`）是照**厂商页面**抄的条带表，出处与取用日期写在文件里的 `_source`；
-预设只是起手模板 —— 出完要对着这台胶实际用的那管 marker 核一遍条带（本机就有一处出入，见 references §6）。
+内置预设（`assets/markers/*.json`）是照**厂商页面**或**本机在用的配置**抄的条带表，出处写在文件里的 `_source`。
+**预设名里带电泳体系**（同一管 marker 在 Tris-Glycine 与 Tris-Tricine 下表观分子量不同，别混用）——
+按这次实际用的体系挑，清单见 references §6。
 
 **Step 4 · 跑**
 

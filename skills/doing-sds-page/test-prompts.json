@@ -68,9 +68,9 @@
     {
       "id": "should-trigger-10",
       "type": "should_trigger",
-      "prompt": "别让我每次手抄分子量了，我这管 marker 是雅酶 WJ103，有没有现成的配置？",
-      "expected_behavior": "用内置预设：`label_gel.py generate_template --list-presets` 看有哪些（yasen-wj103-10-250kd / yasen-wj101-15-150kd），再 `--preset yasen-wj103-10-250kd --dir .` 写出 markers.json（默认不覆盖已有文件）。随后提醒：预设是照厂商页面抄的，本机在用的 10%-Tris-Tricine.json 与厂商清单在两条带上有出入（21/14 vs 25/15），要改用户那份配置得先问。",
-      "notes": "预设在 <skill>/assets/markers/*.json，文件名就是 --preset 的名字。"
+      "prompt": "别让我每次手抄分子量了，我这次跑的是 10% Tris-Tricine 的胶，marker 是雅酶 WJ103，有没有现成的配置？",
+      "expected_behavior": "用内置预设：`label_gel.py generate_template --list-presets` 看有哪些，按**电泳体系**挑 —— Tris-Tricine 用 yasen-wj103-10-250kd-tristricine，Tris-Glycine 用 yasen-wj103-10-250kd-trisglycine（同一管 marker 两套表观值：21/14 vs 25/15），再 `--preset <名> --dir .` 写出 markers.json（默认不覆盖已有文件）。",
+      "notes": "预设在 <skill>/assets/markers/*.json，文件名（含体系后缀）就是 --preset 的名字。"
     }
   ]
 }

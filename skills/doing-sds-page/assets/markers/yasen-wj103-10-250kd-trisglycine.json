@@ -1,5 +1,5 @@
 {
-  "_preset": "雅酶生物（epizyme）WJ103 三色预染蛋白 Marker，10–250 kDa，11 条带。",
+  "_preset": "雅酶生物（epizyme）WJ103 三色预染蛋白 Marker，10–250 kDa，11 条带 —— **Tris-Glycine 体系**下的表观分子量（厂商页面给的就是这一套）。同一管 marker 在 Tris-Tricine 体系下是另一套表观值，见同目录 yasen-wj103-10-250kd-tristricine.json。",
   "_source": "厂商产品页 https://www.epizyme.cn/Products/Details/1073 与说明书 WJ10X【30T01】多色预染蛋白Marker（2026-10-12 取）。厂商原文列的是低→高：10、15、20、25、35、40、50、70、100、150、250 kDa；本文件的 labels 是**高→低**（= 工程里水平参考线从上到下）。其中 25 kDa 与 70 kDa 是带上染料的条带。WJ102 / WJ103 / WJ106 三个货号的条带集合相同，差别只在染料颜色；WJ101 是 9 条带（15–150 kDa），见同目录另一个预设。",
   "_说明": "marker 尺寸标签：labels 从上到下的顺序 = 工程里水平参考线从上到下的顺序。size/color/font 是默认值，单条可以覆盖（想标出带上染料的两条就单条给 color）。marker_lane = marker 泳道是左起第几条竖参考线（0 = 第 1 条左边一条泳道带处）。gap = 文字与泳道带边缘的水平间距 (pt)。lane_width 一般不用给：脚本按相邻泳道中心距自动算泳道带宽。",
   "font": "Source Sans 3",

@@ -84,18 +84,17 @@ python3 label_gel.py label Probe1.1_2026.10.12.vectorcraft \
 
 ## 6. 内置 marker 预设（`assets/markers/*.json`）
 
-文件名（去 `.json`）就是 `--preset` 的名字，`--list-presets` 列出全部。当前两个，都是照**厂商页面**
-抄的条带表（出处与取用日期写在每个文件自己的 `_source` 里，**没**逐页核对说明书 PDF）：
+文件名（去 `.json`）就是 `--preset` 的名字，`--list-presets` 列出全部。**同一管 marker 在不同电泳体系下
+表观分子量不同，所以预设名里带体系**：厂商页面给的是 Tris-Glycine 那一套；本机在用的 Tris-Tricine 配置是另一套。
 
-| 预设 | 条带 | 来源 |
-|---|---|---|
-| `yasen-wj103-10-250kd` | 11 条：250 / 150 / 100 / 70 / 50 / 40 / 35 / 25 / 20 / 15 / 10 kDa | 雅酶 WJ103 三色预染 Marker 10–250 kDa（WJ102 / WJ103 / WJ106 条带集合相同，差别只在染料颜色；25 与 70 kDa 是带上染料的条带） |
-| `yasen-wj101-15-150kd` | 9 条：150 / 100 / 70 / 50 / 40 / 35 / 25 / 20 / 15 kDa | 雅酶 WJ101 双色预染 Marker 15–150 kDa |
+| 预设 | 体系 | 条带 | 来源 |
+|---|---|---|---|
+| `yasen-wj103-10-250kd-trisglycine` | Tris-Glycine | 11 条：250 / 150 / 100 / 70 / 50 / 40 / 35 / 25 / 20 / 15 / 10 kDa | 雅酶 WJ103 三色预染 Marker 10–250 kDa（WJ102 / WJ103 / WJ106 条带集合相同，差别只在染料颜色；25 与 70 kDa 是带上染料的条带） |
+| `yasen-wj103-10-250kd-tristricine` | Tris-Tricine（10%） | 11 条：250 / 150 / 100 / 70 / 50 / 40 / 35 / **21** / 20 / **14** / 10 kDa | 本机在用配置 `Purification-010/asset/10%-Tris-Tricine.json` + 用户口径：同货号在 Tris-Tricine 下两条低分子量条带的表观值与 Tris-Glycine 不同（21/14 对应 25/15）；染色条带 70 与 21（文件里保留了这两条的颜色） |
+| `yasen-wj101-15-150kd-trisglycine` | Tris-Glycine | 9 条：150 / 100 / 70 / 50 / 40 / 35 / 25 / 20 / 15 kDa | 雅酶 WJ101 双色预染 Marker 15–150 kDa |
+
+**两套值不是笔误、也不冲突**：同一货号换电泳体系、表观迁移位置就变。给新胶选预设时按**实际用的体系**挑；
+一个货号只有一套体系的值时，另一套要用户自己给（或照自家胶标）。
 
 加一个新预设 = 往 `assets/markers/` 丢一个同形状的 JSON（`labels` 高→低、`_source` 写出处），
 `--list-presets` 与 `selftest` 会自动带上它（selftest 会检查每个预设都读得出且每条带都有 text）。
-
-⚠️ **本机在用的那份配置和厂商清单有两处出入**：`Purification-010/asset/10%-Tris-Tricine.json` 里写的是
-**21 kD 与 14 kD**，厂商 WJ103 的对应条带是 **25 kD 与 15 kD**（两条正好也都是带上染料的条带 ——
-本机那份把颜色上在了 70 kD 与 21 kD 上）。两边都没被改：那份是你的配置（用户数据），预设是照厂商抄的。
-**要动它先问用户**（是笔误，还是他按自家 Tris-Tricine 体系的实测位置另标的值）。

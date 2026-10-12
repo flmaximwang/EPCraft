@@ -1,0 +1,23 @@
+{
+  "_preset": "雅酶生物（epizyme）WJ103 三色预染蛋白 Marker，10–250 kDa，11 条带 —— **10% Tris-Tricine 体系**下的表观分子量。",
+  "_source": "值取自用户本机在用的配置 Purification-010/asset/10%-Tris-Tricine.json（2026-10-12），并由用户说明口径：同一管 WJ103 在 Tris-Tricine 体系里两条低分子量条带的表观值与 Tris-Glycine 体系不同（21 kD / 14 kD，对应 Tris-Glycine 下的 25 kD / 15 kD）。染色条带是 70 kD 与 21 kD —— 文件里保留了用户给这两条上的色。",
+  "_说明": "marker 尺寸标签：labels 从上到下的顺序 = 工程里水平参考线从上到下的顺序。size/color/font 是默认值，单条可以覆盖。marker_lane = marker 泳道是左起第几条竖参考线（0 = 第 1 条左边一条泳道带处）。gap = 文字与泳道带边缘的水平间距 (pt)。lane_width 一般不用给：脚本按相邻泳道中心距自动算泳道带宽。",
+  "font": "Source Sans 3",
+  "size": 16,
+  "color": "#000000",
+  "gap": 4,
+  "marker_lane": 1,
+  "labels": [
+    { "text": "250 kD" },
+    { "text": "150 kD" },
+    { "text": "100 kD" },
+    { "text": "70 kD", "color": "#8b6486" },
+    { "text": "50 kD" },
+    { "text": "40 kD" },
+    { "text": "35 kD" },
+    { "text": "21 kD", "color": "#4d6c8b" },
+    { "text": "20 kD" },
+    { "text": "14 kD" },
+    { "text": "10 kD" }
+  ]
+}

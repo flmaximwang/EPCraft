@@ -15,7 +15,7 @@
 | 2026-10-12 在纯化记录 `Purification-010/asset/Probe1.1_2026.10.12.vectorcraft` 上的实跑（11 个 marker 条带 × 8 条泳道，手打 18 条标签 → 自动重排） | 参考线标记约定、marker 标签右/左对齐规则、三图层布局（胶图 / `marker labels (auto)` / `lane labels (auto)`）、条数与图层回校验 | [`skills/doing-sds-page/`](skills/doing-sds-page/) |
 | VectorCraft 控制口（TCP JSON）的实测调用面 | `document.inspect` / `ui.inspect` / `engine.execute` / `guide.list` / `file.saveAs` / `file.exportAs` 的用法，以及四个坑（弹窗、`currentLayer` 不可靠、保存/导出是后台任务、字号是名义字号） | [`references/vectorcraft-control-channel.md`](skills/doing-sds-page/references/vectorcraft-control-channel.md) |
 | 2026-10-12 用户报的两件事：导出要自动裁白边、marker 标签离胶图的空隙太宽且 `gap` 像没生效 | 导出 + 裁边做成 `label` 的默认步骤（纯 stdlib PNG 解码/裁边/编码，`selftest` 10 项）；泳道带宽从「胶图宽 ÷ 泳道数」改成相邻泳道中心距的中位数 —— 同一个 `gap: 4`，实测空隙 **18.0 pt → 4.5 pt** | [`skills/doing-sds-page/`](skills/doing-sds-page/) |
-| 雅酶（epizyme）WJ101 / WJ103 预染 Marker 的条带表（厂商产品页 + WJ10X 说明书，2026-10-12 取） | 两个内置预设 `assets/markers/yasen-wj103-10-250kd.json`（11 条带 10–250 kD）、`yasen-wj101-15-150kd.json`（9 条带 15–150 kD），`--preset` 直接出配置 | [`skills/doing-sds-page/assets/markers/`](skills/doing-sds-page/assets/markers/) |
+| 雅酶（epizyme）WJ101 / WJ103 预染 Marker 的条带表（厂商产品页 + WJ10X 说明书，2026-10-12 取）与本机在用的 Tris-Tricine 配置 | 三个内置预设，**名字里带电泳体系**：`yasen-wj103-10-250kd-trisglycine`（11 条带 25/15 那一套）、`yasen-wj103-10-250kd-tristricine`（11 条带 21/14 那一套，来自本机配置）、`yasen-wj101-15-150kd-trisglycine`（9 条带）；`--preset` 直接出配置 | [`skills/doing-sds-page/assets/markers/`](skills/doing-sds-page/assets/markers/) |
 
 ## 索引
 
