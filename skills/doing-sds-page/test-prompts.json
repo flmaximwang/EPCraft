@@ -1,0 +1,48 @@
+{
+  "skill": "doing-sds-page",
+  "version": "1.0.0",
+  "test_cases": [
+    {
+      "id": "should-trigger-01",
+      "type": "should_trigger",
+      "prompt": "我在 vectorcraft 里把这张 SDS-PAGE 的泳道和 marker 条带都拖了参考线，帮我按 10%-Tris-Tricine.json 里的分子量和颜色把标签打在每条条带旁边，右对齐。",
+      "expected_behavior": "走本 skill：先确认工程文件、marker 配置、泳道配置三个路径与输出位置；提示竖线要含 marker 泳道；用 label_gel.py 跑（先 --dry-run 看落点）。脚本标的分子量默认右对齐靠泳道左边、间距 4pt，颜色/字号取 JSON、单条可覆盖；输出另存 <名字>_labeled.vectorcraft，三个东西分三层。",
+      "notes": ""
+    },
+    {
+      "id": "should-trigger-02",
+      "type": "should_trigger",
+      "prompt": "胶图上的分子量标签我想换成 18pt、泳道名改成居左，重跑一下就好。",
+      "expected_behavior": "属本 skill，而且**只需改配置**：改 markers.json 的 size / lanes.json 的 align 与 size，重跑同一条命令。不要重新标参考线、也不要动脚本；重跑会先清空两个 auto 图层再写，不会堆重复。",
+      "notes": "触发点是「配置改一下重跑」，位置不用重标。"
+    },
+    {
+      "id": "should-trigger-03",
+      "type": "should_trigger",
+      "prompt": "这个工程里我自己手打的 18 条标签想全部删掉，让脚本重新统一打一遍。",
+      "expected_behavior": "用 --clear-text-in <图层名> 清掉那个图层里的文字（只删文字、不动胶图），列清楚要删哪几条再动手（检查点）；随后正常跑，输出仍另存、原工程不动。",
+      "notes": ""
+    },
+    {
+      "id": "should-trigger-04",
+      "type": "should_trigger",
+      "prompt": "marker 泳道在右半边的时候标签该往哪边靠？我这块胶图的 marker 泳道在右边。",
+      "expected_behavior": "答：按胶图中线判，marker 泳道在右半边 ⇒ 标签自动左对齐贴泳道右边（间距仍是 gap），左半边才右对齐。想精确控制就改用 marker_lane_x 指定泳道 x。这条规则是脚本实现的，不用手改。",
+      "notes": ""
+    },
+    {
+      "id": "should-not-trigger-05",
+      "type": "should_not_trigger",
+      "prompt": "这张胶图我没标任何东西，你直接看图认一下条带在哪、分子量大概多少。",
+      "expected_behavior": "越界：本 skill 只认人在 GUI 里标的位置，不做图像识别。应说明必须先在 GUI 里标参考线（或改用图像分析那条路），不能凭像素猜条带。",
+      "notes": "诱饵：题面里全是本 skill 的关键词（胶图 / 条带 / 分子量），但正确做法是拒绝这件事本身。"
+    },
+    {
+      "id": "edge-case-06",
+      "type": "edge_case",
+      "prompt": "工程里已经有一层叫 marker labels (auto) 的旧文字，我再跑一次会不会叠一层？",
+      "expected_behavior": "不会：脚本写入前会先清空该 auto 图层（不管里面有几条），写完再校验条数。前提是输出用同一个图层名（--marker-layer / --lane-layer 可改）；若把 auto 图层名起得和胶图那层一样，脚本会报错停下。",
+      "notes": ""
+    }
+  ]
+}
