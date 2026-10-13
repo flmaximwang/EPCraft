@@ -144,6 +144,11 @@ python3 scripts/gel_photo.py render <照片> --out out.png \
 **成品版式**：严格按胶面裁切 → 贴到**白底**画布（白边按文字包围盒算）→ 文字只写在外面的白底上。
 上/下缘还能再裁一段（预设 `trim_top_cm` / `trim_bottom_cm`，或 `--trim-top-cm 0.3`）——
 探测框上缘含上样孔/梳齿，那一段常常不想入图。
+
+**照片是裁过的**（用户说「这张不是 15 条泳道」）：给 `--gel-lanes N`，改按预设 `lane_pitch_cm`
+的泳道间距定标，可见宽度按泳道数算出来；不声明就会拿裁后的画面当整块 8.6 cm 胶、尺寸直接崩。
+
+15 泳道那张胶的配置在 `assets/examples/mini-gel-15lanes.{lanes,markers}.json`（= 定稿的那一版版面）。
 分子量标签列固定在**胶面之外**（label_gel 的左/右判定照旧）；marker 泳道在胶中间时标签会挪到胶外那一侧，
 要让它紧挨梯子就选最外侧那管 marker 泳道。
 

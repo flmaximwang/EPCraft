@@ -312,6 +312,13 @@ def detect_gel(path, longest=700, cue="dark", rect=None, thr=None):
     m = morph(morph(ink_mask(w, h, gray, blue, plane, cue, thr), w, h, "erode"), w, h, "dilate")
     comps = components(m, w, h)
     if not comps:
+        # 照片被裁过、胶面顶到画面边时（裁到胶本身就必然如此），严格口径会把**胶**当成
+        # 「贴边的背景」整块丢掉 → 退回允许贴边、取最大的那块（它仍是胶：上下那两条暗边都比它小）。
+        comps = components(m, w, h, border_ok=True)
+        if comps:
+            print("[i] 胶面贴着画面边（照片裁过？）—— 退回「允许贴边」取最大块（占画面 %.1f%%）"
+                  % (comps[0][0] * 100.0 / (w * h)))
+    if not comps:
         raise RuntimeError("没找到胶面：没有非背景的连通区域（换 --cue chroma / 调 --ink-thr / 给 --rect）")
     area, bbox, pixels = comps[0]
     cm = comp_mask(w, h, pixels)
@@ -1009,23 +1016,6 @@ def cmd_render(args):
         gel.get("name", "命令行"), gel["width_cm"], gel["height_cm"], gel.get("_source", ""), dpi))
 
     gel_bb, _ = rotated_rect_bbox(info["rect_orig"], ang, (W0, H0), (W1, H1))
-    # 上下缘再裁掉一段（探测框上缘含上样孔/梳齿；那一段常常不想入图）。
-    # 用**宽度**换算 cm/px：宽度是定标基准，裁上下不改宽度，所以比例不受影响。
-    tt = args.trim_top_cm if args.trim_top_cm is not None else float(gel.get("trim_top_cm", 0.0) or 0.0)
-    tb = args.trim_bottom_cm if args.trim_bottom_cm is not None else float(gel.get("trim_bottom_cm", 0.0) or 0.0)
-    if tt or tb:
-        cm_per_px = gel["width_cm"] / (gel_bb[2] - gel_bb[0])
-        h_before = (gel_bb[3] - gel_bb[1]) * cm_per_px
-        gel_bb = (gel_bb[0], gel_bb[1] + tt / cm_per_px, gel_bb[2], gel_bb[3] - tb / cm_per_px)
-        print("[i] 上/下缘各裁 %.2f / %.2f cm：胶面 %.2f cm → %.2f cm（探测框实测）" % (
-            tt, tb, h_before, (gel_bb[3] - gel_bb[1]) * cm_per_px))
-    # 定标：让胶面横跨 width_cm/2.54×dpi 个像素 —— 成品 PNG 就是**实际尺寸**
-    scale = (gel["width_cm"] / 2.54 * dpi) / (gel_bb[2] - gel_bb[0])
-    implied_h = gel["width_cm"] * (gel_bb[3] - gel_bb[1]) / (gel_bb[2] - gel_bb[0])
-    if abs(implied_h - gel["height_cm"]) > 0.10 * gel["height_cm"]:
-        print("[!] 探测框的比例推出来高度 %.2f cm，预设写 %.2f cm（差 %.0f%%）—— "
-              "按宽度定标不受影响；要按你的数就用 --gel-cm，或调 --margin-frac / --rect。"
-              % (implied_h, gel["height_cm"], abs(implied_h - gel["height_cm"]) / gel["height_cm"] * 100))
     a2o = info["image"][0] / float(info["analysis"][0])
     ymid = (info["bbox_analysis"][1] + info["bbox_analysis"][3]) / 2.0
 
@@ -1042,6 +1032,45 @@ def cmd_render(args):
     print("[i] 泳道 %d 条（实测 %d + 补位 %d），间距 %.1f px(分析) ; %s" % (
         len(lane_x), lb["measured"], len(lane_x) - lb["measured"], lb["pitch"] or 0,
         font or "magick 默认字体"))
+
+    # 定标（cm / 旋转画布 px）：①默认「整块胶宽 = width_cm」；
+    # ②照片是**裁过**的、只含 N 条泳道时（用户说了就 --gel-lanes N），①的前提不成立
+    #   —— 改用**泳道间距**定标：实测每条占多少 px ↔ 预设的 lane_pitch_cm。
+    #   可见宽度于是按泳道数算出来（N × 间距），不再假装它是整块胶。
+    if args.gel_lanes and gel.get("lane_pitch_cm") and len(lane_x) >= 2:
+        if int(args.gel_lanes) != len(lane_x):
+            print("[!] 你说 %d 条泳道，探测到 %d 条 —— 先核一下泳道有没有并/漏；"
+                  "定标用的是探测到的间距" % (int(args.gel_lanes), len(lane_x)))
+        pitch_px = (lane_x[-1] - lane_x[0]) / (len(lane_x) - 1)
+        cm_px = float(gel["lane_pitch_cm"]) / pitch_px
+        print("[i] 按泳道定标：%d 条 × %.3f cm = 胶面宽 %.2f cm（裁过的照片；"
+              "整块预设 %.2f cm 不适用）" % (len(lane_x), gel["lane_pitch_cm"],
+                                        len(lane_x) * gel["lane_pitch_cm"], gel["width_cm"]))
+    else:
+        cm_px = gel["width_cm"] / (gel_bb[2] - gel_bb[0])
+    # 成品 PNG 就是**实际尺寸**：1 px = 1/dpi 英寸。
+    # 量纲：cm_px 是「cm / 画布 px」，所以 px_out/画布px = (px_out/cm) × (cm/画布px) —— **乘**。
+    scale = (dpi / 2.54) * cm_px
+
+    if not (1e-4 < scale < 1e3):
+        raise RuntimeError("定标算出来不合理（scale=%.6g px/画布px）—— cm_px 量纲写反了？"
+                           "预设 %.2f cm / 探测宽 %d px / 泳道 %s"
+                           % (scale, gel["width_cm"], gel_bb[2] - gel_bb[0], args.gel_lanes or "—"))
+    # 上下缘再裁掉一段（探测框上缘含上样孔/梳齿；那一段常常不想入图）。
+    # 用同一个 cm_px 换算，裁上下不动宽度，所以定标不受影响。
+    tt = args.trim_top_cm if args.trim_top_cm is not None else float(gel.get("trim_top_cm", 0.0) or 0.0)
+    tb = args.trim_bottom_cm if args.trim_bottom_cm is not None else float(gel.get("trim_bottom_cm", 0.0) or 0.0)
+    if tt or tb:
+        h_before = (gel_bb[3] - gel_bb[1]) * cm_px
+        gel_bb = (gel_bb[0], gel_bb[1] + tt / cm_px, gel_bb[2], gel_bb[3] - tb / cm_px)
+        print("[i] 上/下缘各裁 %.2f / %.2f cm：胶面 %.2f cm → %.2f cm（探测框实测）" % (
+            tt, tb, h_before, (gel_bb[3] - gel_bb[1]) * cm_px))
+
+    implied_h = (gel_bb[3] - gel_bb[1]) * cm_px
+    if abs(implied_h - gel["height_cm"]) > 0.10 * gel["height_cm"]:
+        print("[!] 探测框的比例推出来高度 %.2f cm，预设写 %.2f cm（差 %.0f%%）—— "
+              "按宽度定标不受影响；要按你的数就用 --gel-cm，或调 --margin-frac / --rect。"
+              % (implied_h, gel["height_cm"], abs(implied_h - gel["height_cm"]) / gel["height_cm"] * 100))
 
     # ---- 泳道名（schema 同 label_gel.py：gap = 文字底边离胶面顶边，align 相对泳道中心）
     items = []
@@ -1254,7 +1283,7 @@ def cmd_render(args):
     print("输出 %s（%d×%d px, %d dpi；%d 条文字）= 胶面 %d×%d + 白底留白 L%d R%d T%d B%d" % (
         args.out, W, H, dpi, len(out_items), gw, gh, L, R, T, B))
     print("[i] 实际尺寸：胶面 %.2f×%.2f cm（%d×%d px）· 成品 %.2f×%.2f cm（含白底留白）" % (
-        gel["width_cm"], implied_h, gw, gh, W / dpi * 2.54, H / dpi * 2.54))
+        gw / dpi * 2.54, gh / dpi * 2.54, gw, gh, W / dpi * 2.54, H / dpi * 2.54))
     return 0
 
 
@@ -1687,6 +1716,8 @@ def main(argv=None):
                    help="条带数与配置对不上时仍按位置硬配（可能整体错位；默认拒绝出图）")
     r.add_argument("--gel", default="mini-gel", help="胶体尺寸预设（assets/gels/*.json，默认 mini-gel）")
     r.add_argument("--gel-cm", help="直接给胶体尺寸 宽x高（cm），如 8.6x6.9，压过 --gel")
+    r.add_argument("--gel-lanes", type=int, default=None,
+                   help="照片是裁过的、只含 N 条泳道时给 N：改按预设 lane_pitch_cm 的泳道间距定标")
     r.add_argument("--trim-top-cm", type=float, default=None,
                    help="从胶面上缘再裁掉多少 cm（探测框含上样孔/梳齿那一段；默认读预设的 trim_top_cm）")
     r.add_argument("--trim-bottom-cm", type=float, default=None,
