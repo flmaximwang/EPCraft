@@ -1,0 +1,138 @@
+---
+name: doing-sds-page-photo
+description: 用一张含 SDS-PAGE 凝胶的**照片**（手机拍的、胶不占满画面）直接出标注好的 PNG 时用：脚本先自动找出胶面（比背景暗 / 蓝度两个判据）、按竖边倾角转正、裁切并留出标签白边，再按 marker 与泳道两个 JSON 在裁好的图上写字，输出 dpi 可调的 PNG（默认 300 dpi、胶面打印宽 8 cm）。两个 JSON 与隔壁 doing-sds-page 的 label_gel.py **同一套 schema**（marker_lane / marker_lane_x / lane_width / lane_edge / gap / align / labels 口径一致），照片路另外多 y_frac / x_frac 两个校准字段。也用于「标签位置/字号/颜色改一下重跑」「探测结果不对要出 debug 覆盖图核对」「换一张照片同一套配置复用」。不属于本 skill 的：在 VectorCraft 工程里人拖参考线标注（→ doing-sds-page）；跑胶与成像本身（→ 成像仪厂商软件）；从像素里判读条带是什么蛋白（本 skill 只按配置或剖面把已有文字放上去）。
+---
+
+# doing-sds-page-photo — 照片进、标注好的 PNG 出
+
+一条流水线：**自动找胶 → 转正 → 裁切（留标签白边）→ 按两个 JSON 写字 → 出 PNG**。
+与隔壁 `doing-sds-page` 的分工：那个是「人在 GUI 标位置、脚本在工程里写字」；
+这个是「照片里位置由脚本探、人在配置里校准」，产物只有 PNG（没有工程文件）。
+**两个 JSON 的字段与口径完全沿用 `label_gel.py`**（`lane_pitch` 也直接 import 它，不重写）。
+
+脚本三个子命令（`scripts/gel_photo.py`，纯 stdlib + ImageMagick 7 的 `magick`）：
+
+| 子命令 | 干什么 |
+|---|---|
+| `probe` | 只探测不写字：报胶框/角度/两个条带判据/泳道 x 与每条泳道的条带行；`--debug` 出一张覆盖图 |
+| `render` | 出成品 PNG：裁切 + 转正 + 缩放 + dpi + 写字 |
+| `selftest` | 不读用户文件：自检 PPM 解析、magick 旋转方向、连通域、平面背景、峰簇、旋转框裁切、dpi 与字号、补位算法、间距量法、合成胶泳道探测（10 项） |
+
+## When to Use
+
+- 用户给一张手机拍的胶图照片（胶在画面中间、四周是灯箱/桌面），要一张能放汇报或投稿的标注图。
+- 用户要「按这个 marker 表把分子量标在条带旁、泳道名写在上方」，且**位置不想手标**。
+- 已经跑过、这次只改配置（换 marker 预设、改字号/颜色/gap、改打印宽度或 dpi）后重跑。
+- 探测结果不对劲，要先看一眼 `--debug` 覆盖图再决定改哪个参数。
+
+不属于：读像素判读条带是什么蛋白、多少 kD；把标注写回 VectorCraft 工程（→ `doing-sds-page`）；
+从胶图逆推实验结论（那是人的事）。
+
+## Workflow
+
+**Step 1 · 先跑 probe，再决定参数**（别一上来就 render）
+
+```bash
+python3 scripts/gel_photo.py probe <照片> --debug /tmp/gel_debug.png
+```
+输出里要核四样：`cross_cue`（暗度/蓝度两条判据的胶框是否一致 —— 一致才可信）、
+`angle_vertical`（竖边倾角）、两个判据阈值（条带行严格 / 泳道宽松）、
+以及泳道条数与「实测 / 补位」的拆分。`--debug` 那张覆盖图（红框=胶面、红线=实测泳道、
+**橙色线=补位泳道**、蓝线=泳道带边、绿线=条带行）用眼睛过一遍：框没框住胶、
+哪条线不落在泳道上、两条线之间是不是还看得出有泳道。
+
+**Step 2 · 两个 JSON（schema 同 `label_gel.py`，字段表见 references）**
+
+```bash
+python3 scripts/gel_photo.py render --list-presets      # 列出现有 marker 预设
+python3 scripts/gel_photo.py render <照片> --out out.png \
+        --preset yasen-wj103-10-250kd-tristricine \
+        --lanes lanes.json
+```
+- `markers.json`：`labels`（**从上到下**每条带一项）、`size`/`color`/`gap`(pt)/`font`、
+  `marker_lane`（左起第几条泳道；**不给就自动选条带最多的那条**）、`marker_lane_x`、
+  `lane_width`、`lane_edge`（`inner`）。
+- `lanes.json`：`labels`（**从左到右**，字符串或 `{text,...}` 都行）、`align`/`size`/`color`/`gap`。
+- 照片路额外两个校准字段（工程路没有）：`markers.y_frac`（每条带的 y，0=胶顶 1=胶底）、
+  `lanes.x_frac`（每条泳道的 x，0=胶左 1=胶右）。
+
+**Step 3 · render**
+
+```bash
+python3 scripts/gel_photo.py render <照片> --out out.png \
+        --preset <名> --lanes lanes.json \
+        --dpi 300 --print-width-cm 8 [--debug /tmp/dbg.png]
+```
+- `--dpi` 写进 PNG 的 pHYs，与 `--print-width-cm`（默认 8 cm，指**胶面**宽度，不含留白）一起决定像素数。
+  `size`/`gap` 的单位是 pt（打印尺寸），脚本按 dpi 换算成像素 —— 改 dpi 不会让字变小。
+- 位置类字段（`marker_lane_x` / `lane_width` / `x_frac` / `y_frac`）：**<1 当占胶面的比例，≥1 当输出像素**。
+- 脚本按文字**真实包围盒**（`magick label:` 量的，不是估的）算四周留白：哪个方向露出去就补哪个方向；
+  marker 泳道贴着胶左缘时左边会明显撑开（本次实测 1250×857 px）。
+- 文字默认带细白边（`--no-outline` 关）：照片里胶顶到背景是渐变，纯黑字压在光晕上会糊。
+
+**Step 4 · 回读成品图**（别只看日志）
+
+打开 PNG 看三件事：① 分子量数字是否每个都对着一条带（数量对不上时脚本只按位置配前 N 个，会打印警告）；
+② 泳道号是否落在浅色留白上、个数与位置对不对（对着 `--debug` 覆盖图数）；
+③ dpi 是否真写进去（`magick identify -format "%x" out.png`，300 dpi 显示 118.11 像素/厘米，是同一个数）。
+本次实测：`pHYs=(11811,11811,1)`。
+
+## 检查点（CHECKPOINT）
+
+| 触发 | 动作 |
+|---|---|
+| 探测到的条带数与配置的分子量数不一致 | 脚本打印警告并按位置配前 N 个（占位）。要正式出图就停下来校准：给 `markers.y_frac`、换对预设，或调 `--ink-thr` / `--longest` 后重探 |
+| `lanes.labels` 条数 > 探到的泳道数 | 脚本报错退出（那是判据不是 bug）：先用覆盖图数清那张胶有几条泳道，缺的用 `lanes.x_frac` 显式给位置 |
+| 覆盖图里出现橙色（补位）泳道 | 那是**估计值**（该处一条带都没显色，没有像素证据）。要精确就必须给 `x_frac` |
+| 两条判据（dark / chroma）给出的胶框差很多 | 先看覆盖图，必要时 `--cue chroma` 或直接 `--rect x0,y0,x1,y1` 跳过自动找胶 |
+| 要覆盖已有的输出 PNG | 脚本直接覆盖同名文件（不像隔壁 skill 会另存）。输出名自己起清楚 |
+
+## 黑名单（踩过的）
+
+- **别用整块胶的列剖面量泳道间距**：梯子的条带比一条泳道还宽，列剖面会把相邻泳道糊成一片，
+  量出来的间距偏小（实测 14.4 px vs 真值 18.0），后面按它补位就会多补泳道。
+  间距一律量自**条带最密的那一行**（那一行里各条带是彼此分开的）。
+- **别只用一套条带阈值**：找条带行要严格（中位数 − 3·MAD），找泳道要宽松（− 1.5·MAD）。
+  实测：只用严格判据，15 条泳道的胶只探到 9 条（一条只有一条淡带的泳道整条漏掉）。
+- **宽松判据的噪声要靠「行结构」挡**：胶面自身的竖纹在宽松阈值下也会亮起来 → 幽灵泳道。
+  判据是「有一条 ≥2 点的行」或「行剖面有峰且峰比中位数高 ≥2」（竖纹是均匀的，没有峰）。
+- **宽得离谱的 run 要先劈开**：右半边一排单条带在宽松阈值下糊成宽 34 px 的 run（真值 2 条、间距 17），
+  不劈开后面的补位会把这片再细分成 7 px 一条（实测 34 条泳道）。
+- **别拿「整块胶比背景暗」去找条带**：胶体整块暗于灯箱，那样会得到「一条宽 = 整块胶的巨型泳道」。
+  认胶用灯箱背景（环带亮样本拟的平面），找条带用胶内中位数。
+- **别在设了 dpi 的图上直接写字**：magick 会把 `-pointsize` 再乘一次 `density/72`，9 pt 变成 ~156 px（实测大 4 倍）。
+  先 `-density 72` 写字，dpi 元数据留到最后写。
+- **别用 `-strip`**：IM7 里它会把之后设的 `-density` 一起丢掉，PNG 出来没有 pHYs。要去元数据用 `+profile "*"`。
+- **别用「描边 + 填充」一次写完带白边的字**：`-stroke` 画在字上面，宽一点就把黑字吃成白字。
+  分两批：先整批白底、再整批黑字。
+- 旋正只按竖边拟合的倾角（本次 0.174°），没做透视矫正 —— 斜着拍的梯形胶会歪，那时用 `--angle` 手动压。
+
+## 实测基线（2026-10-13，一张手机照片，不是通用常量）
+
+输入 `/Users/maxim/Downloads/IMG_1464 (1).jpeg`（3024×4032，EXIF orientation=1），分析缩略图 700 px：
+
+- 胶框：两条判据一致（dark `(115,207,395,443)` / chroma `(116,208,395,442)`，分析尺度）→ 原图
+  `x 668–2252, y 1313–2546`，占画面 16%。倾角 **0.174°**（竖边拟合，129 点/边）。
+- 判据：胶内中位数 161、MAD 3 → 条带行阈值 **147.7**（严格）· 泳道阈值 **154.3**（宽松）。
+- 间距 **18.0 px**（量自第 356 行 = 条带最密的一行）；探到 **15 条**泳道，**全部实测、0 条补位**
+  （修之前：只用严格判据 + 无补位 → 9 条，比真值少 6 条）。
+- 用户核的两处：**第 3 条与第 4 条（梯子）之间 4 条、第 5 条与第 6 条之间 2 条** —— 修后与真值一致。
+- 成品：`--preset yasen-wj103-10-250kd-tristricine --dpi 300 --print-width-cm 8` →
+  **1250×857 px / 300 dpi / pHYs=(11811,11811,1)**，单次跑 ≈10 s（纯 stdlib，全 CPU）。
+- 已知偏差：该梯子实测 9–12 条带、预设 11 条 → 脚本按位置配前 N 个（占位），颜色配对会整体错位一位。
+  这是**配置问题不是脚本问题**：用对 marker 预设或给 `markers.y_frac`。
+- `selftest` 10/10，其中第 10 项是**合成胶回归测试**：5 条泳道（第 3 条只有一条很淡的带）+ 一道竖纹，
+  要求正好探出 5 条、位置误差 ≤3 px、竖纹不算泳道 —— 这条就是本次修的 bug 的看护测试。
+
+## Support files
+
+| 文件 | 承担什么 |
+|---|---|
+| `scripts/gel_photo.py` | 全部实现：magick 外呼、PPM 读像素、认胶（平面背景+蓝度）、泳道探测与补位、转正/裁切/留白、写字、PNG dpi |
+| `references/photo-labeling-conventions.md` | 两个 JSON 的字段表（同 `label_gel.py`）、探测机制与阈值、本机可复制命令、七个坑的来龙去脉 |
+| `test-prompts.json` | 触发与分界的测试题面 |
+
+依赖：系统 `python3`（只用 stdlib）+ `magick`（ImageMagick 7，本机 7.1.1）。
+marker 预设与本 skill 复用隔壁 `label_gel.py` 的 `lane_pitch`：按
+`<本 skill>/…` → `<同 pack 的 doing-sds-page>/…` 顺序找；**只单独装本 skill 时找不到**，
+那时用 `--markers` 指自己的 JSON（`lane_pitch` 会走本文件里的等价实现）。

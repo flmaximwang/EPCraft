@@ -1,0 +1,90 @@
+{
+  "skill": "doing-sds-page-photo",
+  "version": "0.2.0",
+  "test_cases": [
+    {
+      "id": "should-trigger-01",
+      "type": "should_trigger",
+      "prompt": "我手机拍了一张胶的照片（胶在画面中间、周围是灯箱），帮我按雅酶 WJ103 那套分子量标上、泳道名也写上，出一张能放汇报里的图，300 dpi。",
+      "expected_behavior": "走本 skill：先 probe 出胶框/角度/泳道（并出 --debug 覆盖图核对），再 render --preset 出 PNG；说明 dpi 写进 pHYs、--print-width-cm 决定胶面打印宽；提示条带数与预设不一致时会按位置配前 N 个（占位）。不要求用户先在 GUI 里标位置。",
+      "notes": ""
+    },
+    {
+      "id": "should-trigger-02",
+      "type": "should_trigger",
+      "prompt": "同一张照片，我想把分子量字号改成 7 pt、泳道名改成居左，重跑一版。",
+      "expected_behavior": "属本 skill 且**只改配置**：改 markers.json / lanes.json 的 size 与 align，重跑同一条 render 命令（照片不变、探测结果不变）。不需要重新探测参数、更不用改脚本。",
+      "notes": "触发点是「配置改一下重跑」。"
+    },
+    {
+      "id": "should-trigger-03",
+      "type": "should_trigger",
+      "prompt": "自动探测出来的泳道只有 9 条，我这张胶其实有 13 条（有几条只有一条很淡的带），怎么办？",
+      "expected_behavior": "两个办法：先 --longest 1000 重探（淡带需要更高的分析分辨率），或在 lanes.json 里给 x_frac 显式写 13 个泳道中心（0=胶左、1=胶右）。并说明 lanes.labels 多于探到的泳道时脚本会报错退出，那是判据不是 bug。",
+      "notes": ""
+    },
+    {
+      "id": "should-trigger-04b",
+      "type": "should_trigger",
+      "prompt": "你标出来的第 3 条和第 4 条泳道之间实际有 4 条泳道，第 5 和第 6 之间还有 2 条 —— 修一下。",
+      "expected_behavior": "属本 skill 的泳道探测 bug：只用一套（严格）条带阈值找泳道，会把只剩一条淡带的泳道整条漏掉（这张胶 15 条探成 9 条）。修法：泳道改宽松判据（中位数 − 1.5·MAD）＋宽 run 按间距劈开＋行结构验伪（真条带是峰、胶面竖纹是平的）＋两两实测之间按间距补位（补的标 interp、覆盖图橙色）。间距量自「条带最密的那一行」，不量整块胶列剖面。修后 15 条全实测、0 补位，用户核对的两处（4 条 / 2 条）对上。",
+      "notes": "回归测试在 selftest 第 10 项（合成胶 5 条 + 一道竖纹）。"
+    },
+    {
+      "id": "should-trigger-04c",
+      "type": "should_trigger",
+      "prompt": "标注的配置别自己另发明一套，参考 label_gel.py 那套来。",
+      "expected_behavior": "两个 JSON 沿用 doing-sds-page 的 schema：markers 的 font/size/color/gap/marker_lane/marker_lane_x/lane_width/lane_edge/labels、lanes 的 font/size/color/gap/align/labels，字段名与口径一致（marker_lane 1 起、0 表示第 1 条左边一条带、gap 量到泳道带边、左右按泳道区中线判）。lane_pitch 直接 import 隔壁 label_gel.py 复用，不重写。照片路只额外加 y_frac / x_frac 两个校准字段。验收方式：把工程路那份 Probe1.1_2026.10.12.json 直接喂进来能正常出图。",
+      "notes": ""
+    },
+    {
+      "id": "should-trigger-04",
+      "type": "should_trigger",
+      "prompt": "覆盖图里红框看着比胶大一圈，右边多框了灯箱，我该改哪个参数？",
+      "expected_behavior": "属本 skill 的调试路径：先看 probe 输出里 dark / chroma 两条判据的胶框是否一致；不一致说明灯箱偏蓝或胶太淡，可 --cue chroma 或 --ink-thr 调高阈值；都不理想就直接 --rect x0,y0,x1,y1 给原图像素矩形跳过自动找胶。",
+      "notes": ""
+    },
+    {
+      "id": "should-trigger-05",
+      "type": "should_trigger",
+      "prompt": "分子量标签整体错位了一位：紫色 70 kD 那个标签跑到别的带上了。",
+      "expected_behavior": "属本 skill 且是已知偏差：梯子实际条带数（这条胶 10）≠ 预设条带数（11），脚本只能按位置配对前 N 个。处置是换对的预设（同货号不同体系表观值不同）或给 markers.y_frac 显式写每条带的位置。别去改脚本放宽检查。",
+      "notes": ""
+    },
+    {
+      "id": "should-not-trigger-06",
+      "type": "should_not_trigger",
+      "prompt": "这张胶上这些条带分别是什么蛋白、多少 kD，你看着判一下。",
+      "expected_behavior": "越界：本 skill 只按配置（或 1D 剖面位置）把已有文字放到图上，不判读条带身份/分子量。应说明这属于图像分析或人的判断，本 skill 给不了。",
+      "notes": "诱饵：题面里全是本 skill 的关键词（胶 / 条带 / 多少 kD），但要素是判读。"
+    },
+    {
+      "id": "should-not-trigger-07",
+      "type": "should_not_trigger",
+      "prompt": "我在 vectorcraft 工程里拖好了参考线，帮我按配置把标签打上去。",
+      "expected_behavior": "越界到隔壁 doing-sds-page：那是「人在 GUI 标位置、脚本在工程里写字、另存工程 + 导出裁白边 PNG」。本 skill 的输入是照片不是工程文件。",
+      "notes": "诱饵：同为 SDS-PAGE 标注，但输入形态不同。"
+    },
+    {
+      "id": "should-not-trigger-08",
+      "type": "should_not_trigger",
+      "prompt": "帮我从这张胶图上数条纹带、算一下纯度百分比。",
+      "expected_behavior": "越界：本 skill 不做定量（不给条带强度/纯度），只出标注图。要定量走图像分析那条路（如 GelGenie / GelAnalyzer），或说明本脚本只报条带行位置。",
+      "notes": ""
+    },
+    {
+      "id": "edge-case-09",
+      "type": "edge_case",
+      "prompt": "我这张胶是斜着拍的，胶面有点梯形（近大远小），裁出来会不会歪？",
+      "expected_behavior": "会。本 skill 只按竖边拟合的倾角做旋转矫直，没做透视矫正：梯形失真会保留。可以 --angle 手动给角度压一点，但真正的梯形要另做透视变换（本 skill 不提供）；先出 --debug 覆盖图判断倾斜是否可接受。",
+      "notes": ""
+    },
+    {
+      "id": "edge-case-10",
+      "type": "edge_case",
+      "prompt": "我只装了这一个 skill（没有 doing-sds-page），--preset 还能用吗？",
+      "expected_behavior": "不能。预设目录按 <本 skill>/assets/markers → <同 pack 的 doing-sds-page>/assets/markers 顺序找；只单独装本 skill 时第二条不存在，脚本会报「找不到预设」并列出找过的路径。改用 --markers 指自己的 JSON，或把整包一起装。",
+      "notes": ""
+    }
+  ]
+}
