@@ -213,6 +213,10 @@ python3 scripts/gel_photo.py render <照片> --out out.png \
 | `scripts/gel_photo.py` | 全部实现：magick 外呼、PPM 读像素、认胶（平面背景+蓝度）、泳道探测与补位、转正/裁切/留白、按实际尺寸定标、写字、PNG dpi |
 | `assets/gels/*.json` | 胶体物理尺寸预设（`mini-gel` 宽 8.6 × 高 7.2 cm；文件名就是 `--gel` 的名字，`_source` 写出处） |
 | `markers.json` 的 `y_px` | **手动标定**用的绝对行位置（分析尺度 y，照 `probe --debug` 图的 y 标尺读）；`snap: true` 才吸附到自动行 |
+
+竖直对齐口径照隔壁 `label_gel.py`：marker 标签框**中心**对条带行（那边 `center_y`）、
+泳道名框**底边**在胶顶之上 `gap`（那边 `bottom_y`）。注意 `magick -annotate` 的 y 是文字框
+**顶边**，所以上面两个都要减掉框高（`text_extent` 量的真实框高），不能拿字号乘个系数凑。
 | `references/photo-labeling-conventions.md` | 两个 JSON 的字段表（同 `label_gel.py`）、探测机制与阈值、本机可复制命令、七个坑的来龙去脉 |
 | `test-prompts.json` | 触发与分界的测试题面 |
 

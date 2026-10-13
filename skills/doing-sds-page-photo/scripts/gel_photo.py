@@ -455,6 +455,23 @@ def fill_gaps(cx, widths, pitch, tol=0.3, max_k=8):
     return out, skipped
 
 
+def snap_to_anchors(cx, anchors, pitch):
+    """把泳道中心吸附到锚点上（锚点 = 条带最密那一行的墨 run）。偏超过半个间距就不动。
+
+    为什么需要它：整块胶的**列投影**会被「这条泳道整列上的零星杂点」带偏 —— 一条空泳道
+    可能被一个 1 px 的孤立列尖峰钉在 308，而它的带其实在 305；旁边那条又因为宽 run 按
+    自身宽度均分落在 319.6（真值 321.5）。两者一挤，标签看起来就「11 贴着 12」。
+    一条泳道的 x 应该由**它的带在哪**决定，所以拿条带最密那行的 run 当锚点最直接。
+    """
+    if not anchors or not pitch:
+        return list(cx)
+    out = []
+    for c in cx:
+        a = min(anchors, key=lambda t: abs(t - c))
+        out.append(a if abs(a - c) <= 0.5 * pitch else c)
+    return out
+
+
 def lanes_and_bands(path, rect, angle, longest=700, ignore_top=0.12, ignore_bottom=0.0,
                     cue="dark", thr=None, lane_mad_k=1.5, interp=True, want=None,
                     min_loose_ink=6, row_longest=1200):
@@ -542,6 +559,21 @@ def lanes_and_bands(path, rect, angle, longest=700, ignore_top=0.12, ignore_bott
 
     lanes = [(c, wd) for c, wd, pk in runs if evidence(c, wd)]
     dropped = len(runs) - len(lanes)
+    # 泳道中心用「条带最密那一行」的墨 run 校正：列投影会被整列上的零星杂点带偏，
+    # 而一条泳道的 x 应该由它的带在哪决定（见 snap_to_anchors 的注释）。只有宽到像
+    # 一条泳道的 run 才算锚点，免得把竖纹/边角噪声当锚点。
+    if pitch and pitch_row is not None and lanes:
+        prow = pitch_row * w
+        am = [1 if m_loose[prow + x] else 0 for x in range(x0, x1 + 1)]
+        anchors = [c for c, wd, _ in split_wide(merge_near(clusters(am, x0, 1), 3.0), pitch)
+                   if wd >= 0.5 * pitch]
+        if anchors:
+            snapped = snap_to_anchors([c for c, _ in lanes], anchors, pitch)
+            moved = [(round(b - a, 1)) for (a, _), b in zip(lanes, snapped) if abs(b - a) > 0.5]
+            if moved:
+                print("[i] 泳道中心按条带最密行(%d)的 %d 个锚点校正 %d 条：移动 %s"
+                      % (pitch_row, len(anchors), len(moved), moved))
+            lanes = list(zip(snapped, [wd for _, wd in lanes]))
     marks, skipped = fill_gaps([c for c, _ in lanes], [wd for _, wd in lanes], pitch) \
         if interp else ([(c, wd, False) for c, wd in lanes], [])
     if want and len(marks) != want:
@@ -915,10 +947,12 @@ def cmd_render(args):
             if not t:
                 continue
             s = pt2px(en.get("size", size))
-            tw, _th = text_extent(font, round(s), t)
-            tw = tw / scale
+            tw, th = text_extent(font, round(s), t)
+            tw, th = tw / scale, th / scale
             ax = x - tw / 2.0 if align == "center" else (x if align == "left" else x - tw)
-            ay = gel_bb[1] - gap / scale - 0.21 * s / scale               # 底边落在胶顶之上 gap
+            # 与 label_gel.py 同口径：box **底边**落在胶顶之上 gap（那边 `("bottom_y", y)`，
+            # 而 -annotate 的 y 是 box **顶边**，所以这里减掉整个 box 高）。
+            ay = gel_bb[1] - gap / scale - th
             items.append((ax, ay, t, s, en.get("color", color)))
 
     # ---- marker 分子量（schema 同 label_gel.py：marker_lane / marker_lane_x / lane_width /
@@ -999,11 +1033,13 @@ def cmd_render(args):
             if not t:
                 continue
             s = pt2px(en.get("size", size))
-            tw, _th = text_extent(font, round(s), t)
-            tw = tw / scale
+            tw, th = text_extent(font, round(s), t)
+            tw, th = tw / scale, th / scale
             _, yy = rot_pt(info["bbox_analysis"][0] * a2o, row * a2o)
             ax = (edge - gap / scale - tw) if left_side else (edge + gap / scale)
-            ay = yy + 0.35 * s / scale                      # 文字竖直中心对条带
+            # 与 label_gel.py 同口径：box **竖直中心**对齐条带行（那边 `("center_y", y)`；
+            # -annotate 的 y 是 box 顶边，所以上移半个 box 高）。
+            ay = yy - th / 2.0
             items.append((ax, ay, t, s, en.get("color", mk.get("color", "#000000"))))
 
     # ---- 外扩留白（按文字真实包围盒）→ 裁切 → 写字
@@ -1015,8 +1051,8 @@ def cmd_render(args):
         tw, th = tw / scale, th / scale
         need["l"] = max(need["l"], gel_bb[0] - ax)
         need["r"] = max(need["r"], ax + tw - gel_bb[2])
-        need["t"] = max(need["t"], gel_bb[1] - (ay - 0.79 * s / scale))
-        need["b"] = max(need["b"], (ay + 0.21 * s / scale) - gel_bb[3])
+        need["t"] = max(need["t"], gel_bb[1] - ay)          # ay = box 顶边
+        need["b"] = max(need["b"], (ay + th) - gel_bb[3])   # box 底边 = ay + th
     L = base_m + max(0.0, need["l"] - base_m + pad)
     R = base_m + max(0.0, need["r"] - base_m + pad)
     T = base_m + max(0.0, need["t"] - base_m + pad)
@@ -1034,6 +1070,9 @@ def cmd_render(args):
         base += ["-resize", "%dx%d" % (int(round(crop_w * scale)), int(round(crop_h * scale)))]
     base += ["+profile", "*"]        # 注意别用 -strip：IM7 里它会把后面设的 dpi 一起丢掉（实测）
     out_items = [((ax - bx0) * scale, (ay - by0) * scale, t, s, c) for ax, ay, t, s, c in items]
+    if args.debug:
+        for ox, oy, t, s, c in out_items:
+            print("    [item] %-8s x0=%7.1f y0=%7.1f (pt=%.1f)" % (t, ox, oy, s))
     cmd = annotate_cmd(base, out_items, font, None if args.no_outline else args.outline)
     cmd += ["-units", "PixelsPerInch", "-density", str(dpi), args.out]
     _run(cmd)
@@ -1165,6 +1204,60 @@ def cmd_doctor(args):
 
 
 # ---------------------------------------------------------------- selftest
+
+
+def test_annotate_geometry():
+    """-annotate 的 y 是文字框的**顶边**（实测），不是基线也不是中心。
+
+    label_gel.py 的口径：marker 用 ("center_y", y)（框竖直中心对齐条带行）、
+    泳道名用 ("bottom_y", y)（框底边在胶顶之上 gap）。旧代码拿 0.21*s / 0.35*s
+    近似，所以 marker 字整体沉到条带下方 ~1 em、泳道名压进胶里。
+    这里按真实 box 高重算，断言三条。
+    """
+    checks = []
+    ok = lambda n, b, m="": checks.append((n, bool(b), m))
+    f = pick_font()
+    px = int(round(8 / 72.0 * 96))           # 8 pt @ 96 dpi
+    tw, th = text_extent(f, px, "250")
+
+    # 1) -annotate 的 y 是框顶边：画两次（y=50 / y=60），墨迹必须整体平移 10 px（斜率 1、无基线偏移）
+    p1, p2 = "/tmp/gel_ann_a.png", "/tmp/gel_ann_b.png"
+    for p, yy in ((p1, 50), (p2, 60)):
+        _run([MAGICK, "-size", "120x120", "xc:white", "-density", "72", "-font", f,
+              "-pointsize", str(px), "-gravity", "northwest", "-fill", "black",
+              "-annotate", "+20+%d" % yy, "250", p])
+    def _top(p):
+        w, h, rgb = read_ppm(p, 0)
+        g = to_gray(w, h, rgb)
+        rows = [y for y in range(h) if min(g[y * w + x] for x in range(w)) < 200]
+        return (min(rows), max(rows)) if rows else None
+    a, b = _top(p1), _top(p2)
+    ok("-annotate y=框顶边（y+10 → 墨迹整体下移 10，±1px）",
+       a and b and abs((b[0] - a[0]) - 10) <= 1 and abs((b[1] - a[1]) - 10) <= 1,
+       "y=50 墨迹 %s，y=60 墨迹 %s" % (a, b))
+
+    # 2) marker 对齐：框中心必须落在条带行上（±1 px）
+    band_y = 300.0
+    ay = band_y - th / 2.0
+    ok("marker：框竖直中心对齐条带行（±1px）", abs((ay + th / 2.0) - band_y) <= 1.0,
+       "框中心 %.1f，条带行 %.1f" % (ay + th / 2.0, band_y))
+
+    # 3) 泳道名：框底边必须落在 gel_top - gap（±1px），且不压胶
+    for gap in (0, 4):
+        gel_top, g2 = 260.0, float(gap)
+        ay2 = gel_top - g2 - th
+        bottom = ay2 + th
+        ok("泳道名 gap=%d：框底边=胶顶-gap（±1px）" % gap, abs(bottom - (gel_top - g2)) <= 1.0,
+           "框底边 %.1f，期望 %.1f" % (bottom, gel_top - g2))
+        ok("泳道名 gap=%d：不压胶（框底边≤胶顶）" % gap, bottom <= gel_top + 1e-6,
+           "框底边 %.1f > 胶顶 %.1f" % (bottom, gel_top))
+
+    # 4) 留白公式必须用同一个 box 高（t/b 都从 ay、ay+th 算）
+    need_t = gel_top - ay2
+    need_b = (ay2 + th) - gel_top
+    ok("留白：t 用框顶边、b 用框底边", need_t >= 0 and need_b <= 0,
+       "need_t=%.1f need_b=%.1f" % (need_t, need_b))
+    return checks
 
 
 def selftest():
@@ -1312,7 +1405,27 @@ def selftest():
         assert lb["measured"] == 5 and not any(lb["interp"])
         ok += 1
 
-    print("selftest %d/10 通过" % ok)
+    # 11) 文字对齐几何：-annotate 的 y 是框顶边；marker 框中心对条带行、泳道名框底边在胶顶之上 gap
+    for n, b, m in test_annotate_geometry():
+        if not b:
+            raise AssertionError("对齐几何：%s —— %s" % (n, m))
+        ok += 1
+
+    # 12) 泳道中心吸附锚点：空泳道被列投影的孤立尖峰钉在 308（真值 305），旁边那条
+    #     因为宽 run 按自身宽度均分落在 319.6（真值 321.5）→ 11 和 12 挤成 11.6。
+    #     吸附到「条带最密那一行」的 run 后，间距必须回到一个间距左右。
+    cx = [269.6, 284.7, 308.0, 319.6, 336.6]
+    anchors = [269.5, 286.5, 305.0, 321.5, 339.0]
+    got = snap_to_anchors(cx, anchors, 18.0)
+    assert [round(v, 1) for v in got] == anchors, got
+    gaps = [round(got[i + 1] - got[i], 1) for i in range(len(got) - 1)]
+    assert all(14.0 <= g <= 20.0 for g in gaps), ("泳道挤在一起没修好", gaps)
+    # 偏超过半个间距的泳道不许被拉动（没有条带证据的泳道要保留列投影的位置）
+    assert snap_to_anchors([100.0, 340.0], [120.0], 18.0) == [100.0, 340.0]
+    assert snap_to_anchors([100.0], [], 18.0) == [100.0]
+    ok += 1
+
+    print("selftest %d/12 通过" % ok)
     return 0
 
 
