@@ -765,12 +765,14 @@ def annotate_cmd(ops, items, font, outline="#ffffff"):
         cmd += ["-stroke", outline]
         for x, y, text, size_pt, _color in items:
             px = max(6, int(round(size_pt)))
-            cmd += ["-strokewidth", "%.1f" % max(1.0, px * 0.07), "-fill", outline,
+            cmd += ["-pointsize", str(px),          # 必须显式给：不给就是 IM 默认 12 pt，
+                    "-strokewidth", "%.1f" % max(1.0, px * 0.07), "-fill", outline,   # 字号不随 dpi 变
                     "-annotate", "+%d+%d" % (int(round(x)), int(round(y))), text]
         cmd += ["-stroke", "none"]
     for x, y, text, size_pt, color in items:
         px = max(6, int(round(size_pt)))            # pointsize=pt 在 72 dpi 下就是 px
-        cmd += ["-fill", color, "-annotate", "+%d+%d" % (int(round(x)), int(round(y))), text]
+        cmd += ["-pointsize", str(px), "-fill", color,
+                "-annotate", "+%d+%d" % (int(round(x)), int(round(y))), text]
     return cmd
 
 
@@ -1079,6 +1081,9 @@ def cmd_render(args):
         mid = (min(lane_x) + max(lane_x)) / 2.0
         left_side = mx < mid
         edge = mx if mk.get("lane_edge") == "inner" else (mx - lw / 2.0 if left_side else mx + lw / 2.0)
+        # 整列**不压在胶上**：按泳道带边算出的锚点若还在胶面内，就推到胶面之外（gap 从胶边起算）。
+        # 左/右仍照 label_gel 的口径（泳道区中线），只是把这一列挪进白底留白里。
+        edge = min(edge, gel_bb[0]) if left_side else max(edge, gel_bb[2])
         gap = pt2px(mk.get("gap", 4))
         size = float(mk.get("size", 8))                # pt
         print("[i] 泳道带宽 ≈%.1f px(分析)（%s）；marker 泳道 x=%.1f（泳道区中线 %.1f 的%s边）"
@@ -1205,19 +1210,27 @@ def cmd_render(args):
     R = base_m + max(0.0, need["r"] - base_m + pad)
     T = base_m + max(0.0, need["t"] - base_m + pad)
     B = base_m + max(0.0, need["b"] - base_m + pad)
-    bx0, by0 = max(0.0, gel_bb[0] - L), max(0.0, gel_bb[1] - T)
-    bx1, by1 = min(float(W1), gel_bb[2] + R), min(float(H1), gel_bb[3] + B)
-    crop_w, crop_h = bx1 - bx0, by1 - by0
 
-    base = [MAGICK, args.image, "-auto-orient"]
+    # 严格按胶面裁切 → 贴到**白底**画布上 → 文字只写在白底留白里。
+    # 好处：① 胶面不多带一个像素；② 上缘的加样孔/灯箱背景不再压在文字下面（字全在白底上）。
+    gx0, gy0 = max(0, int(round(gel_bb[0]))), max(0, int(round(gel_bb[1])))
+    gx1, gy1 = min(W1, int(round(gel_bb[2]))), min(H1, int(round(gel_bb[3])))
+    gw, gh = int(round((gx1 - gx0) * scale)), int(round((gy1 - gy0) * scale))
+    sx, sy = gw / float(gx1 - gx0), gh / float(gy1 - gy0)     # 裁切→成品的真实比例（免得有亚像素漂）
+    # 注意单位：L/R/T/B 是在 gel_bb（胶面坐标）里算的，要乘比例才是成品像素
+    L, R = int(round(L * sx)), int(round(R * sx))
+    T, B = int(round(T * sy)), int(round(B * sy))
+    W, H = gw + L + R, gh + T + B
+    # 白底用**新建画布 + composite**（不是 -extent：实测 IM7 的 -extent 带 gravity 时偏移量被忽略，
+    # 图会贴在左上角、只往右下补白 —— 边距全错）。
+    base = [MAGICK, "-size", "%dx%d" % (W, H), "xc:white", "(", args.image, "-auto-orient"]
     if abs(ang) > 1e-6:
         base += ["-rotate", "%.4f" % ang]
-    base += ["-crop", "%dx%d+%d+%d" % (int(round(crop_w)), int(round(crop_h)),
-                                       int(round(bx0)), int(round(by0))), "+repage"]
-    if abs(scale - 1.0) > 1e-9:
-        base += ["-resize", "%dx%d" % (int(round(crop_w * scale)), int(round(crop_h * scale)))]
-    base += ["+profile", "*"]        # 注意别用 -strip：IM7 里它会把后面设的 dpi 一起丢掉（实测）
-    out_items = [((ax - bx0) * scale, (ay - by0) * scale, t, s, c) for ax, ay, t, s, c in items]
+    base += ["-crop", "%dx%d+%d+%d" % (gx1 - gx0, gy1 - gy0, gx0, gy0), "+repage",
+             "-resize", "%dx%d!" % (gw, gh),                    # 严格贴合胶面
+             "+profile", "*", ")"]   # 注意别用 -strip：IM7 里它会把后面设的 dpi 一起丢掉（实测）
+    base += ["-gravity", "northwest", "-geometry", "+%d+%d" % (L, T), "-composite"]
+    out_items = [(L + (ax - gx0) * sx, T + (ay - gy0) * sy, t, s, c) for ax, ay, t, s, c in items]
     if args.debug:
         for ox, oy, t, s, c in out_items:
             print("    [item] %-8s x0=%7.1f y0=%7.1f (pt=%.1f)" % (t, ox, oy, s))
@@ -1228,11 +1241,10 @@ def cmd_render(args):
         draw_debug(args.image, info, lb, args.debug, cfg_rows=rows if mk_labels else None)
         print("debug 覆盖图:", args.debug, "（红框=胶面，红/绿线=泳道/条带行，品红=配置指定的 marker 行）")
     gel_w_px, gel_h_px = (gel_bb[2] - gel_bb[0]) * scale, (gel_bb[3] - gel_bb[1]) * scale
-    print("输出 %s（%d×%d px, %d dpi；%d 条文字）" % (
-        args.out, int(round(crop_w * scale)), int(round(crop_h * scale)), dpi, len(out_items)))
-    print("[i] 实际尺寸：胶面 %.2f×%.2f cm（%d×%d px）· 成品 %.2f×%.2f cm（含标签留白）" % (
-        gel["width_cm"], implied_h, int(round(gel_w_px)), int(round(gel_h_px)),
-        crop_w * scale / dpi * 2.54, crop_h * scale / dpi * 2.54))
+    print("输出 %s（%d×%d px, %d dpi；%d 条文字）= 胶面 %d×%d + 白底留白 L%d R%d T%d B%d" % (
+        args.out, W, H, dpi, len(out_items), gw, gh, L, R, T, B))
+    print("[i] 实际尺寸：胶面 %.2f×%.2f cm（%d×%d px）· 成品 %.2f×%.2f cm（含白底留白）" % (
+        gel["width_cm"], implied_h, gw, gh, W / dpi * 2.54, H / dpi * 2.54))
     return 0
 
 
@@ -1586,7 +1598,24 @@ def selftest():
     assert group_rows([], [1, 2]) == []
     ok += 1
 
-    print("selftest %d/14 通过" % ok)
+    # 15) 字号必须真的生效：`annotate_cmd` 漏写 -pointsize 时 IM 一律按默认 12 pt 画，
+    #     96/300 dpi 的墨迹都会是同一高度（实测踩过：两个 dpi 的字相对胶面大小不同）。
+    with tempfile.TemporaryDirectory() as td:
+        o = os.path.join(td, "pt.png")
+        items = [(20, 140, "250", 24, "#000000"), (240, 140, "250", 48, "#000000")]
+        _run(annotate_cmd([MAGICK, "-size", "460x200", "xc:white"], items, pick_font(), None) + [o])
+        w3, h3, rgb3 = read_ppm(o, None)
+        g3 = to_gray(w3, h3, rgb3)
+
+        def inkh(x0, x1):
+            rows = [y for y in range(h3) if any(g3[y * w3 + x] < 128 for x in range(x0, x1))]
+            return (max(rows) - min(rows) + 1) if rows else 0
+        h_small, h_big = inkh(20, 180), inkh(240, 440)
+        assert h_big > 1.6 * h_small, ("字号没生效（-pointsize 没写进命令？）", h_small, h_big)
+        assert 14 <= h_small <= 20 and 30 <= h_big <= 40, (h_small, h_big)
+    ok += 1
+
+    print("selftest %d/15 通过" % ok)
     return 0
 
 
@@ -1652,7 +1681,8 @@ def main(argv=None):
     r.add_argument("--no-rotate", action="store_true")
     r.add_argument("--margin-frac", type=float, default=0.05, help="四周外扩（占胶面长边比例，默认 0.05）")
     r.add_argument("--font", help="字体文件路径（默认 Arial；配置里的 font 只在是路径时才用）")
-    r.add_argument("--outline", default="#ffffff", help="文字白边颜色（默认 #ffffff，照片上防糊）")
+    r.add_argument("--outline", default=None,
+                   help="文字白边颜色（默认不描边：成品是白底；要压在胶上时才给 white）")
     r.add_argument("--no-outline", action="store_true", help="不要白边")
     r.add_argument("--debug", help="再出一张检测覆盖图")
     r.add_argument("--list-presets", action="store_true")
