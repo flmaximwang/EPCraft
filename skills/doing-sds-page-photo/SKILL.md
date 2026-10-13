@@ -15,7 +15,7 @@ description: 用一张含 SDS-PAGE 凝胶的**照片**（手机拍的、胶不�
 | 子命令 | 干什么 |
 |---|---|
 | `probe` | 只探测不写字：报胶框/角度/两个条带判据/泳道 x 与每条泳道的条带行；`--debug` 出一张覆盖图 |
-| `render` | 出成品 PNG：裁切 + 转正 + 缩放 + dpi + 写字 |
+| `render` | 出成品 PNG：裁切 + 转正 + 按胶体实际尺寸缩放 + dpi + 写字 |
 | `doctor` | 环境自检：python / `magick`（含版本）/ 字体 / 预设目录 / 用户选的环境安装位置（`--env-root`）；缺什么说怎么补 |
 | `selftest` | 不读用户文件：自检 PPM 解析、magick 旋转方向、连通域、平面背景、峰簇、旋转框裁切、dpi 与字号、补位算法、间距量法、合成胶泳道探测（10 项） |
 
@@ -102,10 +102,15 @@ python3 scripts/gel_photo.py render <照片> --out out.png \
 ```bash
 python3 scripts/gel_photo.py render <照片> --out out.png \
         --preset <名> --lanes lanes.json \
-        --dpi 300 --print-width-cm 8 [--debug /tmp/dbg.png]
+        --gel mini-gel --dpi 96 [--debug /tmp/dbg.png]
 ```
-- `--dpi` 写进 PNG 的 pHYs，与 `--print-width-cm`（默认 8 cm，指**胶面**宽度，不含留白）一起决定像素数。
-  `size`/`gap` 的单位是 pt（打印尺寸），脚本按 dpi 换算成像素 —— 改 dpi 不会让字变小。
+- **成品就是实际尺寸**：按胶体预设（`assets/gels/*.json`，默认 `mini-gel` = 宽 8.6 cm × 高 7.2 cm）用**宽度定标**，
+  胶面在成品里横跨 `宽_cm/2.54×dpi` 个像素；`--dpi` 写进 PNG 的 pHYs（默认 **96**）。
+  例：`--gel mini-gel --dpi 96` → 胶面 325×253 px（8.60×6.70 cm），成品 404×296 px（10.70×7.83 cm）；
+  `--dpi 300` → 同一物理尺寸、胶面 1016×792 px。高度不按预设强改，按图的实际比例算，差 >10% 会警告。
+- 临时换尺寸：`--gel-cm 8.6x7.2`（宽x高，cm）压过预设。
+- **`size`/`gap` 的单位是成品像素（px），默认 16 px**（与隔壁 `label_gel.py` 的字段名一致，但那边的数值是画布 pt）。
+  因为是绝对像素，**改 dpi 会改字在纸上的物理大小**：96 dpi 时 16 px = 4.2 mm，300 dpi 时 = 1.35 mm。
 - 位置类字段（`marker_lane_x` / `lane_width` / `x_frac` / `y_frac`）：**<1 当占胶面的比例，≥1 当输出像素**。
 - 脚本按文字**真实包围盒**（`magick label:` 量的，不是估的）算四周留白：哪个方向露出去就补哪个方向；
   marker 泳道贴着胶左缘时左边会明显撑开（本次实测 1250×857 px）。
@@ -147,6 +152,11 @@ python3 scripts/gel_photo.py render <照片> --out out.png \
 - **别在设了 dpi 的图上直接写字**：magick 会把 `-pointsize` 再乘一次 `density/72`，9 pt 变成 ~156 px（实测大 4 倍）。
   先 `-density 72` 写字，dpi 元数据留到最后写。
 - **别用 `-strip`**：IM7 里它会把之后设的 `-density` 一起丢掉，PNG 出来没有 pHYs。要去元数据用 `+profile "*"`。
+- **固定 px 字号 + 低 dpi 标不完密集的梯子**：96 dpi / 胶面 8.6 cm 下，梯子相邻条带只差 ~11 px，
+  16 px 的字会上下糊在一起（实测）。三条路选一条：dpi 提到 192–300（字相对变小、留白也随之变窄）、
+  把 `markers.size` 降到 ~10 px、或只标关键几条带（真实图也常这么干）。
+- **别把 `size` 当 pt**：照片路的画布是成品 PNG，`size`/`gap` 就是像素；`label_gel.py` 那边是画布 pt，
+  同样的数字在两边物理大小不同。
 - **别用「描边 + 填充」一次写完带白边的字**：`-stroke` 画在字上面，宽一点就把黑字吃成白字。
   分两批：先整批白底、再整批黑字。
 - 旋正只按竖边拟合的倾角（本次 0.174°），没做透视矫正 —— 斜着拍的梯形胶会歪，那时用 `--angle` 手动压。
@@ -161,8 +171,12 @@ python3 scripts/gel_photo.py render <照片> --out out.png \
 - 间距 **18.0 px**（量自第 356 行 = 条带最密的一行）；探到 **15 条**泳道，**全部实测、0 条补位**
   （修之前：只用严格判据 + 无补位 → 9 条，比真值少 6 条）。
 - 用户核的两处：**第 3 条与第 4 条（梯子）之间 4 条、第 5 条与第 6 条之间 2 条** —— 修后与真值一致。
-- 成品：`--preset yasen-wj103-10-250kd-tristricine --dpi 300 --print-width-cm 8` →
-  **1250×857 px / 300 dpi / pHYs=(11811,11811,1)**，单次跑 ≈10 s（纯 stdlib，全 CPU）。
+- 成品（实际尺寸路线）：`--preset yasen-wj103-10-250kd-tristricine --lanes lanes.json --gel mini-gel`：
+  - `--dpi 96` → **404×296 px**（胶面 325×253 px = 8.60×6.70 cm，成品 10.70×7.83 cm），pHYs=(3779,3779,1)；
+    实测：泳道号 15 个清楚；梯子的 11 条带只差 ~11 px，16 px 的分子量标签**上下糊在一起**。
+  - `--dpi 300` → **1145×893 px**（胶面 1016×792 px，同一 8.60×6.70 cm，成品 9.69×7.56 cm）：泳道号与分子量都分得开。
+  两者物理尺寸相同，差别只在像素数 ⇒ 固定 16 px 字号下，低 dpi 的图上字看起来更大、更容易撞。
+- 单次跑 ≈10 s（纯 stdlib，全 CPU）。
 - 已知偏差：该梯子实测 9–12 条带、预设 11 条 → 脚本按位置配前 N 个（占位），颜色配对会整体错位一位。
   这是**配置问题不是脚本问题**：用对 marker 预设或给 `markers.y_frac`。
 - `selftest` 10/10，其中第 10 项是**合成胶回归测试**：5 条泳道（第 3 条只有一条很淡的带）+ 一道竖纹，
@@ -172,7 +186,8 @@ python3 scripts/gel_photo.py render <照片> --out out.png \
 
 | 文件 | 承担什么 |
 |---|---|
-| `scripts/gel_photo.py` | 全部实现：magick 外呼、PPM 读像素、认胶（平面背景+蓝度）、泳道探测与补位、转正/裁切/留白、写字、PNG dpi |
+| `scripts/gel_photo.py` | 全部实现：magick 外呼、PPM 读像素、认胶（平面背景+蓝度）、泳道探测与补位、转正/裁切/留白、按实际尺寸定标、写字、PNG dpi |
+| `assets/gels/*.json` | 胶体物理尺寸预设（`mini-gel` 宽 8.6 × 高 7.2 cm；文件名就是 `--gel` 的名字，`_source` 写出处） |
 | `references/photo-labeling-conventions.md` | 两个 JSON 的字段表（同 `label_gel.py`）、探测机制与阈值、本机可复制命令、七个坑的来龙去脉 |
 | `test-prompts.json` | 触发与分界的测试题面 |
 

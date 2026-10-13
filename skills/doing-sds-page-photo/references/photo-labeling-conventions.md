@@ -9,9 +9,9 @@
 
 | 键 | 含义 | 默认 |
 |---|---|---|
-| `size` | 字号 (pt，打印尺寸) | 9（工程路是 16：那边画布单位不同） |
+| `size` | 字号（**成品像素 px**；工程路那边是画布 pt） | 16 |
 | `color` | 默认颜色 | `#000000` |
-| `gap` | 文字与**泳道带边缘**的水平间距 (pt) | 4 |
+| `gap` | 文字与**泳道带边缘**的水平间距 (px) | 4 |
 | `marker_lane` | marker 是左起第几条**探到的**泳道（1 起）；`0` = 第 1 条左边一条泳道带处；**不给就自动选条带最多的那条** | 自动 |
 | `marker_lane_x` | 直接给 marker 泳道的位置（<1 当占胶面宽度的比例，≥1 当输出像素） | 无 |
 | `lane_width` | 泳道带宽手给值（同上单位规则）；不给就按相邻泳道中心距的中位数（`lane_pitch`） | 自动 |
@@ -24,14 +24,26 @@
 
 | 键 | 含义 | 默认 |
 |---|---|---|
-| `size` / `color` | 同上 | 9 / `#000000` |
-| `gap` | 文字**底边**离胶面顶边的距离 (pt) | 0 |
+| `size` / `color` | 同上（px） | 16 / `#000000` |
+| `gap` | 文字**底边**离胶面顶边的距离 (px) | 0 |
 | `align` | `center` / `left` / `right`，相对该泳道中心 | `center` |
 | `labels` | **从左到右**，每条泳道一项（字符串或对象）；`text` 留 `""` 就不写 | — |
 | `x_frac` | **照片路额外字段**：每条泳道的显式中心，0=胶面左、1=胶面右 | 无 |
 
 对齐与左右判断的规则跟工程路一字不差：marker 泳道中心在**泳道区中线**左边 ⇒ 右对齐、
 右边缘贴泳道带左边，右边则翻成左对齐；中线取 `(min+max)/2` 的泳道中心，不取整图中线。
+
+## 1b. 成品尺寸怎么定（实际尺寸）
+
+`assets/gels/*.json` 是胶体物理尺寸预设，文件名就是 `--gel` 的名字（默认 `mini-gel`：宽 8.6 × 高 7.2 cm）：
+
+| 键 | 作用 |
+|---|---|
+| `width_cm` | **定标**：胶面在成品里横跨 `width_cm/2.54 × dpi` 个像素 |
+| `height_cm` | 只用于**核对**（探测框比例推出来的高度与它差 >10% 会警告，不强改图） |
+
+`--gel-cm 8.6x7.2` 可以直接给（宽x高，cm），压过预设。字号是绝对像素，所以
+「同一物理尺寸 + 不同 dpi」不是等价图：96 dpi 的 16 px 字比 300 dpi 的 16 px 字**打印出来大 3 倍**。
 
 ## 2. 探测怎么做的（以及为什么这么选）
 
@@ -84,9 +96,9 @@ python3 scripts/gel_photo.py probe "/Users/maxim/Downloads/IMG_1464 (1).jpeg" \
 python3 scripts/gel_photo.py render "/Users/maxim/Downloads/IMG_1464 (1).jpeg" \
         --out /Users/maxim/Downloads/gel_demo/IMG_1464_labeled.png \
         --preset yasen-wj103-10-250kd-tristricine \
-        --lanes /Users/maxim/Downloads/gel_demo/lanes.json \
-        --dpi 300 --print-width-cm 8
-# → 1250×857 px / 300 dpi / pHYs=(11811,11811,1)
+        --lanes /Users/maxim/Downloads/gel_demo/lanes.json --gel mini-gel --dpi 96
+# → 404×296 px / 96 dpi（胶面 8.60×6.70 cm，成品 10.70×7.83 cm）/ pHYs=(3779,3779,1)
+# 同一条命令换 --dpi 300 → 1145×893 px，物理尺寸不变，字相对变小、标签就不撞了
 
 # 3) 直接复用工程路写好的配置（schema 同一套，实测可用）
 python3 scripts/gel_photo.py render "/Users/maxim/Downloads/IMG_1464 (1).jpeg" --out /tmp/x.png \
@@ -109,6 +121,7 @@ python3 scripts/gel_photo.py selftest        # 10/10（含合成胶泳道探测�
 | 补位补出一堆 7 px 宽的假泳道（34 条） | 间距量自整块胶列剖面（偏小 14.4），宽 run 又没劈开 | 间距改量自「最密的一行」；宽 run 按间距均分 |
 | 幽灵泳道（该处什么都没有） | 胶面竖纹在宽松阈值下亮起来 | 行结构验伪：真条带是峰，竖纹是平的 |
 | 只探到一条「泳道」，宽 = 整块胶 | 用「比灯箱暗」找条带 → 整块胶都是命中 | 认胶用灯箱平面，找条带用胶内中位数 |
+| 梯子的分子量标签上下糊在一起 | 固定 16 px 字号 + 96 dpi：相邻条带只差 ~11 px | 提 dpi（192–300）、把 `markers.size` 降到 ~10 px、或只标关键几条带 |
 | 字大得离谱，9 pt 占满半张图 | magick 看到 density=300，把 `-pointsize` 又乘了 300/72 | 写字前 `-density 72`，dpi 留到最后写 |
 | PNG 没有 dpi，`identify` 显示 72 | `-strip` 把之后设的 `-density` 一起丢了（IM7） | 用 `+profile "*"`，别用 `-strip` |
 | 黑字被吃成白字 | `-stroke` 是画在字**上面**的 | 分两批：先整批白底、再整批黑字（0.07 em） |

@@ -22,6 +22,7 @@
 | VectorCraft 控制口（TCP JSON）的实测调用面 | `document.inspect` / `ui.inspect` / `engine.execute` / `guide.list` / `file.saveAs` / `file.exportAs` 的用法，以及四个坑（弹窗、`currentLayer` 不可靠、保存/导出是后台任务、字号是名义字号） | [`references/vectorcraft-control-channel.md`](skills/doing-sds-page/references/vectorcraft-control-channel.md) |
 | 2026-10-12 用户报的两件事：导出要自动裁白边、marker 标签离胶图的空隙太宽且 `gap` 像没生效 | 导出 + 裁边做成 `label` 的默认步骤（纯 stdlib PNG 解码/裁边/编码，`selftest` 10 项）；泳道带宽从「胶图宽 ÷ 泳道数」改成相邻泳道中心距的中位数 —— 同一个 `gap: 4`，实测空隙 **18.0 pt → 4.5 pt** | [`skills/doing-sds-page/`](skills/doing-sds-page/) |
 | 2026-10-13 在 `IMG_1464 (1).jpeg`（手机拍的胶）上的实跑：自动找胶/转正/裁切/写字全流程，以及踩到的坑（density 二次放大字号、`-strip` 吃 dpi、`-stroke` 吃黑字、整块胶当泳道、胶外局部背景、光晕压字） | 照片路这条 skill（探测判据、自适应留白、白边字、selftest 10 项） | [`skills/doing-sds-page-photo/`](skills/doing-sds-page-photo/) |
+| 2026-10-13 用户口径：mini-gel 胶体 7.2×8.6 cm；成品 PNG 用**实际尺寸**（宽定标）、字号默认 **16 px**、默认 **96 dpi**；marker/label 对齐照 `label_gel.py`。实测发现固定 px 字号 + 96 dpi 下密梯子的标签会撞（相邻条带 ~11 px），处置写进 blacklist | `assets/gels/mini-gel.json`、`render` 的定标与 px 单位 | [`skills/doing-sds-page-photo/`](skills/doing-sds-page-photo/) |
 | 2026-10-13 用户报「标出的 3 与 4 之间实际有 4 条泳道、5 与 6 之间有 2 条」→ 只用一套阈值找泳道会把只剩一条淡带的泳道整条漏掉（15 条探成 9 条）；以及「标注 schema 参考 label_gel.py，不要重复造轮子」 | 泳道探测改成两套阈值（条带行严格 / 泳道宽松）＋宽 run 劈开＋行结构验伪＋按间距补位（标 interp）；两个 JSON 与 `label_gel.py` **同一套 schema**，`lane_pitch` 直接 import 复用；合成胶回归测试进 selftest | [`skills/doing-sds-page-photo/`](skills/doing-sds-page-photo/) |
 | 雅酶（epizyme）WJ101 / WJ103 预染 Marker 的条带表（厂商产品页 + WJ10X 说明书，2026-10-12 取）与本机在用的 Tris-Tricine 配置 | 三个内置预设，**名字里带电泳体系**：`yasen-wj103-10-250kd-trisglycine`（11 条带 25/15 那一套）、`yasen-wj103-10-250kd-tristricine`（11 条带 21/14 那一套，来自本机配置）、`yasen-wj101-15-150kd-trisglycine`（9 条带）；`--preset` 直接出配置 | [`skills/doing-sds-page/assets/markers/`](skills/doing-sds-page/assets/markers/) |
 
@@ -30,7 +31,7 @@
 | skill | 用途 | references |
 |---|---|---|
 | [doing-sds-page](skills/doing-sds-page/SKILL.md) | 在 VectorCraft 工程里给胶图自动标 marker 分子量与泳道名：标记约定、两个配置 JSON（含内置 marker 预设与模版生成）、对齐规则、泳道带宽、图层布局、导出裁白边 | `labeling-conventions.md` · `vectorcraft-control-channel.md` |
-| [doing-sds-page-photo](skills/doing-sds-page-photo/SKILL.md) | 照片进、标注好的 PNG 出：自动找胶面（暗度/蓝度两判据）、按竖边倾角转正、自适应留白裁切、按两个 JSON 写字、dpi 可调；泳道用宽松判据+行结构验伪、补位标 interp；schema 与 `label_gel.py` 同一套 | `photo-labeling-conventions.md` |
+| [doing-sds-page-photo](skills/doing-sds-page-photo/SKILL.md) | 照片进、标注好的 PNG 出：自动找胶面（暗度/蓝度两判据）、按竖边倾角转正、自适应留白裁切、**按胶体预设的实际尺寸（mini-gel 8.6×7.2 cm）出图**、按两个 JSON 写字（字号单位 = 成品像素，默认 16 px）、默认 96 dpi；泳道用宽松判据+行结构验伪、补位标 interp；schema 与 `label_gel.py` 同一套 | `photo-labeling-conventions.md` |
 
 ## 安装
 

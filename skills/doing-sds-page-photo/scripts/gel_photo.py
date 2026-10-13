@@ -713,6 +713,35 @@ def preset_dir_candidates():
                         os.path.join(os.path.dirname(here), "doing-sds-page", "assets", "markers"))]
 
 
+def gel_dir_candidates():
+    skill = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return [os.path.join(skill, "assets", "gels")]
+
+
+def load_gel_preset(name):
+    """读 assets/gels/<名>.json：胶体物理尺寸（cm）。width_cm 定标，height_cm 只核对。"""
+    for d in gel_dir_candidates():
+        p = os.path.join(d, name + ".json")
+        if os.path.isfile(p):
+            with open(p, encoding="utf-8") as f:
+                cfg = json.load(f)
+            if not cfg.get("width_cm"):
+                raise RuntimeError("%s 里没有 width_cm" % p)
+            return cfg, p
+    have = []
+    for d in gel_dir_candidates():
+        if os.path.isdir(d):
+            have += sorted(os.path.splitext(f)[0] for f in os.listdir(d) if f.endswith(".json"))
+    raise RuntimeError("没有这个胶体预设：%s（可选：%s）" % (name, "、".join(have) or "无"))
+
+
+def parse_gel_cm(s):
+    v = [float(t) for t in s.lower().replace("x", " x ").replace("*", " x ").split() if t != "x"]
+    if len(v) != 2:
+        raise argparse.ArgumentTypeError("--gel-cm 要写成 宽x高，如 8.6x7.2（cm）")
+    return {"width_cm": v[0], "height_cm": v[1], "_source": "--gel-cm 命令行给定"}
+
+
 def load_preset(name):
     for d in preset_dir_candidates():
         p = os.path.join(d, name + ".json")
@@ -784,10 +813,18 @@ def cmd_render(args):
         ln, ln_labels = load_cfg(args.lanes, "泳道配置")
     font = args.font or pick_font(mk.get("font") or (ln or {}).get("font"))
     dpi = args.dpi
-    px_pt = dpi / 72.0
+    gel = parse_gel_cm(args.gel_cm) if args.gel_cm else load_gel_preset(args.gel)[0]
+    print("[i] 胶体预设 %s：宽 %.2f cm × 高 %.2f cm（%s）；输出 %d dpi" % (
+        gel.get("name", "命令行"), gel["width_cm"], gel["height_cm"], gel.get("_source", ""), dpi))
 
     gel_bb, _ = rotated_rect_bbox(info["rect_orig"], ang, (W0, H0), (W1, H1))
-    scale = (args.print_width_cm / 2.54 * dpi) / (gel_bb[2] - gel_bb[0]) if args.print_width_cm else 1.0
+    # 定标：让胶面横跨 width_cm/2.54×dpi 个像素 —— 成品 PNG 就是**实际尺寸**
+    scale = (gel["width_cm"] / 2.54 * dpi) / (gel_bb[2] - gel_bb[0])
+    implied_h = gel["width_cm"] * (gel_bb[3] - gel_bb[1]) / (gel_bb[2] - gel_bb[0])
+    if abs(implied_h - gel["height_cm"]) > 0.10 * gel["height_cm"]:
+        print("[!] 探测框的比例推出来高度 %.2f cm，预设写 %.2f cm（差 %.0f%%）—— "
+              "按宽度定标不受影响；要按你的数就用 --gel-cm，或调 --margin-frac / --rect。"
+              % (implied_h, gel["height_cm"], abs(implied_h - gel["height_cm"]) / gel["height_cm"] * 100))
     a2o = info["image"][0] / float(info["analysis"][0])
     ymid = (info["bbox_analysis"][1] + info["bbox_analysis"][3]) / 2.0
 
@@ -808,8 +845,8 @@ def cmd_render(args):
     # ---- 泳道名（schema 同 label_gel.py：gap = 文字底边离胶面顶边，align 相对泳道中心）
     items = []
     if ln_labels:
-        size = float(ln.get("size", 9))
-        gap = float(ln.get("gap", 0)) * px_pt
+        size = float(ln.get("size", 16))          # px（成品像素；label_gel 那边是画布 pt）
+        gap = float(ln.get("gap", 0))
         align = ln.get("align", "center")
         color = ln.get("color", "#000000")
         xf = ln.get("x_frac")
@@ -828,10 +865,10 @@ def cmd_render(args):
             if not t:
                 continue
             s = float(en.get("size", size))
-            tw, _th = text_extent(font, round(s * px_pt), t)
+            tw, _th = text_extent(font, round(s), t)
             tw = tw / scale
             ax = x - tw / 2.0 if align == "center" else (x if align == "left" else x - tw)
-            ay = gel_bb[1] - gap / scale - 0.21 * s * px_pt / scale       # 底边落在胶顶之上 gap
+            ay = gel_bb[1] - gap / scale - 0.21 * s / scale               # 底边落在胶顶之上 gap
             items.append((ax, ay, t, s, en.get("color", color)))
 
     # ---- marker 分子量（schema 同 label_gel.py：marker_lane / marker_lane_x / lane_width /
@@ -851,10 +888,10 @@ def cmd_render(args):
         mid = (min(lane_x) + max(lane_x)) / 2.0
         left_side = mx < mid
         edge = mx if mk.get("lane_edge") == "inner" else (mx - lw / 2.0 if left_side else mx + lw / 2.0)
-        gap = float(mk.get("gap", 4)) * px_pt
-        size = float(mk.get("size", 9))
+        gap = float(mk.get("gap", 4))                  # px
+        size = float(mk.get("size", 16))               # px
         print("[i] 泳道带宽 ≈%.1f px(分析)（%s）；marker 泳道 x=%.1f（泳道区中线 %.1f 的%s边）"
-              "→ 带边 %.1f → %s对齐，锚点离带边 %g pt" % (
+              "→ 带边 %.1f → %s对齐，锚点离带边 %g px（成品像素）" % (
                   lw / a2o, "来自 markers.lane_width" if mk.get("lane_width") else
                   "相邻泳道中心距的中位数", mx, mid, "左" if left_side else "右", edge,
                   "右" if left_side else "左", float(mk.get("gap", 4))))
@@ -890,11 +927,11 @@ def cmd_render(args):
             if not t:
                 continue
             s = float(en.get("size", size))
-            tw, _th = text_extent(font, round(s * px_pt), t)
+            tw, _th = text_extent(font, round(s), t)
             tw = tw / scale
             _, yy = rot_pt(info["bbox_analysis"][0] * a2o, row * a2o)
             ax = (edge - gap / scale - tw) if left_side else (edge + gap / scale)
-            ay = yy + 0.35 * s * px_pt / scale              # 文字竖直中心对条带
+            ay = yy + 0.35 * s / scale                      # 文字竖直中心对条带
             items.append((ax, ay, t, s, en.get("color", mk.get("color", "#000000"))))
 
     # ---- 外扩留白（按文字真实包围盒）→ 裁切 → 写字
@@ -902,12 +939,12 @@ def cmd_render(args):
     pad = max(6.0, base_m * 0.4)
     need = {"l": 0.0, "r": 0.0, "t": 0.0, "b": 0.0}
     for ax, ay, t, s, _c in items:
-        tw, th = text_extent(font, round(s * px_pt), t)
+        tw, th = text_extent(font, round(s), t)
         tw, th = tw / scale, th / scale
         need["l"] = max(need["l"], gel_bb[0] - ax)
         need["r"] = max(need["r"], ax + tw - gel_bb[2])
-        need["t"] = max(need["t"], gel_bb[1] - (ay - 0.79 * s * px_pt / scale))
-        need["b"] = max(need["b"], (ay + 0.21 * s * px_pt / scale) - gel_bb[3])
+        need["t"] = max(need["t"], gel_bb[1] - (ay - 0.79 * s / scale))
+        need["b"] = max(need["b"], (ay + 0.21 * s / scale) - gel_bb[3])
     L = base_m + max(0.0, need["l"] - base_m + pad)
     R = base_m + max(0.0, need["r"] - base_m + pad)
     T = base_m + max(0.0, need["t"] - base_m + pad)
@@ -928,9 +965,12 @@ def cmd_render(args):
     cmd = annotate_cmd(base, out_items, font, None if args.no_outline else args.outline)
     cmd += ["-units", "PixelsPerInch", "-density", str(dpi), args.out]
     _run(cmd)
-    print("输出 %s（%d×%d px, %d dpi%s；%d 条文字）" % (
-        args.out, int(round(crop_w * scale)), int(round(crop_h * scale)), dpi,
-        ", 胶面打印宽 %.1f cm" % args.print_width_cm if args.print_width_cm else "", len(out_items)))
+    gel_w_px, gel_h_px = (gel_bb[2] - gel_bb[0]) * scale, (gel_bb[3] - gel_bb[1]) * scale
+    print("输出 %s（%d×%d px, %d dpi；%d 条文字）" % (
+        args.out, int(round(crop_w * scale)), int(round(crop_h * scale)), dpi, len(out_items)))
+    print("[i] 实际尺寸：胶面 %.2f×%.2f cm（%d×%d px）· 成品 %.2f×%.2f cm（含标签留白）" % (
+        gel["width_cm"], implied_h, int(round(gel_w_px)), int(round(gel_h_px)),
+        crop_w * scale / dpi * 2.54, crop_h * scale / dpi * 2.54))
     if args.debug:
         draw_debug(args.image, info, lb, args.debug)
         print("debug 覆盖图:", args.debug)
@@ -1245,8 +1285,9 @@ def main(argv=None):
     r.add_argument("--markers", help="marker 配置 JSON")
     r.add_argument("--preset", help="用内置预设名（先 --list-presets）")
     r.add_argument("--lanes", help="泳道配置 JSON")
-    r.add_argument("--dpi", type=int, default=300)
-    r.add_argument("--print-width-cm", type=float, default=8.0, help="胶面打印宽度（默认 8 cm；给的 dpi 决定像素）")
+    r.add_argument("--dpi", type=int, default=96, help="成品 PNG 的 dpi（默认 96；像素数 = 胶面 cm/2.54×dpi）")
+    r.add_argument("--gel", default="mini-gel", help="胶体尺寸预设（assets/gels/*.json，默认 mini-gel）")
+    r.add_argument("--gel-cm", help="直接给胶体尺寸 宽x高（cm），如 8.6x7.2，压过 --gel")
     r.add_argument("--angle", type=float, default=None)
     r.add_argument("--no-rotate", action="store_true")
     r.add_argument("--margin-frac", type=float, default=0.05, help="四周外扩（占胶面长边比例，默认 0.05）")
