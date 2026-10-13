@@ -70,6 +70,24 @@ hub 那套三段式标识符（`owner/repo/skills/<名>`）取不到本包，装
 ## remote
 
 ```bash
-lab       ssh://wangfanlin1@10.10.74.242/volume1/homes/wangfanlin1/AgentSkill/AgentSkill-DoingSDSPage.git
-tailscale ssh://wangfanlin1@100.107.237.60/volume1/homes/wangfanlin1/AgentSkill/AgentSkill-DoingSDSPage.git
+lab       ssh://***@10.10.74.242/volume1/homes/wangfanlin1/AgentSkill/AgentSkill-DoingSDSPage.git
+tailscale ssh://***@100.107.237.60/volume1/homes/wangfanlin1/AgentSkill/AgentSkill-DoingSDSPage.git
 ```
+
+## 参考过的代码仓库（与许可）
+
+本仓库自己的代码与文档按 **[MIT](LICENSE)**（`LICENSE`，2026）。写这两条 skill 时读过或用过的外部东西，
+按性质分三类逐条列出 —— 别把它们混成一句「参考了 XX」：
+
+| 仓库 / 依赖 | 许可 | 性质 |
+|---|---|---|
+| [ImageMagick](https://github.com/ImageMagick/ImageMagick)（本机 7.1.1-44） | ImageMagick License（与 Apache-2.0 兼容） | **运行时依赖**：照片路所有像素活（转正/裁切/缩放/写字/写 dpi/读 PPM）都调它的 `magick` 命令；本仓库**不包含**它的代码或二进制，装它另按它自己的许可 |
+| [mattaq31/GelGenie](https://github.com/mattaq31/GelGenie)（Aquilina et al., *Nat Commun* **16**, 4087, 2025） | Apache-2.0 | **只读参考**：读了论文、README 与包结构，确认「凝胶 AI 模型只做**条带**像素分割，**泳道**是规则算法从 band map 推出来的」——据此决定照片路不引模型、自己写规则链路。**未复制其代码**（若以后真要嵌它的 U-Net 权重，得按 Apache-2.0 保留署名并单独说明） |
+| [weenke/gel-analysis](https://github.com/weenke/gel-analysis) | MIT | **只读参考**：GelGenie 之上做泳道分组、smiling 校正，以及它的实测坑（ladder 泳道不参与跨泳道行分组）。**未复制其代码** |
+| 本 pack 自己的 [`skills/doing-sds-page`](skills/doing-sds-page/)（`label_gel.py`） | 同本仓库 MIT | **代码复用**：照片路按相对路径 import 它的 `lane_pitch()`（不重写）；两个 JSON 的 schema 与对齐口径也照它对齐，所以同一份配置文件两边都能跑 |
+| 雅酶（epizyme）WJ101 / WJ103 预染 Marker 条带表 | 厂商产品页 / 说明书 | **数据**：三个内置预设照厂商表抄写，出处与取用日期写在各 JSON 的 `_source` 字段里 |
+
+照片路**评估过但没有采用**的路线：[GelGenie](https://github.com/mattaq31/GelGenie) / YOLO11-Seg
+（*Anal. Chim. Acta* 2026, doi:10.1016/j.aca.2026.345293）这类深度学习条带分割模型 ——
+它们回答的是「条带在哪」，而贴标签要的是「泳道在哪」；引模型/权重会把这条 skill 变成要装环境的路线，
+而现在的选择是 `python3` + ImageMagick（都是系统级、`doctor` 一条命令可验）。
