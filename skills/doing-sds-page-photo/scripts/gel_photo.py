@@ -455,6 +455,83 @@ def fill_gaps(cx, widths, pitch, tol=0.3, max_k=8):
     return out, skipped
 
 
+def lane_row_profile(gray, w, c, half, ya, yb):
+    """泳道内**沿 x 平均**的行剖面（ImageJ 的 Plot Profile 就是这么量的）。
+
+    比「每行数几个低于阈值的像素」强在哪：淡带可能一个像素都不过阈值，却仍是平均灰度上
+    一个清楚的包；两条挨着的带之间那个谷也不会被抹掉。实测 Tris-Tricine 的 21/20 kD：
+    二值计数只给 1 条，沿 x 平均给 2 条。
+    """
+    xa, xb = max(0, int(round(c - half))), min(w - 1, int(round(c + half)))
+    n = max(1, xb - xa + 1)
+    return [sum(gray[y * w + x] for x in range(xa, xb + 1)) / float(n) for y in range(ya, yb)]
+
+
+def peaks_in_profile(prof, lo, base_win, min_prom, min_sep):
+    """平均剖面上找条带峰（先减宽窗基线 = top-hat，再取局部极大）。
+
+    lo = 剖面第一行对应的 y；min_prom = 显著度下限（灰度级）；min_sep = 两峰最小间隔（格单位）。
+    返回 [(行 y, 半高宽)]；半高宽就是条带粗细，两条并成一条时它明显更宽（见 fat_rows）。
+    """
+    n = len(prof)
+    if n < 5:
+        return []
+    win = max(3, int(round(base_win)))
+    ink = []
+    for i in range(n):
+        a, b = max(0, i - win), min(n, i + win + 1)
+        ink.append(sum(prof[a:b]) / (b - a) - prof[i])          # 越暗 → 越大
+    sm = [sum(ink[max(0, i - 1):min(n, i + 2)]) / len(ink[max(0, i - 1):min(n, i + 2)])
+          for i in range(n)]                                   # 只做 3 行轻平滑：
+    # 重平滑会把只有 2–3 px 高的窄带（高分子量那几条）直接抹平（实测 250 kD 就是这么丢的）。
+    # 两端各留一段不取峰：top-hat 的基線在边界处被截断，胶的上下边缘渐变会被认成一条带
+    # （实测最底部凭空多出一条「带」，其实是胶的下缘）。顶边另由 ignore_top 挡一道。
+    a_margin, b_margin = max(2, int(0.5 * win)), win
+    cands = [i for i in range(1, n - 1)
+             if sm[i] >= sm[i - 1] and sm[i] >= sm[i + 1] and sm[i] >= min_prom
+             and (sm[i] > sm[i - 1] or sm[i] > sm[i + 1])
+             and a_margin <= i <= n - 1 - b_margin]
+    keep = []
+    for i in cands:                                            # 平台/锯齿 → 合并邻近候选
+        if keep and i - keep[-1] <= min_sep:
+            if sm[i] > sm[keep[-1]]:
+                keep[-1] = i
+        else:
+            keep.append(i)
+    out = []
+    for i in keep:
+        a, b = i, i
+        while a > 0 and sm[a - 1] > sm[i] / 2.0:
+            a -= 1
+        while b + 1 < n and sm[b + 1] > sm[i] / 2.0:
+            b += 1
+        out.append((lo + i, max(1.0, b - a + 1.0)))
+    return out
+
+
+def band_rows_from_gray(gray, w, c, half, ya, yb, scale):
+    """一条泳道的条带行 = 沿 x 平均的剖面里的峰（`scale` = 该栅格相对分析尺度的倍数）。"""
+    # 参数是拿本胶实测调出来的（行距 9.3 分析 px）：基线窗 ~2 倍行距（太宽会把并带那条的
+    # 显著度吃掉 —— 实测 40 px 窗时 250 kD 的显著度从 24 掉到 -1.7）、显著度 ≥4 灰度级。
+    return peaks_in_profile(lane_row_profile(gray, w, c, half, ya, yb), ya,
+                            base_win=max(8, int(round(20 * scale))),
+                            min_prom=4.0, min_sep=max(2.0, 3.0 * scale))
+
+
+def group_rows(rows, span):
+    """按「每条标签盖几条带」把行分组 → 每条标签的落点（组内均值）。
+
+    `span[i]` = 第 i 条标签盖几条带（markers 里 `"rows": 2` 就是盖两条，21/20 kD 那种并着跑的）。
+    """
+    eff, ri = [], 0
+    for k in span:
+        grp = rows[ri:ri + k]
+        ri += k
+        if grp:
+            eff.append(sum(grp) / float(len(grp)))
+    return eff
+
+
 def fat_rows(bands, k=1.6):
     """哪几行明显比同一条泳道的其他行厚 —— 一条行里塞了两条分子量接近的带（21/20 kD 这种）。
 
@@ -523,7 +600,7 @@ def lanes_and_bands(path, rect, angle, longest=700, ignore_top=0.12, ignore_bott
 
     # 条带行（尤其梯子）在 700 尺度上分不开：另用一套更细的栅格扫行，再换算回分析尺度。
     # 泳道探测仍用 --longest（够用且快），只有行剖面吃到这个细栅格。
-    rows_scale, rows_gray, rows_thr = 1.0, None, band_thr
+    rows_scale, rows_gray = 1.0, None
     if row_longest and row_longest > longest:
         w_hi, h_hi, rgb_hi = read_ppm(path, row_longest)
         if w_hi > w:
@@ -535,7 +612,6 @@ def lanes_and_bands(path, rect, angle, longest=700, ignore_top=0.12, ignore_bott
             nn_hi = len(vals_hi) or 1
             med_hi = vals_hi[nn_hi // 2]
             mad_hi = sorted(abs(v - med_hi) for v in vals_hi)[nn_hi // 2]
-            rows_thr = med_hi - max(8, 3.0 * 1.4826 * mad_hi)
     cols = [0] * (x1 - x0 + 2)
     for y in range(max(0, ytop), min(h, ybot + 1)):
         row = y * w
@@ -595,16 +671,13 @@ def lanes_and_bands(path, rect, angle, longest=700, ignore_top=0.12, ignore_bott
     bands, bands_hi = [], []
     for c, wd, _it in marks:
         half = max(3, int(round(0.5 * wd)))     # ±半条泳道宽：±整条宽 = ±一个间距，
-        xs = range(max(0, int(c - half)), min(w, int(c + half) + 1))   # 会把邻道的带卷进来
-        prof = [sum(1 for x in xs if m_strict[y * w + x]) for y in range(max(0, ytop), min(h, y1 + 1))]
-        bands.append([(r[0], r[1]) for r in clusters(prof, ytop, max(2, int(0.25 * (2 * half))))])
+        bands.append(band_rows_from_gray(gray, w, c, half,          # 会把邻道的带卷进来
+                                         max(0, ytop), min(h, y1 + 1), 1.0))
         if rows_gray is not None:
-            ch, half_hi = int(round(c * rows_scale)), max(3, int(round(0.5 * wd * rows_scale)))
-            xs_hi = range(max(0, ch - half_hi), min(w_hi, ch + half_hi + 1))
-            prof_hi = [sum(1 for x in xs_hi if rows_gray[y * w_hi + x] < rows_thr)
-                       for y in range(int(round(ytop * rows_scale)), min(h_hi, int(y1 * rows_scale) + 1))]
-            rows_hi = clusters(prof_hi, ytop * rows_scale, max(2, int(0.25 * (2 * half_hi))))
-            bands_hi.append([(r[0], r[1]) for r in rows_hi])
+            half_hi = max(3, int(round(0.5 * wd * rows_scale)))
+            bands_hi.append(band_rows_from_gray(rows_gray, w_hi, c * rows_scale, half_hi,
+                                                int(round(ytop * rows_scale)),
+                                                min(h_hi, int(y1 * rows_scale) + 1), rows_scale))
     cx_s = [c for c, _, _ in marks]
     if bands_hi:                       # 细栅格扫出来的行是唯一真相，换算回分析尺度对外给
         bands = [[(r[0] / rows_scale, r[1] / rows_scale) for r in b] for b in bands_hi]
@@ -755,6 +828,27 @@ def lane_pitch(lane_x):
 
 
 _EXTENT = {}
+
+
+_INKH = {}
+
+
+def ink_height(font, px, sample="250kD"):
+    """文字**墨迹**高（去掉字体自带的行内留白）。
+
+    判断「两个标签会不会叠字」要用这个，不能用 `label:` 的框高 —— 框里有字体的上下留白
+    （8 pt @300dpi：框高 33 px，墨迹只有 23 px），拿框高比会把本来就放得下的相邻标签也报警。
+    """
+    key = (font, px)
+    if key in _INKH:
+        return _INKH[key]
+    try:
+        h = int(_run([MAGICK, "-font", font or "Arial", "-pointsize", str(int(px)),
+                      "label:" + sample, "-trim", "-format", "%h", "info:"], False))
+    except Exception:
+        h = int(round(0.72 * px))
+    _INKH[key] = h
+    return h
 
 
 def text_extent(font, px, text):
@@ -1004,6 +1098,11 @@ def cmd_render(args):
             print("[i] marker_lane 未给 → 自动选条带最多的第 %d 条（%d 条带）"
                   % (idx + 1, len(lb["bands"][idx])))
         idx = max(0, min(idx, len(lb["bands"]) - 1))
+        # 一条标签可以盖 n 条带（默认 1）：分子量太近、并着跑的那对（21/20 kD）写成
+        # {"text": "21/20 kD", "rows": 2}，配对时吃掉 2 条带、标签落在它们中间 —— 条目数
+        # 就不再要求等于**条带数**，而是等于**带数之和**，这样「拒绝硬配」这道闸仍然有效。
+        span = [max(1, int(as_entry(e, mk).get("rows", 1))) for e in mk_labels]
+        need_rows = sum(span)
         bs = lb["bands"][idx]
         rows = [b[0] for b in bs]
         ths = sorted(b[1] for b in bs)
@@ -1011,7 +1110,7 @@ def cmd_render(args):
         fat = fat_rows(bs)
         print("[i] marker 用第 %d 条泳道（x=%.1f，细栅格扫到 %d 条带：%s）"
               % (idx + 1, lane_x[idx], len(rows), [round(r, 1) for r in rows]))
-        if fat:
+        if fat and not any(k >= 2 for k in span):      # 已用 rows:2 声明过并带就不再唠叨
             mm_apx = gel["width_cm"] * 10.0 / max(1e-6, (gel_bb[2] - gel_bb[0]) / a2o)   # 分析 px → mm
             sep_mm = max(0.0, (max(b[1] for b in bs) - med_th)) * mm_apx
             print("[!] 其中 %s（行 y × 厚/中位数）明显偏厚 —— 很可能是**两条分子量接近的带并成了一条**"
@@ -1024,8 +1123,9 @@ def cmd_render(args):
                   % (", ".join("%.1f ×%.1f" % f for f in fat), sep_mm, size, size / 72.0 * 25.4))
         yf, yp = mk.get("y_frac"), mk.get("y_px")
         if yp:
-            if len(yp) != len(mk_labels):
-                raise RuntimeError("markers.y_px 有 %d 个，labels 有 %d 个" % (len(yp), len(mk_labels)))
+            if len(yp) != need_rows:
+                raise RuntimeError("markers.y_px 有 %d 个，labels 需要 %d 个（rows 字段求和）"
+                                   % (len(yp), need_rows))
             if mk.get("snap", False):       # 默认不吸附：现在的自动行在密集条带上有 ~0.7 mm 系统偏差，
                 tol = 0.25 * (lb.get("row_spacing") or 8.0)   # 吸附会把人在图上读出来的准值拉偏
                 rows = [min(rows, key=lambda r: abs(r - float(v)))
@@ -1037,27 +1137,45 @@ def cmd_render(args):
             print("[i] marker 行用 markers.y_px（分析尺度 y，来自 debug 图的标尺）；吸附到最近条带峰：%s"
                   % ("无移动" if not mv else "移动 %s" % mv))
         elif yf:
-            if len(yf) != len(mk_labels):
-                raise RuntimeError("markers.y_frac 有 %d 个，labels 有 %d 个" % (len(yf), len(mk_labels)))
+            if len(yf) != need_rows:
+                raise RuntimeError("markers.y_frac 有 %d 个，labels 需要 %d 个（rows 字段求和）"
+                                   % (len(yf), need_rows))
             gy0, gy1 = info["bbox_analysis"][1], info["bbox_analysis"][3]
             rows = [gy0 + f * (gy1 - gy0) for f in yf]
-        elif len(rows) != len(mk_labels):
+        elif len(rows) != need_rows:
             hint = ("自动探到 %d 条带、配置有 %d 个分子量；这条梯子的条带在像素上分不开，"
                     "按位置配对会整体错位，所以默认不出图。\n"
                     "  ① 手动标定（推荐）：`probe --debug debug.png` 出的图左侧有 y 标尺，照着把每条带的 y\n"
                     "     写进 markers.json 的 \"y_px\"（数组，从上到下、与 labels 一一对应，给大概值即可，\n"
                     "     脚本会吸附到最近的条带峰），再跑一次。\n"
                     "  ② 换对预设：这管 marker 的条带数要与 labels 一致。\n"
-                    "  ③ 探到的**比 labels 少**：多半是有一对分子量接近的带并成了一条（21/20 kD 这种），\n"
+                    "  ③ 数对不上且只差 1：多半是有一对分子量接近的带（21/20 kD）并着跑，\n"
+                    "     把那一对写成一条标签并在它上面加 \"rows\": 2（它吃 2 条带、落在两者中间）；\n"
                     "     把那一对合成一条标签（labels 里写 \"20/21 kD\"）即可，别硬凑。\n"
                     "  ④ 硬配（可能错位）：加 --pair-force。"
-                    % (len(rows), len(mk_labels)))
+                    % (len(rows), need_rows))
             if not args.pair_force:
                 raise RuntimeError(hint)
             print("!! --pair-force：按位置硬配前 %d 个\n%s" % (min(len(rows), len(mk_labels)), hint))
             rows = rows[: len(mk_labels)]
+        # 分组：每条标签吃掉 span[i] 条带、落在它们中间（{"rows": 2} 的并带标签就是这么来的）
+        eff = group_rows(rows, span)
+        # 叠字检查要用**墨迹**高比行距（不是框高：框里含字体留白，拿它比会把放得下的也报出来）
+        if len(eff) >= 2:
+            to_out = a2o * scale
+            ink = ink_height(font, int(round(pt2px(size))))
+            tight = [(round(eff[i], 1), round(eff[i + 1] - eff[i], 1))
+                     for i in range(len(eff) - 1)
+                     if (eff[i + 1] - eff[i]) * to_out < 0.85 * ink]
+            if tight:
+                gap_out = min((eff[i + 1] - eff[i]) * to_out for i in range(len(eff) - 1))
+                print("[!] 有 %d 处相邻标签会叠字：%s（上行 y, 行距分析 px）"
+                      % (len(tight), ", ".join("%.1f(+%.1f)" % t for t in tight)))
+                print("    墨迹高 %d px、最近的行距只有 %.0f px（%d dpi）→ 两行都不叠的话字号得 ≤ %.1f pt"
+                      % (ink, gap_out, dpi, gap_out * 72.0 / dpi))
+                print("    更省事：把那一对写成一条标签，并给它加 \"rows\": 2（吃 2 条带、落在两者中间）。")
         _, my = rot_pt(info["bbox_analysis"][0] * a2o, rows[0] * a2o) if rows else (0, 0)
-        for row, e in zip(rows, mk_labels):
+        for row, e in zip(eff, mk_labels):
             en = as_entry(e, mk)
             t = en.get("text", "")
             if not t:
@@ -1461,7 +1579,14 @@ def selftest():
     assert fat_rows([]) == []
     ok += 1
 
-    print("selftest %d/13 通过" % ok)
+    # 14) 并带标签的行分组：{"rows": 2} 的标签吃两条带、落在它们中间；其余一一对应
+    assert group_rows([10, 20, 30], [1, 2]) == [10.0, 25.0]
+    assert group_rows([10, 20, 30], [1, 1, 1]) == [10.0, 20.0, 30.0]
+    assert group_rows([10, 20], [1]) == [10.0]
+    assert group_rows([], [1, 2]) == []
+    ok += 1
+
+    print("selftest %d/14 通过" % ok)
     return 0
 
 
