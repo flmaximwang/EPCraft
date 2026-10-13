@@ -64,7 +64,7 @@ printf '{"env_root": "<用户选的位置>"}' > ~/.config/doing-sds-page-photo/e
 
 ```bash
 python3 scripts/gel_photo.py doctor [--env-root <用户选的位置>]   # python / magick / 字体 / 预设目录 / 环境根
-python3 scripts/gel_photo.py selftest                            # 算法自检，10 项
+python3 scripts/gel_photo.py selftest                            # 算法自检，13 项
 ```
 `doctor` 缺什么就直接说怎么补，退出码非 0 表示环境不齐；「环境根」那行会标出读的是哪个来源
 （`--env-root` / `GEL_PHOTO_ENV_ROOT` / 本机配置文件）。
@@ -127,6 +127,13 @@ python3 scripts/gel_photo.py render <照片> --out out.png \
 ② 泳道号是否落在浅色留白上、个数与位置对不对（对着 `--debug` 覆盖图数）；
 ③ dpi 是否真写进去（`magick identify -format "%x" out.png`，300 dpi 显示 118.11 像素/厘米，是同一个数）。
 本次实测：`pHYs=(11811,11811,1)`。
+
+**Step 3a · 挨得极近的一对带（21/20 kD 这种）：合成一条标签**
+
+分子量接近的一对带在胶上只差 ~1.6 mm，而 8 pt 字高 2.8 mm —— **同一侧竖直方向放不下两行字**，
+换 dpi 也没用（字号与间距同比例缩放）。脚本会把「厚 ≥1.6× 中位数」的行报出来（`fat_rows`），
+看到这个提示就把配置里那一对写成一条：`labels: [..., "21/20 kD", ...]`（同时少一个 `y_px`）。
+条目数与实测条带数一对上，配对自动正确。要两条都标，得把一个标签挪到梯子另一侧并拉引线。
 
 **Step 3b · 条带数与配置不一致时：默认不出图，走手动标定**
 

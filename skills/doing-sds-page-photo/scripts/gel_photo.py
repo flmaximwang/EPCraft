@@ -455,6 +455,19 @@ def fill_gaps(cx, widths, pitch, tol=0.3, max_k=8):
     return out, skipped
 
 
+def fat_rows(bands, k=1.6):
+    """哪几行明显比同一条泳道的其他行厚 —— 一条行里塞了两条分子量接近的带（21/20 kD 这种）。
+
+    返回 [(行 y, 厚/中位数)]。宽的行本来也可能只是条带粗，所以阈值给得松（1.6×），
+    只当提示用，不拿来拒绝出图。
+    """
+    th = sorted(w for _, w in bands)
+    med = th[len(th) // 2] if th else 0.0
+    if not med:
+        return []
+    return [(round(c, 1), round(w / med, 1)) for c, w in bands if w >= k * med]
+
+
 def snap_to_anchors(cx, anchors, pitch):
     """把泳道中心吸附到锚点上（锚点 = 条带最密那一行的墨 run）。偏超过半个间距就不动。
 
@@ -581,12 +594,12 @@ def lanes_and_bands(path, rect, angle, longest=700, ignore_top=0.12, ignore_bott
               % (want, len(marks)))
     bands, bands_hi = [], []
     for c, wd, _it in marks:
-        half = max(3, int(wd))
-        xs = range(max(0, int(c - half)), min(w, int(c + half) + 1))
+        half = max(3, int(round(0.5 * wd)))     # ±半条泳道宽：±整条宽 = ±一个间距，
+        xs = range(max(0, int(c - half)), min(w, int(c + half) + 1))   # 会把邻道的带卷进来
         prof = [sum(1 for x in xs if m_strict[y * w + x]) for y in range(max(0, ytop), min(h, y1 + 1))]
         bands.append([(r[0], r[1]) for r in clusters(prof, ytop, max(2, int(0.25 * (2 * half))))])
         if rows_gray is not None:
-            ch, half_hi = int(round(c * rows_scale)), max(3, int(round(wd * rows_scale)))
+            ch, half_hi = int(round(c * rows_scale)), max(3, int(round(0.5 * wd * rows_scale)))
             xs_hi = range(max(0, ch - half_hi), min(w_hi, ch + half_hi + 1))
             prof_hi = [sum(1 for x in xs_hi if rows_gray[y * w_hi + x] < rows_thr)
                        for y in range(int(round(ytop * rows_scale)), min(h_hi, int(y1 * rows_scale) + 1))]
@@ -594,7 +607,7 @@ def lanes_and_bands(path, rect, angle, longest=700, ignore_top=0.12, ignore_bott
             bands_hi.append([(r[0], r[1]) for r in rows_hi])
     cx_s = [c for c, _, _ in marks]
     if bands_hi:                       # 细栅格扫出来的行是唯一真相，换算回分析尺度对外给
-        bands = [[(r[0] / rows_scale, r[1]) for r in b] for b in bands_hi]
+        bands = [[(r[0] / rows_scale, r[1] / rows_scale) for r in b] for b in bands_hi]
     row_spacing = None
     for b in bands:
         if len(b) >= 3:
@@ -991,9 +1004,24 @@ def cmd_render(args):
             print("[i] marker_lane 未给 → 自动选条带最多的第 %d 条（%d 条带）"
                   % (idx + 1, len(lb["bands"][idx])))
         idx = max(0, min(idx, len(lb["bands"]) - 1))
-        rows = [b[0] for b in lb["bands"][idx]]
+        bs = lb["bands"][idx]
+        rows = [b[0] for b in bs]
+        ths = sorted(b[1] for b in bs)
+        med_th = ths[len(ths) // 2] if ths else 0.0
+        fat = fat_rows(bs)
         print("[i] marker 用第 %d 条泳道（x=%.1f，细栅格扫到 %d 条带：%s）"
               % (idx + 1, lane_x[idx], len(rows), [round(r, 1) for r in rows]))
+        if fat:
+            mm_apx = gel["width_cm"] * 10.0 / max(1e-6, (gel_bb[2] - gel_bb[0]) / a2o)   # 分析 px → mm
+            sep_mm = max(0.0, (max(b[1] for b in bs) - med_th)) * mm_apx
+            print("[!] 其中 %s（行 y × 厚/中位数）明显偏厚 —— 很可能是**两条分子量接近的带并成了一条**"
+                  "（Tris-Tricine 的 21/20 kD 就是这样）。\n"
+                  "    估这一对挨着 ≈%.1f mm，而 %g pt 的字高 ≈%.1f mm —— 同侧竖直方向放不下两行字，"
+                  "\n    换 dpi 也没用（字号和间距按同一比例缩放）。所以：\n"
+                  "    ① 合成一条标签（推荐）：labels 里那一对写成 \"21/20 kD\"，labels 与 y_px 一起去掉一条，"
+                  "\n       条目数与条带数一对上，配对就自动正确；\n"
+                  "    ② 两条都标：得把一个标签挪到梯子**另一侧**再拉条引线（要的话说一声）。"
+                  % (", ".join("%.1f ×%.1f" % f for f in fat), sep_mm, size, size / 72.0 * 25.4))
         yf, yp = mk.get("y_frac"), mk.get("y_px")
         if yp:
             if len(yp) != len(mk_labels):
@@ -1020,7 +1048,9 @@ def cmd_render(args):
                     "     写进 markers.json 的 \"y_px\"（数组，从上到下、与 labels 一一对应，给大概值即可，\n"
                     "     脚本会吸附到最近的条带峰），再跑一次。\n"
                     "  ② 换对预设：这管 marker 的条带数要与 labels 一致。\n"
-                    "  ③ 硬配（可能错位）：加 --pair-force。"
+                    "  ③ 探到的**比 labels 少**：多半是有一对分子量接近的带并成了一条（21/20 kD 这种），\n"
+                    "     把那一对合成一条标签（labels 里写 \"20/21 kD\"）即可，别硬凑。\n"
+                    "  ④ 硬配（可能错位）：加 --pair-force。"
                     % (len(rows), len(mk_labels)))
             if not args.pair_force:
                 raise RuntimeError(hint)
@@ -1409,7 +1439,7 @@ def selftest():
     for n, b, m in test_annotate_geometry():
         if not b:
             raise AssertionError("对齐几何：%s —— %s" % (n, m))
-        ok += 1
+    ok += 1          # 一组 6 项算一项，免得分子分母对不上
 
     # 12) 泳道中心吸附锚点：空泳道被列投影的孤立尖峰钉在 308（真值 305），旁边那条
     #     因为宽 run 按自身宽度均分落在 319.6（真值 321.5）→ 11 和 12 挤成 11.6。
@@ -1425,7 +1455,13 @@ def selftest():
     assert snap_to_anchors([100.0], [], 18.0) == [100.0]
     ok += 1
 
-    print("selftest %d/12 通过" % ok)
+    # 13) 并带检测：一条行塞两条带（21/20 kD）时，那一行必须比同泳道其他行厚一截
+    assert fat_rows([(100, 6), (120, 6), (140, 6), (160, 15), (180, 6)]) == [(160, 2.5)]
+    assert fat_rows([(10, 5), (20, 5), (30, 5)]) == []      # 均匀的行不许误报
+    assert fat_rows([]) == []
+    ok += 1
+
+    print("selftest %d/13 通过" % ok)
     return 0
 
 
