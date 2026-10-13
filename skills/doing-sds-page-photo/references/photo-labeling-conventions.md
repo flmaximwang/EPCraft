@@ -18,7 +18,9 @@
 | `lane_edge` | `inner` = 用泳道中心当边缘（不偏半个带宽） | 无 |
 | `font` | 只有写**文件路径**（`.ttf/.ttc/.otf`）才生效；工程路的字体名（如 `Source Sans 3`）会被忽略并回退 Arial | Arial |
 | `labels` | **从上到下**，每条带一项：字符串或 `{"text","size","color","font"}`（后三个可省） | — |
-| `y_frac` | **照片路额外字段**：每条带的显式位置，0=胶面顶边、1=胶面底边（条带数对不上时用它校准） | 无 |
+| `y_px` | **照片路额外字段（手动标定的主力）**：每条带的 y，**分析尺度**（= `probe --debug` 图上 y 标尺的数），从上到下与 `labels` 一一对应 | 无 |
+| `snap` | `true` = 把 `y_px` 吸附到自动探到的最近条带行（容差 0.25×行距）。**默认 false**：自动行在密集条带上有 ~0.7 mm 系统性偏上，吸附会把你在图上读的准值拉偏 | false |
+| `y_frac` | **照片路额外字段**：每条带的显式位置，0=胶面顶边、1=胶面底边 | 无 |
 
 ### lanes.json
 
@@ -45,6 +47,19 @@
 `--gel-cm 8.6x7.2` 可以直接给（宽x高，cm），压过预设。字号是绝对像素，所以
 「同一物理尺寸 + 不同 dpi」不是等价图：96 dpi 的 16 px 字比 300 dpi 的 16 px 字**打印出来大 3 倍**。
 
+## 1c. 字号单位 = pt（dpi 无关）
+
+`size`/`gap` 是 **pt**（物理尺寸），脚本按 `--dpi` 换成像素：`px = pt/72 × dpi`。所以：
+
+| | 8 pt 在 96 dpi | 8 pt 在 300 dpi |
+|---|---|---|
+| 像素高 | ~11 px | ~33 px |
+| 占 8.6 cm 宽胶面 | 3.4% | 3.2%（相等，差的是取整） |
+| 成品物理尺寸 | 9.46×7.73 cm | 9.46×7.73 cm |
+
+历史教训：曾用「16 px」当字号，结果 96 dpi 下相当于 12 pt（密梯子标签上下相撞）、300 dpi 下只有 3.84 pt（太小）
+—— 同一份配置在两个 dpi 下比例完全不同。现在是 pt，默认 8 pt，落在两者中间。
+
 ## 2. 探测怎么做的（以及为什么这么选）
 
 **a) 认胶 —— 两个判据**
@@ -56,7 +71,12 @@
 - 掩膜先去毛刺，取最大且**不贴画面边**的连通域（灯箱相框、螺丝靠这条排掉），再按行/列覆盖率 50% 裁掉光晕毛边。
 - 倾角由左右竖边在中段 20%–80% 行上的最小二乘拟合给出。
 
-**b) 条带行 vs 泳道 —— 两套阈值，别混**
+**b) 条带行 vs 泳道 —— 两套阈值 + 两套栅格**
+
+行（尤其梯子的行）另外用**细栅格**（长边 1200）重扫一遍：700 尺度上梯子相邻条带只差 4–8 px，会糊成一条，
+行位置整体漂（实测 700 得 9 条、1200 得 11 条，真值 11 条）。泳道仍用 `--longest`（够用且快）。
+
+
 | | 阈值 | 用来干什么 |
 |---|---|---|
 | 严格 | 胶内中位数 − 3·1.4826·MAD（本次 147.7） | 找**条带行**（每条泳道自己的行剖面 → 峰簇中心） |
@@ -92,13 +112,13 @@ cd /Users/maxim/Documents/Experts/DoingSDSPage/skills/doing-sds-page-photo
 python3 scripts/gel_photo.py probe "/Users/maxim/Downloads/IMG_1464 (1).jpeg" \
         --debug /Users/maxim/Downloads/gel_demo/IMG_1464_debug.png
 
-# 2) 出成品（15 条泳道全部实测，0 条补位）
+# 2) 出成品（15 条泳道全部实测，0 条补位；marker 走手动标定 y_px）
 python3 scripts/gel_photo.py render "/Users/maxim/Downloads/IMG_1464 (1).jpeg" \
-        --out /Users/maxim/Downloads/gel_demo/IMG_1464_labeled.png \
-        --preset yasen-wj103-10-250kd-tristricine \
+        --out /Users/maxim/Downloads/gel_demo/IMG_1464_manual_96dpi.png \
+        --markers /Users/maxim/Downloads/gel_demo/markers_manual.json \
         --lanes /Users/maxim/Downloads/gel_demo/lanes.json --gel mini-gel --dpi 96
-# → 404×296 px / 96 dpi（胶面 8.60×6.70 cm，成品 10.70×7.83 cm）/ pHYs=(3779,3779,1)
-# 同一条命令换 --dpi 300 → 1145×893 px，物理尺寸不变，字相对变小、标签就不撞了
+# → 358×292 px / 96 dpi（胶面 8.60×6.70 cm，成品 9.46×7.73 cm）
+# 同一条命令换 --dpi 300 → 1117×913 px，**物理尺寸一模一样**（这就是 pt 字号的意义）
 
 # 3) 直接复用工程路写好的配置（schema 同一套，实测可用）
 python3 scripts/gel_photo.py render "/Users/maxim/Downloads/IMG_1464 (1).jpeg" --out /tmp/x.png \
@@ -121,7 +141,9 @@ python3 scripts/gel_photo.py selftest        # 10/10（含合成胶泳道探测�
 | 补位补出一堆 7 px 宽的假泳道（34 条） | 间距量自整块胶列剖面（偏小 14.4），宽 run 又没劈开 | 间距改量自「最密的一行」；宽 run 按间距均分 |
 | 幽灵泳道（该处什么都没有） | 胶面竖纹在宽松阈值下亮起来 | 行结构验伪：真条带是峰，竖纹是平的 |
 | 只探到一条「泳道」，宽 = 整块胶 | 用「比灯箱暗」找条带 → 整块胶都是命中 | 认胶用灯箱平面，找条带用胶内中位数 |
-| 梯子的分子量标签上下糊在一起 | 固定 16 px 字号 + 96 dpi：相邻条带只差 ~11 px | 提 dpi（192–300）、把 `markers.size` 降到 ~10 px、或只标关键几条带 |
+| 分子量标签整体错位一两条带 | 旧版在条带数与配置不等时**静默按位置硬配** | 现在默认拒绝出图；走 `y_px` 手动标定或换对预设 |
+| 梯子的分子量标签上下糊在一起 | 3 mm 的实际条带间距，低 dpi 下只有 ~11 px | 提 dpi、减小 `markers.size`、或只标关键几条带 |
+| 自动探的行比条带中心偏上 ~0.7 mm | 行 = 暗 run 的重心，受条带拖尾/模糊影响 | 要更准就 `y_px` 手动标（默认不吸附） |
 | 字大得离谱，9 pt 占满半张图 | magick 看到 density=300，把 `-pointsize` 又乘了 300/72 | 写字前 `-density 72`，dpi 留到最后写 |
 | PNG 没有 dpi，`identify` 显示 72 | `-strip` 把之后设的 `-density` 一起丢了（IM7） | 用 `+profile "*"`，别用 `-strip` |
 | 黑字被吃成白字 | `-stroke` 是画在字**上面**的 | 分两批：先整批白底、再整批黑字（0.07 em） |

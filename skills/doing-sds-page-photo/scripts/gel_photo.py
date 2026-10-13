@@ -372,6 +372,18 @@ def merge_near(runs, d=3.0):
     return out
 
 
+def snap_to_band(y, rows, spacing):
+    """把手动给的 y 吸附到最近的**实测条带行**（容差 = 相邻行距的 40%）。
+
+    手动标定时人对着 debug 图的标尺给个大概值就行，吸附负责落到带上。
+    """
+    if not rows:
+        return y
+    tol = max(2.0, 0.4 * (spacing or 8.0))
+    best = min(rows, key=lambda r: abs(r - y))
+    return best if abs(best - y) <= tol else y
+
+
 def pitch_from_row(m_strict, w, x0, x1, ytop, ybot, need=4):
     """泳道间距：找「条带最密的那一行」，量这一行里各条带中心距的中位数。
 
@@ -445,7 +457,7 @@ def fill_gaps(cx, widths, pitch, tol=0.3, max_k=8):
 
 def lanes_and_bands(path, rect, angle, longest=700, ignore_top=0.12, ignore_bottom=0.0,
                     cue="dark", thr=None, lane_mad_k=1.5, interp=True, want=None,
-                    min_loose_ink=6):
+                    min_loose_ink=6, row_longest=1200):
     """在胶面矩形里找泳道 x 与每条泳道的条带行。
 
     两套判据，别混：
@@ -478,6 +490,22 @@ def lanes_and_bands(path, rect, angle, longest=700, ignore_top=0.12, ignore_bott
 
     ytop, ybot = top, y1 - int((y1 - y0) * ignore_bottom)
     m_loose, m_strict = mask_at(lane_thr), mask_at(band_thr)
+
+    # 条带行（尤其梯子）在 700 尺度上分不开：另用一套更细的栅格扫行，再换算回分析尺度。
+    # 泳道探测仍用 --longest（够用且快），只有行剖面吃到这个细栅格。
+    rows_scale, rows_gray, rows_thr = 1.0, None, band_thr
+    if row_longest and row_longest > longest:
+        w_hi, h_hi, rgb_hi = read_ppm(path, row_longest)
+        if w_hi > w:
+            rows_scale = w_hi / float(w)
+            rows_gray = to_gray(w_hi, h_hi, rgb_hi)
+            vals_hi = sorted(rows_gray[y * w_hi + x]
+                             for y in range(int(y0 * rows_scale), min(h_hi, int(y1 * rows_scale) + 1))
+                             for x in range(int(x0 * rows_scale), min(w_hi, int(x1 * rows_scale) + 1)))
+            nn_hi = len(vals_hi) or 1
+            med_hi = vals_hi[nn_hi // 2]
+            mad_hi = sorted(abs(v - med_hi) for v in vals_hi)[nn_hi // 2]
+            rows_thr = med_hi - max(8, 3.0 * 1.4826 * mad_hi)
     cols = [0] * (x1 - x0 + 2)
     for y in range(max(0, ytop), min(h, ybot + 1)):
         row = y * w
@@ -519,14 +547,31 @@ def lanes_and_bands(path, rect, angle, longest=700, ignore_top=0.12, ignore_bott
     if want and len(marks) != want:
         print("!! 声明 %d 条泳道，实测+补位 %d 条（缺的在配置里用 lanes.x_frac 显式给位置）"
               % (want, len(marks)))
-    bands = []
+    bands, bands_hi = [], []
     for c, wd, _it in marks:
         half = max(3, int(wd))
         xs = range(max(0, int(c - half)), min(w, int(c + half) + 1))
         prof = [sum(1 for x in xs if m_strict[y * w + x]) for y in range(max(0, ytop), min(h, y1 + 1))]
         bands.append([(r[0], r[1]) for r in clusters(prof, ytop, max(2, int(0.25 * (2 * half))))])
+        if rows_gray is not None:
+            ch, half_hi = int(round(c * rows_scale)), max(3, int(round(wd * rows_scale)))
+            xs_hi = range(max(0, ch - half_hi), min(w_hi, ch + half_hi + 1))
+            prof_hi = [sum(1 for x in xs_hi if rows_gray[y * w_hi + x] < rows_thr)
+                       for y in range(int(round(ytop * rows_scale)), min(h_hi, int(y1 * rows_scale) + 1))]
+            rows_hi = clusters(prof_hi, ytop * rows_scale, max(2, int(0.25 * (2 * half_hi))))
+            bands_hi.append([(r[0], r[1]) for r in rows_hi])
     cx_s = [c for c, _, _ in marks]
+    if bands_hi:                       # 细栅格扫出来的行是唯一真相，换算回分析尺度对外给
+        bands = [[(r[0] / rows_scale, r[1]) for r in b] for b in bands_hi]
+    row_spacing = None
+    for b in bands:
+        if len(b) >= 3:
+            g = sorted(b[i + 1][0] - b[i][0] for i in range(len(b) - 1))
+            row_spacing = g[len(g) // 2]
+            break
     return {"lanes": [(round(c, 1), wd) for c, wd, _ in marks],
+            "rows_scale": rows_scale,
+            "row_spacing": row_spacing,
             "interp": [it for _, _, it in marks],
             "bands": bands, "pitch": (round(pitch, 2) if pitch else None),
             "y_range": (ytop, y1), "gel_median": med, "band_thr": round(band_thr, 1),
@@ -788,7 +833,8 @@ def cmd_probe(args):
             i, c, wid, len(bands), [int(b[0]) for b in bands]))
     if args.debug:
         draw_debug(args.image, info, lb, args.debug)
-        print("debug 覆盖图:", args.debug)
+        print("debug 覆盖图:", args.debug, "（红框=胶面，红/橙线=泳道，绿=细栅格探到的条带行，"
+              "左侧数字=分析尺度 y 标尺；手动标定照这个 y 写 markers.y_px）")
     return 0
 
 
@@ -814,6 +860,10 @@ def cmd_render(args):
     font = args.font or pick_font(mk.get("font") or (ln or {}).get("font"))
     dpi = args.dpi
     gel = parse_gel_cm(args.gel_cm) if args.gel_cm else load_gel_preset(args.gel)[0]
+
+    def pt2px(v):
+        """pt（物理尺寸，dpi 无关）→ 成品像素。字号/间距用 pt，才不会「改 dpi 就改字与胶的相对大小」。"""
+        return float(v) / 72.0 * dpi
     print("[i] 胶体预设 %s：宽 %.2f cm × 高 %.2f cm（%s）；输出 %d dpi" % (
         gel.get("name", "命令行"), gel["width_cm"], gel["height_cm"], gel.get("_source", ""), dpi))
 
@@ -845,8 +895,8 @@ def cmd_render(args):
     # ---- 泳道名（schema 同 label_gel.py：gap = 文字底边离胶面顶边，align 相对泳道中心）
     items = []
     if ln_labels:
-        size = float(ln.get("size", 16))          # px（成品像素；label_gel 那边是画布 pt）
-        gap = float(ln.get("gap", 0))
+        size = float(ln.get("size", 8))            # pt（与 label_gel.py 同口径，dpi 无关）
+        gap = pt2px(ln.get("gap", 0))
         align = ln.get("align", "center")
         color = ln.get("color", "#000000")
         xf = ln.get("x_frac")
@@ -864,7 +914,7 @@ def cmd_render(args):
             t = en.get("text", "")
             if not t:
                 continue
-            s = float(en.get("size", size))
+            s = pt2px(en.get("size", size))
             tw, _th = text_extent(font, round(s), t)
             tw = tw / scale
             ax = x - tw / 2.0 if align == "center" else (x if align == "left" else x - tw)
@@ -888,8 +938,8 @@ def cmd_render(args):
         mid = (min(lane_x) + max(lane_x)) / 2.0
         left_side = mx < mid
         edge = mx if mk.get("lane_edge") == "inner" else (mx - lw / 2.0 if left_side else mx + lw / 2.0)
-        gap = float(mk.get("gap", 4))                  # px
-        size = float(mk.get("size", 16))               # px
+        gap = pt2px(mk.get("gap", 4))
+        size = float(mk.get("size", 8))                # pt
         print("[i] 泳道带宽 ≈%.1f px(分析)（%s）；marker 泳道 x=%.1f（泳道区中线 %.1f 的%s边）"
               "→ 带边 %.1f → %s对齐，锚点离带边 %g px（成品像素）" % (
                   lw / a2o, "来自 markers.lane_width" if mk.get("lane_width") else
@@ -908,17 +958,39 @@ def cmd_render(args):
                   % (idx + 1, len(lb["bands"][idx])))
         idx = max(0, min(idx, len(lb["bands"]) - 1))
         rows = [b[0] for b in lb["bands"][idx]]
-        print("[i] marker 用第 %d 条泳道（x=%.1f，%d 条带）" % (idx + 1, lane_x[idx], len(rows)))
-        yf = mk.get("y_frac")
-        if yf:
+        print("[i] marker 用第 %d 条泳道（x=%.1f，细栅格扫到 %d 条带：%s）"
+              % (idx + 1, lane_x[idx], len(rows), [round(r, 1) for r in rows]))
+        yf, yp = mk.get("y_frac"), mk.get("y_px")
+        if yp:
+            if len(yp) != len(mk_labels):
+                raise RuntimeError("markers.y_px 有 %d 个，labels 有 %d 个" % (len(yp), len(mk_labels)))
+            if mk.get("snap", False):       # 默认不吸附：现在的自动行在密集条带上有 ~0.7 mm 系统偏差，
+                tol = 0.25 * (lb.get("row_spacing") or 8.0)   # 吸附会把人在图上读出来的准值拉偏
+                rows = [min(rows, key=lambda r: abs(r - float(v)))
+                        if abs(min(rows, key=lambda r: abs(r - float(v))) - float(v)) <= tol else float(v)
+                        for v in yp]
+            else:
+                rows = [float(v) for v in yp]
+            mv = [round(b - a, 1) for a, b in zip(yp, rows) if abs(a - b) > 0.6]
+            print("[i] marker 行用 markers.y_px（分析尺度 y，来自 debug 图的标尺）；吸附到最近条带峰：%s"
+                  % ("无移动" if not mv else "移动 %s" % mv))
+        elif yf:
             if len(yf) != len(mk_labels):
                 raise RuntimeError("markers.y_frac 有 %d 个，labels 有 %d 个" % (len(yf), len(mk_labels)))
             gy0, gy1 = info["bbox_analysis"][1], info["bbox_analysis"][3]
             rows = [gy0 + f * (gy1 - gy0) for f in yf]
         elif len(rows) != len(mk_labels):
-            print("!! 条带数对不上：探测到 %d 条，配置有 %d 个分子量 —— 按位置配前 %d 个（占位）。"
-                  % (len(rows), len(mk_labels), min(len(rows), len(mk_labels))))
-            print("   要正式出图：给 markers.y_frac 显式写每条带位置，或换对预设后重跑。")
+            hint = ("自动探到 %d 条带、配置有 %d 个分子量；这条梯子的条带在像素上分不开，"
+                    "按位置配对会整体错位，所以默认不出图。\n"
+                    "  ① 手动标定（推荐）：`probe --debug debug.png` 出的图左侧有 y 标尺，照着把每条带的 y\n"
+                    "     写进 markers.json 的 \"y_px\"（数组，从上到下、与 labels 一一对应，给大概值即可，\n"
+                    "     脚本会吸附到最近的条带峰），再跑一次。\n"
+                    "  ② 换对预设：这管 marker 的条带数要与 labels 一致。\n"
+                    "  ③ 硬配（可能错位）：加 --pair-force。"
+                    % (len(rows), len(mk_labels)))
+            if not args.pair_force:
+                raise RuntimeError(hint)
+            print("!! --pair-force：按位置硬配前 %d 个\n%s" % (min(len(rows), len(mk_labels)), hint))
             rows = rows[: len(mk_labels)]
         _, my = rot_pt(info["bbox_analysis"][0] * a2o, rows[0] * a2o) if rows else (0, 0)
         for row, e in zip(rows, mk_labels):
@@ -926,7 +998,7 @@ def cmd_render(args):
             t = en.get("text", "")
             if not t:
                 continue
-            s = float(en.get("size", size))
+            s = pt2px(en.get("size", size))
             tw, _th = text_extent(font, round(s), t)
             tw = tw / scale
             _, yy = rot_pt(info["bbox_analysis"][0] * a2o, row * a2o)
@@ -965,19 +1037,19 @@ def cmd_render(args):
     cmd = annotate_cmd(base, out_items, font, None if args.no_outline else args.outline)
     cmd += ["-units", "PixelsPerInch", "-density", str(dpi), args.out]
     _run(cmd)
+    if args.debug:
+        draw_debug(args.image, info, lb, args.debug, cfg_rows=rows if mk_labels else None)
+        print("debug 覆盖图:", args.debug, "（红框=胶面，红/绿线=泳道/条带行，品红=配置指定的 marker 行）")
     gel_w_px, gel_h_px = (gel_bb[2] - gel_bb[0]) * scale, (gel_bb[3] - gel_bb[1]) * scale
     print("输出 %s（%d×%d px, %d dpi；%d 条文字）" % (
         args.out, int(round(crop_w * scale)), int(round(crop_h * scale)), dpi, len(out_items)))
     print("[i] 实际尺寸：胶面 %.2f×%.2f cm（%d×%d px）· 成品 %.2f×%.2f cm（含标签留白）" % (
         gel["width_cm"], implied_h, int(round(gel_w_px)), int(round(gel_h_px)),
         crop_w * scale / dpi * 2.54, crop_h * scale / dpi * 2.54))
-    if args.debug:
-        draw_debug(args.image, info, lb, args.debug)
-        print("debug 覆盖图:", args.debug)
     return 0
 
 
-def draw_debug(image, info, lb, out, crop=None, scale=1.0):
+def draw_debug(image, info, lb, out, cfg_rows=None):
     x0, y0, x1, y1 = info["bbox_analysis"]
     a = info["image"][0] / float(info["analysis"][0])
     cmd = [MAGICK, image, "-auto-orient", "-stroke", "red", "-strokewidth", "3",
@@ -993,6 +1065,18 @@ def draw_debug(image, info, lb, out, crop=None, scale=1.0):
     for bands in lb["bands"]:
         for by, _ in bands:
             cmd += ["-draw", "line %d,%d %d,%d" % (x0 * a, by * a, x1 * a, by * a)]
+    fnt = pick_font()
+    for y in range(int(y0 * a), int(y1 * a) + 1, int(50 * a)):      # y 标尺，手动标定时照读
+        cmd += ["-stroke", "gray60", "-strokewidth", "1",
+                "-draw", "line %d,%d %d,%d" % (x0 * a, y, x1 * a, y)]
+        if fnt:
+            cmd += ["-font", fnt, "-stroke", "none", "-fill", "gray30", "-pointsize", "26",
+                    "-gravity", "northwest", "-annotate", "+%d+%d" % (max(0, int(x0 * a) - 90), int(y) - 30),
+                    str(int(round(y / a)))]
+    if cfg_rows:
+        cmd += ["-stroke", "magenta", "-strokewidth", "3"]
+        for r in cfg_rows:
+            cmd += ["-draw", "line %d,%d %d,%d" % (x0 * a, r * a, x1 * a, r * a)]
     cmd += ["-resize", "1200x1200", out]
     _run(cmd)
 
@@ -1286,6 +1370,8 @@ def main(argv=None):
     r.add_argument("--preset", help="用内置预设名（先 --list-presets）")
     r.add_argument("--lanes", help="泳道配置 JSON")
     r.add_argument("--dpi", type=int, default=96, help="成品 PNG 的 dpi（默认 96；像素数 = 胶面 cm/2.54×dpi）")
+    r.add_argument("--pair-force", action="store_true",
+                   help="条带数与配置对不上时仍按位置硬配（可能整体错位；默认拒绝出图）")
     r.add_argument("--gel", default="mini-gel", help="胶体尺寸预设（assets/gels/*.json，默认 mini-gel）")
     r.add_argument("--gel-cm", help="直接给胶体尺寸 宽x高（cm），如 8.6x7.2，压过 --gel")
     r.add_argument("--angle", type=float, default=None)
