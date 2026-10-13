@@ -34,7 +34,15 @@ FONTS = [
 
 
 def _run(cmd, binary=True):
-    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except FileNotFoundError:
+        raise RuntimeError(
+            "找不到 `%s`（ImageMagick 7）。按 SKILL.md「环境」一节装：\n"
+            "  macOS   brew install imagemagick\n"
+            "  Windows winget install ImageMagick.ImageMagick\n"
+            "  Linux   apt install imagemagick / dnf install ImageMagick\n"
+            "装完跑 `python3 %s doctor` 自检。" % (cmd[0], os.path.basename(__file__)))
     if p.returncode != 0:
         raise RuntimeError("命令失败: %s\n%s" % (" ".join(cmd), p.stderr.decode()[:800]))
     return p.stdout if binary else p.stdout.decode()
@@ -949,6 +957,57 @@ def draw_debug(image, info, lb, out, crop=None, scale=1.0):
     _run(cmd)
 
 
+# ---------------------------------------------------------------- doctor
+
+
+ENV_ROOTS = {
+    "darwin": ["/Applications/DoingSDSPage", "~/DoingSDSPage"],
+    "win32": ["C:\\ProgramData\\envs\\DoingSDSPage", "~/DoingSDSPage"],
+    "linux": ["~/Applications/DoingSDSPage", "~/DoingSDSPage"],
+}
+
+
+def cmd_doctor(args):
+    """环境自检：能跑就一行行打出来，缺什么直接说怎么补。"""
+    import platform
+    import shutil
+    bad = 0
+    print("python : %s (%s)" % (sys.executable, platform.python_version()))
+    mg = shutil.which(MAGICK)
+    if not mg:
+        print("magick : 缺 —— ImageMagick 7 没装（macOS: brew install imagemagick / "
+              "Windows: winget install ImageMagick.ImageMagick / Linux: apt install imagemagick）")
+        bad += 1
+    else:
+        ver = _run([MAGICK, "-version"], False).strip().splitlines()[0]
+        print("magick : %s\n         %s" % (mg, ver))
+        if "ImageMagick 7" not in ver:
+            print("         !! 本 skill 按 ImageMagick 7 的用法写的（-annotate/-rotate 行为），6.x 请自测")
+    f = pick_font()
+    print("字体   : %s" % (f or "没找到 —— 用 --font 指一个 .ttf/.ttc"))
+    if not f:
+        bad += 1
+    found = [d for d in preset_dir_candidates() if os.path.isdir(d)]
+    print("预设   : %s" % (found[0] if found else
+                          "没找到预设目录（只装了本 skill？用 --markers 指自己的 JSON）"))
+    key = "darwin" if sys.platform == "darwin" else ("win32" if os.name == "nt" else "linux")
+    if args.env_root:
+        root = os.path.abspath(os.path.expanduser(args.env_root))
+        if os.path.isdir(root):
+            print("环境根 : %s  存在，%s" % (root, "可写" if os.access(root, os.W_OK) else "不可写"))
+            if not os.access(root, os.W_OK):
+                bad += 1
+        else:
+            print("环境根 : %s  不存在 —— 要先建（mkdir -p）再往里装东西" % root)
+            bad += 1
+    else:
+        print("环境根 : 没指定。本 skill 只需系统 python3 + ImageMagick，**不需要**往环境根装东西；"
+              "你若要把 venv / 便携版 ImageMagick / 缓存放一处，"
+              "先问用户用哪个位置（推荐：%s）" % " 或 ".join(ENV_ROOTS[key]))
+    print("selftest: 跑 `python3 %s selftest` 验算法（10 项）" % os.path.basename(__file__))
+    return 1 if bad else 0
+
+
 # ---------------------------------------------------------------- selftest
 
 
@@ -1169,6 +1228,10 @@ def main(argv=None):
 
     s = sub.add_parser("selftest")
     s.set_defaults(func=lambda a: selftest())
+
+    d = sub.add_parser("doctor", help="环境自检：python / magick / 字体 / 预设目录 / 环境安装位置")
+    d.add_argument("--env-root", help="你选的环境安装根目录（本 skill 自己的 venv / 便携版 ImageMagick / 缓存放这儿）")
+    d.set_defaults(func=cmd_doctor)
 
     args = ap.parse_args(argv)
     return args.func(args)

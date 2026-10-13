@@ -57,6 +57,10 @@
 两条 skill 装在同一下级目录时，照片路才读得到工程路那份 marker 预设（`--preset` 要用它）；
 单独装照片路就得用 `--markers` 指自己的 JSON。
 
+装完**跑起来的环境**（系统 `python3` + ImageMagick 7）与「本 skill 环境装哪儿」这件事，
+照片路在 SKILL.md 的「环境」一节里（含各平台推荐位置与 `doctor` 自检命令）——
+那段是要先问用户再动手的，不默认。
+
 装完三件回读：`skills show doing-sds-page` 的 `deployed_to` 含 `hermes-default`、
 `skills update` 报 `up_to_date`、部署副本 `diff -rq` 与 clone 一致（部署是软链到 `~/.skills-manager/skills/`）。
 

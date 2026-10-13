@@ -85,6 +85,13 @@
       "prompt": "我只装了这一个 skill（没有 doing-sds-page），--preset 还能用吗？",
       "expected_behavior": "不能。预设目录按 <本 skill>/assets/markers → <同 pack 的 doing-sds-page>/assets/markers 顺序找；只单独装本 skill 时第二条不存在，脚本会报「找不到预设」并列出找过的路径。改用 --markers 指自己的 JSON，或把整包一起装。",
       "notes": ""
+    },
+    {
+      "id": "should-trigger-11",
+      "type": "should_trigger",
+      "prompt": "帮我把这个 skill 跑起来的环境装好。",
+      "expected_behavior": "先跑 `doctor` 看缺什么（本 skill 只要系统 python3 + ImageMagick 7，不装第三方包）；装之前**先问用户把本 skill 的环境装到哪个位置**，并按平台给推荐：macOS /Applications/DoingSDSPage 或 $HOME/DoingSDSPage、Windows C:\\ProgramData\\envs\\DoingSDSPage、Linux $HOME/Applications/DoingSDSPage。拿到答复后确认目录为空再建，最后 doctor --env-root <位置> + selftest 复验。不要默认替用户选位置。",
+      "notes": "环境安装位置属于要问用户的决定，不是默认值。"
     }
   ]
 }

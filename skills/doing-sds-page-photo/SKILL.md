@@ -16,6 +16,7 @@ description: 用一张含 SDS-PAGE 凝胶的**照片**（手机拍的、胶不�
 |---|---|
 | `probe` | 只探测不写字：报胶框/角度/两个条带判据/泳道 x 与每条泳道的条带行；`--debug` 出一张覆盖图 |
 | `render` | 出成品 PNG：裁切 + 转正 + 缩放 + dpi + 写字 |
+| `doctor` | 环境自检：python / `magick`（含版本）/ 字体 / 预设目录 / 用户选的环境安装位置（`--env-root`）；缺什么说怎么补 |
 | `selftest` | 不读用户文件：自检 PPM 解析、magick 旋转方向、连通域、平面背景、峰簇、旋转框裁切、dpi 与字号、补位算法、间距量法、合成胶泳道探测（10 项） |
 
 ## When to Use
@@ -27,6 +28,37 @@ description: 用一张含 SDS-PAGE 凝胶的**照片**（手机拍的、胶不�
 
 不属于：读像素判读条带是什么蛋白、多少 kD；把标注写回 VectorCraft 工程（→ `doing-sds-page`）；
 从胶图逆推实验结论（那是人的事）。
+
+## 环境（先问用户装哪儿，再动手）
+
+**依赖两样，都是系统级、不需要往别处装东西：**
+
+| 依赖 | 用来干什么 | 怎么装 |
+|---|---|---|
+| `python3`（3.8+，只用 stdlib） | 跑本脚本 | 系统自带；无需 pip/第三方包 |
+| ImageMagick 7 的 `magick` | 所有像素活（转正/裁切/缩放/写字/写 dpi）；贴图与判据全走它 | macOS `brew install imagemagick` · Windows `winget install ImageMagick.ImageMagick`（或 `choco install imagemagick`）· Linux `apt install imagemagick` / `dnf install ImageMagick` |
+
+字体用系统自带的（macOS/Windows 的 Arial；Linux 上另给 `--font /usr/share/fonts/.../DejaVuSans.ttf`）。
+
+**本 skill 自己的环境（虚拟环境 / 便携版 ImageMagick / 模型或缓存目录）装哪儿 —— 动手前先问用户，不要默认：**
+用户没答就**停下来问**，把下面这几条作为推荐一起给出：
+
+| 平台 | 推荐 | 备选 |
+|---|---|---|
+| macOS | `/Applications/DoingSDSPage` | `$HOME/DoingSDSPage` |
+| Windows | `C:\ProgramData\envs\DoingSDSPage` | `%USERPROFILE%\DoingSDSPage` |
+| Linux | `$HOME/Applications/DoingSDSPage` | `$HOME/DoingSDSPage` |
+
+拿到用户选的位置后：① 先 `ls` 确认那个目录是空/不存在，别覆盖已有内容；② 在那里建目录或 venv；
+③ 用 `doctor --env-root <位置>` 确认存在且可写，再往下跑。
+
+**自检（装完/换机器都先跑这两条）：**
+
+```bash
+python3 scripts/gel_photo.py doctor [--env-root <用户选的位置>]   # python / magick / 字体 / 预设目录 / 环境根
+python3 scripts/gel_photo.py selftest                            # 算法自检，10 项
+```
+`doctor` 缺什么就直接说怎么补，退出码非 0 表示环境不齐。
 
 ## Workflow
 
@@ -81,6 +113,8 @@ python3 scripts/gel_photo.py render <照片> --out out.png \
 
 | 触发 | 动作 |
 |---|---|
+| 要建/写「本 skill 的环境」目录（venv、便携版 ImageMagick、缓存…） | 先问用户装哪个位置（推荐见上表），别默认 `/Applications` 或 `$HOME` 下开目录；建之前先确认那儿是空的 |
+| `doctor` 报 `magick : 缺` | 停下装 ImageMagick 7，别绕行（没有它本 skill 一行都跑不了） |
 | 探测到的条带数与配置的分子量数不一致 | 脚本打印警告并按位置配前 N 个（占位）。要正式出图就停下来校准：给 `markers.y_frac`、换对预设，或调 `--ink-thr` / `--longest` 后重探 |
 | `lanes.labels` 条数 > 探到的泳道数 | 脚本报错退出（那是判据不是 bug）：先用覆盖图数清那张胶有几条泳道，缺的用 `lanes.x_frac` 显式给位置 |
 | 覆盖图里出现橙色（补位）泳道 | 那是**估计值**（该处一条带都没显色，没有像素证据）。要精确就必须给 `x_frac` |
@@ -132,7 +166,8 @@ python3 scripts/gel_photo.py render <照片> --out out.png \
 | `references/photo-labeling-conventions.md` | 两个 JSON 的字段表（同 `label_gel.py`）、探测机制与阈值、本机可复制命令、七个坑的来龙去脉 |
 | `test-prompts.json` | 触发与分界的测试题面 |
 
-依赖：系统 `python3`（只用 stdlib）+ `magick`（ImageMagick 7，本机 7.1.1）。
+依赖与安装位置：见上面「环境」一节（`python3` + ImageMagick 7；本机实测 python 3.9.6 / ImageMagick 7.1.1-44）。
+`python3 scripts/gel_photo.py doctor` 一条命令就能把这几项验完。
 marker 预设与本 skill 复用隔壁 `label_gel.py` 的 `lane_pitch`：按
 `<本 skill>/…` → `<同 pack 的 doing-sds-page>/…` 顺序找；**只单独装本 skill 时找不到**，
 那时用 `--markers` 指自己的 JSON（`lane_pitch` 会走本文件里的等价实现）。
