@@ -1009,6 +1009,16 @@ def cmd_render(args):
         gel.get("name", "命令行"), gel["width_cm"], gel["height_cm"], gel.get("_source", ""), dpi))
 
     gel_bb, _ = rotated_rect_bbox(info["rect_orig"], ang, (W0, H0), (W1, H1))
+    # 上下缘再裁掉一段（探测框上缘含上样孔/梳齿；那一段常常不想入图）。
+    # 用**宽度**换算 cm/px：宽度是定标基准，裁上下不改宽度，所以比例不受影响。
+    tt = args.trim_top_cm if args.trim_top_cm is not None else float(gel.get("trim_top_cm", 0.0) or 0.0)
+    tb = args.trim_bottom_cm if args.trim_bottom_cm is not None else float(gel.get("trim_bottom_cm", 0.0) or 0.0)
+    if tt or tb:
+        cm_per_px = gel["width_cm"] / (gel_bb[2] - gel_bb[0])
+        h_before = (gel_bb[3] - gel_bb[1]) * cm_per_px
+        gel_bb = (gel_bb[0], gel_bb[1] + tt / cm_per_px, gel_bb[2], gel_bb[3] - tb / cm_per_px)
+        print("[i] 上/下缘各裁 %.2f / %.2f cm：胶面 %.2f cm → %.2f cm（探测框实测）" % (
+            tt, tb, h_before, (gel_bb[3] - gel_bb[1]) * cm_per_px))
     # 定标：让胶面横跨 width_cm/2.54×dpi 个像素 —— 成品 PNG 就是**实际尺寸**
     scale = (gel["width_cm"] / 2.54 * dpi) / (gel_bb[2] - gel_bb[0])
     implied_h = gel["width_cm"] * (gel_bb[3] - gel_bb[1]) / (gel_bb[2] - gel_bb[0])
@@ -1676,7 +1686,11 @@ def main(argv=None):
     r.add_argument("--pair-force", action="store_true",
                    help="条带数与配置对不上时仍按位置硬配（可能整体错位；默认拒绝出图）")
     r.add_argument("--gel", default="mini-gel", help="胶体尺寸预设（assets/gels/*.json，默认 mini-gel）")
-    r.add_argument("--gel-cm", help="直接给胶体尺寸 宽x高（cm），如 8.6x7.2，压过 --gel")
+    r.add_argument("--gel-cm", help="直接给胶体尺寸 宽x高（cm），如 8.6x6.9，压过 --gel")
+    r.add_argument("--trim-top-cm", type=float, default=None,
+                   help="从胶面上缘再裁掉多少 cm（探测框含上样孔/梳齿那一段；默认读预设的 trim_top_cm）")
+    r.add_argument("--trim-bottom-cm", type=float, default=None,
+                   help="从胶面下缘再裁掉多少 cm（默认读预设的 trim_bottom_cm）")
     r.add_argument("--angle", type=float, default=None)
     r.add_argument("--no-rotate", action="store_true")
     r.add_argument("--margin-frac", type=float, default=0.05, help="四周外扩（占胶面长边比例，默认 0.05）")
