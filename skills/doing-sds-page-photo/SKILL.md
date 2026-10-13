@@ -40,7 +40,7 @@ description: 用一张含 SDS-PAGE 凝胶的**照片**（手机拍的、胶不�
 
 字体用系统自带的（macOS/Windows 的 Arial；Linux 上另给 `--font /usr/share/fonts/.../DejaVuSans.ttf`）。
 
-**本 skill 自己的环境（虚拟环境 / 便携版 ImageMagick / 模型或缓存目录）装哪儿 —— 动手前先问用户，不要默认：**
+**本 skill 自己的环境（虚拟环境 / 便携版 ImageMagick / 模型或缓存目录）装哪儿 —— 动手前先问用户，不要默认。**
 用户没答就**停下来问**，把下面这几条作为推荐一起给出：
 
 | 平台 | 推荐 | 备选 |
@@ -49,8 +49,16 @@ description: 用一张含 SDS-PAGE 凝胶的**照片**（手机拍的、胶不�
 | Windows | `C:\ProgramData\envs\DoingSDSPage` | `%USERPROFILE%\DoingSDSPage` |
 | Linux | `$HOME/Applications/DoingSDSPage` | `$HOME/DoingSDSPage` |
 
-拿到用户选的位置后：① 先 `ls` 确认那个目录是空/不存在，别覆盖已有内容；② 在那里建目录或 venv；
-③ 用 `doctor --env-root <位置>` 确认存在且可写，再往下跑。
+拿到答复后：① 先 `ls` 确认那个目录是空/不存在，别覆盖已有内容；② 在那里建目录或 venv；
+③ `doctor --env-root <位置>` 确认存在且可写；④ **把选定位置记在用户机器上，不要写进本 skill**：
+
+```bash
+mkdir -p ~/.config/doing-sds-page-photo
+printf '{"env_root": "<用户选的位置>"}' > ~/.config/doing-sds-page-photo/env.json
+```
+之后任何一次 `doctor` 会直接从那儿读出来（来源会标在输出里），**不用再问一遍**；换机器或换人重新问一次。
+读取优先级：`--env-root` > 环境变量 `GEL_PHOTO_ENV_ROOT` > `~/.config/doing-sds-page-photo/env.json`。
+上表只是**推荐**，不是本机的值 —— skill 里不写任何一台机器的具体路径。
 
 **自检（装完/换机器都先跑这两条）：**
 
@@ -58,7 +66,8 @@ description: 用一张含 SDS-PAGE 凝胶的**照片**（手机拍的、胶不�
 python3 scripts/gel_photo.py doctor [--env-root <用户选的位置>]   # python / magick / 字体 / 预设目录 / 环境根
 python3 scripts/gel_photo.py selftest                            # 算法自检，10 项
 ```
-`doctor` 缺什么就直接说怎么补，退出码非 0 表示环境不齐。
+`doctor` 缺什么就直接说怎么补，退出码非 0 表示环境不齐；「环境根」那行会标出读的是哪个来源
+（`--env-root` / `GEL_PHOTO_ENV_ROOT` / 本机配置文件）。
 
 ## Workflow
 
@@ -113,7 +122,8 @@ python3 scripts/gel_photo.py render <照片> --out out.png \
 
 | 触发 | 动作 |
 |---|---|
-| 要建/写「本 skill 的环境」目录（venv、便携版 ImageMagick、缓存…） | 先问用户装哪个位置（推荐见上表），别默认 `/Applications` 或 `$HOME` 下开目录；建之前先确认那儿是空的 |
+| 要建/写「本 skill 的环境」目录（venv、便携版 ImageMagick、缓存…） | 先问用户装哪个位置（推荐见上表），别默认替用户选；建之前先确认那儿是空的；定下来**记在本机配置文件里**，别写进 skill |
+| 本机已记过位置（`doctor` 的「环境根」有值） | 直接用那个，不要再问；只有换成没记过的机器才重新问 |
 | `doctor` 报 `magick : 缺` | 停下装 ImageMagick 7，别绕行（没有它本 skill 一行都跑不了） |
 | 探测到的条带数与配置的分子量数不一致 | 脚本打印警告并按位置配前 N 个（占位）。要正式出图就停下来校准：给 `markers.y_frac`、换对预设，或调 `--ink-thr` / `--longest` 后重探 |
 | `lanes.labels` 条数 > 探到的泳道数 | 脚本报错退出（那是判据不是 bug）：先用覆盖图数清那张胶有几条泳道，缺的用 `lanes.x_frac` 显式给位置 |

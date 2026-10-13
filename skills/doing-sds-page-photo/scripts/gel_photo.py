@@ -960,11 +960,38 @@ def draw_debug(image, info, lb, out, crop=None, scale=1.0):
 # ---------------------------------------------------------------- doctor
 
 
+# 各平台**推荐**位置（只是推荐，不是本机的值；本机选过的位置记在本机，见 env_root()）
 ENV_ROOTS = {
     "darwin": ["/Applications/DoingSDSPage", "~/DoingSDSPage"],
     "win32": ["C:\\ProgramData\\envs\\DoingSDSPage", "~/DoingSDSPage"],
     "linux": ["~/Applications/DoingSDSPage", "~/DoingSDSPage"],
 }
+
+ENV_CFG = "~/.config/doing-sds-page-photo/env.json"
+
+
+def env_root():
+    """本机选定的环境安装位置 → (路径, 来源)。
+
+    优先级：`--env-root`（调用方自己传）> 环境变量 `GEL_PHOTO_ENV_ROOT` > 本机配置文件
+    `~/.config/doing-sds-page-photo/env.json` 的 `env_root` > 没有（那就得问用户）。
+
+    这台机器选的位置**不进 skill**：skill 里只有推荐表和「先问、记在本机、以后读出来」的流程，
+    换机器/换人重新问一次即可。
+    """
+    v = os.environ.get("GEL_PHOTO_ENV_ROOT")
+    if v:
+        return os.path.abspath(os.path.expanduser(v)), "环境变量 GEL_PHOTO_ENV_ROOT"
+    p = os.path.expanduser(ENV_CFG)
+    if os.path.isfile(p):
+        try:
+            with open(p, encoding="utf-8") as f:
+                v = (json.load(f) or {}).get("env_root")
+            if v:
+                return os.path.abspath(os.path.expanduser(v)), p
+        except Exception as e:
+            return None, "配置文件 %s 读不了：%s" % (p, e)
+    return None, None
 
 
 def cmd_doctor(args):
@@ -991,19 +1018,24 @@ def cmd_doctor(args):
     print("预设   : %s" % (found[0] if found else
                           "没找到预设目录（只装了本 skill？用 --markers 指自己的 JSON）"))
     key = "darwin" if sys.platform == "darwin" else ("win32" if os.name == "nt" else "linux")
-    if args.env_root:
-        root = os.path.abspath(os.path.expanduser(args.env_root))
+    root, src_ = (os.path.abspath(os.path.expanduser(args.env_root)), "--env-root") if args.env_root else env_root()
+    if root:
         if os.path.isdir(root):
-            print("环境根 : %s  存在，%s" % (root, "可写" if os.access(root, os.W_OK) else "不可写"))
+            print("环境根 : %s  存在，%s（来源：%s）" % (root, "可写" if os.access(root, os.W_OK) else "不可写", src_))
             if not os.access(root, os.W_OK):
                 bad += 1
         else:
-            print("环境根 : %s  不存在 —— 要先建（mkdir -p）再往里装东西" % root)
+            print("环境根 : %s  不存在 —— 要先建（mkdir -p）再往里装东西（来源：%s）" % (root, src_))
             bad += 1
     else:
-        print("环境根 : 没指定。本 skill 只需系统 python3 + ImageMagick，**不需要**往环境根装东西；"
-              "你若要把 venv / 便携版 ImageMagick / 缓存放一处，"
-              "先问用户用哪个位置（推荐：%s）" % " 或 ".join(ENV_ROOTS[key]))
+        print("环境根 : 本机还没定。本 skill 只需系统 python3 + ImageMagick，**不需要**往环境根装东西；"
+              "要记就先问用户用哪个位置（推荐：%s），\n"
+              "         然后把答案记在本机（\n"
+              "           mkdir -p ~/.config/doing-sds-page-photo && \n"
+              "           printf '{\"env_root\": \"<用户选的位置>\"}' > ~/.config/doing-sds-page-photo/env.json\n"
+              "         ），**不要写进 skill**。" % " 或 ".join(ENV_ROOTS[key]))
+        if src_:
+            print("         （%s）" % src_)
     print("selftest: 跑 `python3 %s selftest` 验算法（10 项）" % os.path.basename(__file__))
     return 1 if bad else 0
 

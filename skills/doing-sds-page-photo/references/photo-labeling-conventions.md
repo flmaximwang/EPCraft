@@ -63,6 +63,16 @@
 
 ## 3. 本机可复制命令（2026-10-13 实跑）
 
+环境自检 / 本机环境位置：
+
+```bash
+# 环境自检（python / magick / 字体 / 预设目录 / 本机选定的环境根）
+python3 scripts/gel_photo.py doctor
+# 环境根从哪来（优先级）：--env-root > $GEL_PHOTO_ENV_ROOT > ~/.config/doing-sds-page-photo/env.json
+# 选定的位置只记在**用户机器**上（那个 json 的 env_root），skill 里不留任何一台机器的具体路径；
+# doctor 会把读到的值和来源打出来，换机器重新问一次即可
+```
+
 ```bash
 cd /Users/maxim/Documents/Experts/DoingSDSPage/skills/doing-sds-page-photo
 
