@@ -1,16 +1,12 @@
 ---
-name: doing-sds-page-photo
-description: 用一张含 SDS-PAGE 凝胶的**照片**（手机拍的、胶不占满画面）直接出标注好的 PNG 时用：脚本先自动找出胶面（比背景暗 / 蓝度两个判据）、按竖边倾角转正、裁切并留出标签白边，再按 marker 与泳道两个 JSON 在裁好的图上写字，输出 dpi 可调的 PNG（默认 300 dpi、胶面打印宽 8 cm）。两个 JSON 与隔壁 doing-sds-page 的 label_gel.py **同一套 schema**（marker_lane / marker_lane_x / lane_width / lane_edge / gap / align / labels 口径一致），照片路另外多 y_frac / x_frac 两个校准字段。也用于「标签位置/字号/颜色改一下重跑」「探测结果不对要出 debug 覆盖图核对」「换一张照片同一套配置复用」。不属于本 skill 的：在 VectorCraft 工程里人拖参考线标注（→ doing-sds-page）；跑胶与成像本身（→ 成像仪厂商软件）；从像素里判读条带是什么蛋白（本 skill 只按配置或剖面把已有文字放上去）。
+name: ep-labeling
+description: Use when labeling an electrophoresis gel. Use when labeling an SDS-PAGE, an agarose gel. Provide a labeled gel pictures with appropriate size.
+compatibility: python, magick
 ---
 
-# doing-sds-page-photo — 照片进、标注好的 PNG 出
+# Electrophoresis Labeling
 
-一条流水线：**自动找胶 → 转正 → 裁切（留标签白边）→ 按两个 JSON 写字 → 出 PNG**。
-与隔壁 `doing-sds-page` 的分工：那个是「人在 GUI 标位置、脚本在工程里写字」；
-这个是「照片里位置由脚本探、人在配置里校准」，产物只有 PNG（没有工程文件）。
-**两个 JSON 的字段与口径完全沿用 `label_gel.py`**（`lane_pitch` 也直接 import 它，不重写）。
-
-脚本三个子命令（`scripts/gel_photo.py`，纯 stdlib + ImageMagick 7 的 `magick`）：
+This skills provides a pipeline to label electrophoresis gels: find the gel, set it right, crop it, label and export pictures.
 
 | 子命令 | 干什么 |
 |---|---|
@@ -19,57 +15,19 @@ description: 用一张含 SDS-PAGE 凝胶的**照片**（手机拍的、胶不�
 | `doctor` | 环境自检：python / `magick`（含版本）/ 字体 / 预设目录 / 用户选的环境安装位置（`--env-root`）；缺什么说怎么补 |
 | `selftest` | 不读用户文件：自检 PPM 解析、magick 旋转方向、连通域、平面背景、峰簇、旋转框裁切、dpi 与字号、补位算法、间距量法、合成胶泳道探测（10 项） |
 
-## When to Use
+## Scope & Boundary
 
-- 用户给一张手机拍的胶图照片（胶在画面中间、四周是灯箱/桌面），要一张能放汇报或投稿的标注图。
-- 用户要「按这个 marker 表把分子量标在条带旁、泳道名写在上方」，且**位置不想手标**。
-- 已经跑过、这次只改配置（换 marker 预设、改字号/颜色/gap、改打印宽度或 dpi）后重跑。
+- 用户给了一张胶图照片（胶在画面中间、四周是北京），要一张能汇报或投稿的标注图。
 - 探测结果不对劲，要先看一眼 `--debug` 覆盖图再决定改哪个参数。
-
-不属于：读像素判读条带是什么蛋白、多少 kD；把标注写回 VectorCraft 工程（→ `doing-sds-page`）；
-从胶图逆推实验结论（那是人的事）。
-
-## 环境（先问用户装哪儿，再动手）
-
-**依赖两样，都是系统级、不需要往别处装东西：**
-
-| 依赖 | 用来干什么 | 怎么装 |
-|---|---|---|
-| `python3`（3.8+，只用 stdlib） | 跑本脚本 | 系统自带；无需 pip/第三方包 |
-| ImageMagick 7 的 `magick` | 所有像素活（转正/裁切/缩放/写字/写 dpi）；贴图与判据全走它 | macOS `brew install imagemagick` · Windows `winget install ImageMagick.ImageMagick`（或 `choco install imagemagick`）· Linux `apt install imagemagick` / `dnf install ImageMagick` |
-
-字体用系统自带的（macOS/Windows 的 Arial；Linux 上另给 `--font /usr/share/fonts/.../DejaVuSans.ttf`）。
-
-**本 skill 自己的环境（虚拟环境 / 便携版 ImageMagick / 模型或缓存目录）装哪儿 —— 动手前先问用户，不要默认。**
-用户没答就**停下来问**，把下面这几条作为推荐一起给出：
-
-| 平台 | 推荐 | 备选 |
-|---|---|---|
-| macOS | `/Applications/DoingSDSPage` | `$HOME/DoingSDSPage` |
-| Windows | `C:\ProgramData\envs\DoingSDSPage` | `%USERPROFILE%\DoingSDSPage` |
-| Linux | `$HOME/Applications/DoingSDSPage` | `$HOME/DoingSDSPage` |
-
-拿到答复后：① 先 `ls` 确认那个目录是空/不存在，别覆盖已有内容；② 在那里建目录或 venv；
-③ `doctor --env-root <位置>` 确认存在且可写；④ **把选定位置记在用户机器上，不要写进本 skill**：
-
-```bash
-mkdir -p ~/.config/doing-sds-page-photo
-printf '{"env_root": "<用户选的位置>"}' > ~/.config/doing-sds-page-photo/env.json
-```
-之后任何一次 `doctor` 会直接从那儿读出来（来源会标在输出里），**不用再问一遍**；换机器或换人重新问一次。
-读取优先级：`--env-root` > 环境变量 `GEL_PHOTO_ENV_ROOT` > `~/.config/doing-sds-page-photo/env.json`。
-上表只是**推荐**，不是本机的值 —— skill 里不写任何一台机器的具体路径。
-
-**自检（装完/换机器都先跑这两条）：**
-
-```bash
-python3 scripts/gel_photo.py doctor [--env-root <用户选的位置>]   # python / magick / 字体 / 预设目录 / 环境根
-python3 scripts/gel_photo.py selftest                            # 算法自检，14 项
-```
-`doctor` 缺什么就直接说怎么补，退出码非 0 表示环境不齐；「环境根」那行会标出读的是哪个来源
-（`--env-root` / `GEL_PHOTO_ENV_ROOT` / 本机配置文件）。
+- 仅使用 python 标准库与
 
 ## Workflow
+
+Before running the pipeline, ask the user a few questions. Provide presets as options to the user.
+
+- What marker did the user use?
+- What types of gel the user use?
+- What sample did the user load for each well?
 
 **Step 1 · 先跑 probe，再决定参数**（别一上来就 render）
 
@@ -251,3 +209,10 @@ python3 scripts/gel_photo.py render <照片> --out out.png \
 marker 预设与本 skill 复用隔壁 `label_gel.py` 的 `lane_pitch`：按
 `<本 skill>/…` → `<同 pack 的 doing-sds-page>/…` 顺序找；**只单独装本 skill 时找不到**，
 那时用 `--markers` 指自己的 JSON（`lane_pitch` 会走本文件里的等价实现）。
+
+## Pitfalls
+
+- Install `magick` if you need:  
+  - macOS `brew install imagemagick`
+  - Windows `winget install ImageMagick.ImageMagick`（或 `choco install imagemagick`）
+  - Linux `apt install imagemagick` / `dnf install ImageMagick` |

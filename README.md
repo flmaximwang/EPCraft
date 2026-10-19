@@ -1,5 +1,11 @@
 # AgentSkill-DoingSDSPage
 
+This skill pack provides thorough skills for electrophoresis.
+
+- Page gels & agarose gels
+- Gel preparation, labeling & analysis
+- Blot analysis
+
 「做 SDS-PAGE 胶图标注」这件事的 skill 包，两条入口，共同点都是**位置与样式分开**：
 
 1. **工程路**（`doing-sds-page`）：**人在 GUI 里标位置、脚本按配置写字**。
