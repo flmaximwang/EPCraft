@@ -1,3 +1,11 @@
+.claude
+.codex
+.copilot
+.dsh
+.hermes
+.opencode
+.workbuddy
+
 __pycache__/
 *.pyc
 .DS_Store
