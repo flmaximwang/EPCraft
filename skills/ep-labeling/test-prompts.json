@@ -1,19 +1,19 @@
 {
-  "skill": "doing-sds-page-photo",
-  "version": "0.2.0",
+  "skill": "ep-labeling",
+  "version": "0.3.0",
   "test_cases": [
     {
       "id": "should-trigger-01",
       "type": "should_trigger",
       "prompt": "我手机拍了一张胶的照片，按雅酶 WJ103 那套分子量标上、泳道名也写上，出一张能放汇报里的图 —— 用实际尺寸（mini-gel），默认 dpi 就行。",
-      "expected_behavior": "走本 skill：先 probe（出 --debug 覆盖图核对），再 render。默认 `--gel mini-gel --dpi 96`：成品就是实际尺寸（胶面 8.6 cm 宽 → 96 dpi 下 325 px 宽），字号默认 16 px（成品像素，不是 pt）。要提醒：96 dpi 下梯子的 11 条带只差 ~11 px，16 px 标签会撞，三条处置（提 dpi / 降 markers.size / 只标关键条带）。条带数与预设不一致时脚本会打印警告并按位置配前 N 个。",
+      "expected_behavior": "走本 skill：先 probe（--debug 覆盖图核对），再 render。命令显式带 `--markers data/markers.json --preset <序号或关键词> --gel-size data/gel_size.json --dpi 96`（脚本不内置数据路径）。成品就是实际尺寸（胶面 8.6 cm 宽 → 96 dpi 下 325 px 宽），字号默认 8 pt（物理尺寸，换 dpi 只改像素数）。WJ103 有两套预设（Tris-Glycine / Tris-Tricine），关键词命中 2 个时脚本会列出来，要先问用户胶是哪个体系。条带数与预设不一致时脚本拒绝出图，走 y_px 手动标定；不要用 --pair-force。",
       "notes": ""
     },
     {
       "id": "should-trigger-02",
       "type": "should_trigger",
-      "prompt": "同一张照片，分子量字号想改成 10 px、泳道名居左，重跑一版。",
-      "expected_behavior": "属本 skill 且只改配置：改 markers.json 的 size=10（px）与 lanes.json 的 align=left，重跑同一条 render（照片、探测、胶体尺寸都不变）。不要重新探测、不要改脚本。",
+      "prompt": "同一张照片，分子量字号想改成 6 pt、泳道名居左，重跑一版。",
+      "expected_behavior": "属本 skill 且只改配置：改 markers.json 的 size=6（pt）与 lanes.json 的 align=left，重跑同一条 render（照片、探测、胶体尺寸都不变）。不要重新探测、不要改脚本。",
       "notes": "触发点是「配置改一下重跑」。"
     },
     {
@@ -33,8 +33,8 @@
     {
       "id": "should-trigger-04c",
       "type": "should_trigger",
-      "prompt": "标注的配置别自己另发明一套，参考 label_gel.py 那套来。",
-      "expected_behavior": "两个 JSON 沿用 doing-sds-page 的 schema：markers 的 font/size/color/gap/marker_lane/marker_lane_x/lane_width/lane_edge/labels、lanes 的 font/size/color/gap/align/labels，字段名与口径一致（marker_lane 1 起、0 表示第 1 条左边一条带、gap 量到泳道带边、左右按泳道区中线判）。lane_pitch 直接 import 隔壁 label_gel.py 复用，不重写。照片路只额外加 y_frac / x_frac 两个校准字段。验收方式：把工程路那份 Probe1.1_2026.10.12.json 直接喂进来能正常出图。",
+      "prompt": "两个配置的字段怎么写？别自己另发明一套。",
+      "expected_behavior": "读 references/photo-labeling-conventions.md §1 的字段表：markers 的 font/size/color/gap/marker_lane/marker_lane_x/lane_width/lane_edge/labels（+ y_px/snap/rows/y_frac），lanes 的 size/color/gap/align/labels（+ x_frac）。size/gap 单位 pt；marker_lane 1 起、0 表示第 1 条左边一条带；gap 量到泳道带边；左右按泳道区中线判。模板见 templates/。",
       "notes": ""
     },
     {
@@ -62,7 +62,7 @@
       "id": "should-not-trigger-07",
       "type": "should_not_trigger",
       "prompt": "我在 vectorcraft 工程里拖好了参考线，帮我按配置把标签打上去。",
-      "expected_behavior": "越界到隔壁 doing-sds-page：那是「人在 GUI 标位置、脚本在工程里写字、另存工程 + 导出裁白边 PNG」。本 skill 的输入是照片不是工程文件。",
+      "expected_behavior": "越界：本 skill 的输入是照片文件，不处理 .vectorcraft 之类的工程文件，也不驱动任何绘图软件的 GUI。应说明这点，不要硬套 probe/render。",
       "notes": "诱饵：同为 SDS-PAGE 标注，但输入形态不同。"
     },
     {
@@ -82,22 +82,22 @@
     {
       "id": "edge-case-10",
       "type": "edge_case",
-      "prompt": "我只装了这一个 skill（没有 doing-sds-page），--preset 还能用吗？",
-      "expected_behavior": "不能。预设目录按 <本 skill>/assets/markers → <同 pack 的 doing-sds-page>/assets/markers 顺序找；只单独装本 skill 时第二条不存在，脚本会报「找不到预设」并列出找过的路径。改用 --markers 指自己的 JSON，或把整包一起装。",
+      "prompt": "--preset 去哪找预设？我只想用 data/markers.json 里那几个。",
+      "expected_behavior": "脚本不内置任何数据路径：`--markers data/markers.json --preset <1 起的序号或 _preset 描述里的关键词>`。不给 --preset 或关键词命中不止一个时，脚本报错并列出全部预设（序号 + 描述前 60 字）。也可以 --markers 直接指向自己的单个配置 JSON。",
       "notes": ""
     },
     {
       "id": "should-trigger-11",
       "type": "should_trigger",
       "prompt": "帮我把这个 skill 跑起来的环境装好。",
-      "expected_behavior": "先跑 `doctor` 看缺什么（本 skill 只要系统 python3 + ImageMagick 7，不装第三方包）；装之前**先问用户把本 skill 的环境装到哪个位置**，并按平台给推荐：macOS /Applications/DoingSDSPage 或 $HOME/DoingSDSPage、Windows C:\\ProgramData\\envs\\DoingSDSPage、Linux $HOME/Applications/DoingSDSPage。拿到答复后确认目录为空再建，然后**把位置记在用户机器上**（~/.config/doing-sds-page-photo/env.json 的 env_root，或环境变量 GEL_PHOTO_ENV_ROOT），**不要写进 skill** —— skill 里只留推荐表与「先问 → 记在本机 → 以后 doctor 读出来」的流程；本机已有记录时直接用它、不再问。最后 selftest 复验。",
+      "expected_behavior": "先跑 `doctor` 看缺什么（本 skill 只要系统 python3 + ImageMagick 7，不装第三方包，不需要指定 Python 环境或建环境目录）；缺 magick 就停下来装（brew / winget / apt），装完重跑 doctor。",
       "notes": "环境位置是每台机器的事：要问、要记住，但不进 skill（用户 2026-10-13 明确）。"
     },
     {
       "id": "edge-case-12",
       "type": "edge_case",
       "prompt": "我要 96 dpi 出图，但是梯子每条条带的分子量都要标上，现在标签上下糊在一起了，怎么办？",
-      "expected_behavior": "解释这是物理限制：96 dpi / 胶面 8.6 cm 时相邻条带仅 ~11 px，绝对 16 px 字号必然重叠。三条路：① 提 dpi 到 192–300（物理尺寸不变、字相对变小）；② 把 markers.size 降到 ~10 px；③ 只标关键几条带（真实图常这么干，但要用户点明标哪几条）。默认不改用户配置，先说清代价再让他挑。",
+      "expected_behavior": "解释这是物理限制：8.6 cm 宽的胶在 96 dpi 下相邻条带仅 ~11 px，任何可读字号都放不下。三条路：① 提 dpi 到 192–300（字号是 pt，物理尺寸不变，只多了像素，条带间距的像素数也同比增加，但字与条带的相对关系不变，所以主要是看得清）；② 把 markers.size 降到 ~6 pt；③ 只标关键几条带（要用户点明标哪几条）；相邻两条真的近到放不下时用 rows:2 合并成一条标签。默认不改用户配置，先说清代价再让他挑。",
       "notes": "固定 px 字号 × 低 dpi 的必然碰撞，不是 bug。"
     },
     {

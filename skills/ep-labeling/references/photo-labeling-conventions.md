@@ -1,9 +1,8 @@
 # 照片标注：字段表、探测机制、命令
 
-## 1. 两个 JSON —— schema 与 `doing-sds-page` 的 `label_gel.py` 一致
+## 1. 两个 JSON —— 字段表
 
-字段名与口径完全沿用工程路那份（`skills/doing-sds-page/references/labeling-conventions.md`），
-所以同一个配置文件两边都能跑：这次实测把工程路的 `Probe1.1_2026.10.12.json` 直接喂给照片路，正常出图。
+这是 markers.json / lanes.json 的权威字段表；`templates/` 里有定稿的整套示例。
 
 ### markers.json
 
@@ -33,7 +32,7 @@
 | `labels` | **从左到右**，每条泳道一项（字符串或对象）；`text` 留 `""` 就不写 | — |
 | `x_frac` | **照片路额外字段**：每条泳道的显式中心，0=胶面左、1=胶面右 | 无 |
 
-**分子量标签列摆在胶面之外**：按 label_gel 的口径定左/右（泳道区中线），但整列一定落在白底留白里
+**分子量标签列摆在胶面之外**：定左/右（泳道区中线），但整列一定落在白底留白里
 —— 按泳道带边算出来的锚点若还在胶面内，就推到胶面之外（`gap` 从胶边起算）。所以 marker 泳道在胶中间时
 （比如梯子在第 8 条），标签也会挪到胶外那一侧；想让标签紧挨梯子，就选**最外侧**那管 marker 泳道
 （本胶左数第 1、2 条与中间第 8 条是同一管 marker，选第 2 条标签就落在左边距、与左侧梯子的带一一对齐）。
@@ -41,10 +40,10 @@
 对齐与左右判断的其余规则跟工程路一字不差：marker 泳道中心在**泳道区中线**左边 ⇒ 右对齐、
 右边缘贴泳道带左边，右边则翻成左对齐；中线取 `(min+max)/2` 的泳道中心，不取整图中线。
 
-**竖直对齐也照 `label_gel.py` 的口径，别再自己凑系数**（那边：marker 用 `("center_y", y)`
+**竖直对齐口径，别再自己凑系数**（marker 用 `("center_y", y)`
 = 文字框竖向中心落在条带行上；泳道名用 `("bottom_y", y)` = 文字框底边落在胶顶之上 `gap`）：
 
-| | label_gel.py（VectorCraft） | 本 skill（ImageMagick） |
+| | 口径 | 本 skill（ImageMagick） |
 |---|---|---|
 | 参照物 | 文字对象的 bounding box | `label:` 量的文字框（同一套字体度量） |
 | marker | 框**中心** = 条带行 | `y = 条带行 − 框高/2` |
@@ -56,7 +55,7 @@
 
 ## 1b. 成品尺寸怎么定（实际尺寸）
 
-`assets/gels/*.json` 是胶体物理尺寸预设，文件名就是 `--gel` 的名字（默认 `mini-gel`：宽 8.6 × 高 6.9 cm；
+`data/gel_size.json` 是胶体物理尺寸预设（脚本不内置路径，由 SKILL.md 指定；`--gel-cm` 取其中的宽x高）（默认 `mini-gel`：宽 8.6 × 高 6.9 cm；
 高度按实测修正过一次——去掉上样孔那一段后实际 6.9，原来写 7.2 偏大）。
 
 | 键 | 作用 |
@@ -87,8 +86,7 @@ gel_photo.py render crop.jpg --lanes 8lane.json --gel-lanes 8 --dpi 96
 文字真实包围盒算）。这样 ① 胶面不多带一个像素的背景；② 文字全部落在白底留白里，不受上缘加样孔/灯箱
 背景影响。分子量标签列固定摆在**胶面之外**（见 §1d）。
 
-`--gel-cm 8.6x7.2` 可以直接给（宽x高，cm），压过预设。字号是绝对像素，所以
-「同一物理尺寸 + 不同 dpi」不是等价图：96 dpi 的 16 px 字比 300 dpi 的 16 px 字**打印出来大 3 倍**。
+`--gel-cm 8.6x7.2` 可以直接给（宽x高，cm），压过 `--gel-size`。
 
 ## 1c. 字号单位 = pt（dpi 无关）
 
@@ -153,38 +151,32 @@ gel_photo.py render crop.jpg --lanes 8lane.json --gel-lanes 8 --dpi 96
 
 ## 3. 本机可复制命令（2026-10-13 实跑）
 
-环境自检 / 本机环境位置：
+环境自检：
 
 ```bash
-# 环境自检（python / magick / 字体 / 预设目录 / 本机选定的环境根）
+# 环境自检（python / magick / 字体 / 数据文件）
 python3 scripts/gel_photo.py doctor
-# 环境根从哪来（优先级）：--env-root > $GEL_PHOTO_ENV_ROOT > ~/.config/doing-sds-page-photo/env.json
-# 选定的位置只记在**用户机器**上（那个 json 的 env_root），skill 里不留任何一台机器的具体路径；
-# doctor 会把读到的值和来源打出来，换机器重新问一次即可
 ```
 
 ```bash
-cd /Users/maxim/Documents/Experts/DoingSDSPage/skills/doing-sds-page-photo
+cd <本 skill 目录>
 
 # 1) 探测 + 覆盖图（红框=胶面、红线=实测泳道、橙线=补位、蓝线=带边、绿线=条带行）
-python3 scripts/gel_photo.py probe "/Users/maxim/Downloads/IMG_1464 (1).jpeg" \
-        --debug /Users/maxim/Downloads/gel_demo/IMG_1464_debug.png
+python3 scripts/gel_photo.py probe photo.jpeg --debug debug.png
 
-# 2) 出成品（15 条泳道全部实测，0 条补位；marker 走手动标定 y_px）
-python3 scripts/gel_photo.py render "/Users/maxim/Downloads/IMG_1464 (1).jpeg" \
-        --out /Users/maxim/Downloads/gel_demo/IMG_1464_manual_96dpi.png \
-        --markers /Users/maxim/Downloads/gel_demo/markers_manual.json \
-        --lanes /Users/maxim/Downloads/gel_demo/lanes.json --gel mini-gel --dpi 96
-# → 358×292 px / 96 dpi（胶面 8.60×6.70 cm，成品 9.46×7.73 cm）
-# 同一条命令换 --dpi 300 → 1117×913 px，**物理尺寸一模一样**（这就是 pt 字号的意义）
+# 2) 出成品：模板配置 + 胶体尺寸（脚本不内置数据路径，--gel-size 必给；或 --gel-cm 宽x高）
+python3 scripts/gel_photo.py render photo.jpeg --out out.png \
+        --markers templates/mini-gel-15lanes.markers.json \
+        --lanes templates/mini-gel-15lanes.lanes.json \
+        --gel-size data/gel_size.json --dpi 96
+# → 胶面 8.60 cm 宽；换 --dpi 300 物理尺寸一模一样，只多像素（这就是 pt 字号的意义）
 
-# 3) 直接复用工程路写好的配置（schema 同一套，实测可用）
-python3 scripts/gel_photo.py render "/Users/maxim/Downloads/IMG_1464 (1).jpeg" --out /tmp/x.png \
-        --preset yasen-wj103-10-250kd-tristricine \
-        --lanes "/Users/maxim/Documents/Lab/zsqlab_10_gammaPFD-Fiber_2026.06.25/Obsidian_zsqlab_10/Logs/2026/10/09/Purification-010/asset/Probe1.1_2026.10.12.json"
+# 3) 从预设库选 marker：序号或 _preset 描述里的关键词（命中不是恰好 1 个就报错并列出全部）
+python3 scripts/gel_photo.py render photo.jpeg --out out.png \
+        --markers data/markers.json --preset 3 --lanes lanes.json --gel-size data/gel_size.json
 
 # 自检（不读用户文件）
-python3 scripts/gel_photo.py selftest        # 14/14（含合成胶泳道探测、对齐几何、锚点校正、并带分组、并带检测的回归测试）
+python3 scripts/gel_photo.py selftest        # 15/15
 ```
 
 常用开关：`--cue chroma|union`、`--ink-thr`（改泳道判据阈值）、`--longest`（分析缩略图长边，默认 700）、
@@ -216,15 +208,18 @@ python3 scripts/gel_photo.py selftest        # 14/14（含合成胶泳道探测�
 | 两条标签画出来会叠字 | 两条带实际只差 ~1.6 mm，而 8 pt 墨迹高 2.4 mm —— 同侧放不下两行字，换 dpi 无效（同比例缩放） | 给其中一条加 `"rows": 2`（吃 2 条带、落在中间，条目数仍对得上）；脚本会自己算出「字号得 ≤ 几 pt」报出来 |
 | 文字整体下沉约一个字高 / 泳道号压进胶里 | 拿基线/半高系数近似 `-annotate` 的 y（它其实是**框顶边**） | 按真实文字框高算：marker `y=行−框高/2`、泳道名 `y=胶顶−gap−框高` |
 
-## 5. 与隔壁 skill 的分工
+## 5. 脚本模块
 
-| | `doing-sds-page` | `doing-sds-page-photo` |
-|---|---|---|
-| 输入 | `.vectorcraft` 工程（胶图是一个 image 对象） | 照片文件（JPEG/PNG…） |
-| 位置 | 人在 GUI 拖参考线/画短线 | 脚本按像素探，配置可校准（`y_frac`/`x_frac`） |
-| 产物 | 另存工程 + 裁白边 PNG | PNG（dpi 可调） |
-| 依赖 | VectorCraft 控制口 | ImageMagick 7（`magick`） |
-| schema | `markers.json` / `lanes.json` | **同一套**（+ `y_frac`/`x_frac` 两个照片路额外字段） |
-| 共用 | `lane_pitch` 等逻辑在 `label_gel.py` 里，照片路直接 import 复用（`_sibling()` 按相对路径找） | |
+`scripts/gel_photo.py` 只放 CLI 与 probe/render 编排；其余按职责分文件（同目录，纯 stdlib）：
 
-两条路做的是同一件事的两端：**位置与样式分开**（位置能校准、样式不重标）。
+| 模块 | 承担 |
+|---|---|
+| `magick_io.py` | magick 外呼、分析缩略图读取（PPM → 灰度） |
+| `gel_detect.py` | 认胶面：平面背景、暗度/蓝度判据、连通域、竖边倾角 |
+| `lane_detect.py` | 泳道 x 与条带行：间距、补位、验伪、并带检测、锚点校正 |
+| `geometry.py` | 旋转与裁切几何、位置口径（<1 比例 / ≥1 像素）、泳道带宽 |
+| `text_layout.py` | 字体、文字真实包围盒、写字命令 |
+| `config.py` | markers / lanes / 胶体尺寸的读取（`load_markers` 支持预设库 + `--preset`） |
+| `debug_overlay.py` | `--debug` 覆盖图 |
+| `env_check.py` | `doctor` |
+| `selftest.py` | `selftest`（15 项） |
