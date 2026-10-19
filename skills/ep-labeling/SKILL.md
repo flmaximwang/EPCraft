@@ -35,7 +35,7 @@ Turn a phone photo of a gel (gel in the middle, background around it) into a lab
    ```bash
    python3 scripts/gel_photo.py render <photo> --out out.png \
        --markers markers.json --lanes lanes.json \
-       --gel-size data/gel_size.json --dpi 96 --debug debug.png
+       --gel-size data/gel_size.json --dpi 300 --debug debug.png
    ```
    Sizes (`size`, `gap`) are in pt; dpi changes pixel count only, not physical size.
 6. **Read the PNG back** (do not trust the log alone): each marker label sits on one band; lane labels are on white margin, with the right count and positions; `magick identify -format "%x" out.png` shows the dpi.
