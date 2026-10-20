@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """selftest：不读用户文件的算法自检。"""
+import ast
 import contextlib
 import io
 import json
@@ -10,11 +11,44 @@ from config import load_gel_size
 from gel_area import compute, estimate_pitch_px
 from magick_io import MAGICK, _run, read_ppm, to_gray
 from gel_detect import bg_plane, components, detect_gel, ink_mask
-from lane_detect import bands_for_lanes, clusters, fat_rows, group_rows
+from band_fit import clusters, fat_rows, group_rows
 from lane_fit import find_lanes
 from geometry import load_dims_after, rect_to_analysis, rotate_pt, rotated_rect_bbox
 from mw_report import build_cal, estimate, marker_pairs, parse_mw
 from text_layout import annotate_cmd, pick_font, text_extent
+
+
+def test_import_direction():
+    """stage 不许 import 更靠后的 stage（spec §8 第 5 条）。
+
+    用 ast 解析真正的 import 语句（不 grep 文本：注释/文档里提到模块名不算依赖）。
+    返回违规列表，每条写明「哪个模块 import 了哪个」。
+    """
+    scripts = os.path.dirname(os.path.abspath(__file__))
+    rules = {
+        "gel_area": {"lane_fit", "band_fit", "lane_select", "gel_photo"},
+        "lane_fit": {"band_fit", "lane_select", "gel_photo"},
+        "band_fit": {"lane_select", "gel_photo"},
+    }
+    bad = []
+    for mod, forbidden in rules.items():
+        path = os.path.join(scripts, mod + ".py")
+        if not os.path.isfile(path):
+            continue
+        with open(path, encoding="utf-8") as f:
+            tree = ast.parse(f.read(), path)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module or ""]
+            else:
+                continue
+            for name in names:
+                top = name.split(".")[0]
+                if top in forbidden:
+                    bad.append("%s import 了 %s（第 %d 行）" % (mod, top, node.lineno))
+    return bad
 
 
 def test_annotate_geometry():
@@ -485,7 +519,12 @@ def selftest():
         assert 27.0 <= est <= 33.0, est
         ok += 1
 
-    print("selftest %d/24 通过" % ok)
+    # 25) import 方向：stage 只许依赖前面的 stage（用 ast，不听注释/文档里的模块名）
+    bad = test_import_direction()
+    assert not bad, "stage import 方向错了：" + "；".join(bad)
+    ok += 1
+
+    print("selftest %d/25 通过" % ok)
     return 0
 
 

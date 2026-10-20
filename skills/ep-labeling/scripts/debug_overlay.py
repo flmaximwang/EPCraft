@@ -5,8 +5,12 @@ from magick_io import MAGICK, _run
 from text_layout import pick_font
 
 
-def draw_debug(image, info, lb, out, cfg_rows=None):
-    x0, y0, x1, y1 = info["bbox_analysis"]
+def draw_debug(image, info, lb, out, cfg_rows=None, box_analysis=None):
+    """画覆盖图。box_analysis = stage 2 实际用的胶面框（分析尺度，即 lf["box_analysis"]）；
+    不给时退回探测框 info["bbox_analysis"]。红框画的是**按预设定形的冻结胶面**，
+    不再是检测框（SKILL.md 的口径）。lb 里的泳道 x / 条带行也全是分析尺度。"""
+    box = box_analysis or lb.get("box_analysis") or info["bbox_analysis"]
+    x0, y0, x1, y1 = box
     a = info["image"][0] / float(info["analysis"][0])
     cmd = [MAGICK, image, "-auto-orient", "-stroke", "red", "-strokewidth", "3",
            "-fill", "none", "-draw", "rectangle %d,%d %d,%d" % (x0 * a, y0 * a, x1 * a, y1 * a)]
