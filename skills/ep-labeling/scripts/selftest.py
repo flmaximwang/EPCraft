@@ -2,11 +2,13 @@
 # -*- coding: utf-8 -*-
 """selftest：不读用户文件的算法自检。"""
 import ast
+import base64
 import contextlib
 import io
 import json
 import os
 import re
+import shutil
 
 from config import load_gel_size
 from gel_area import compute, estimate_pitch_px
@@ -23,6 +25,7 @@ from record import (bands_from_rows, build as record_build, load as record_load,
 from scene import (build as scene_build, item_box_cm, load as scene_load,
                    norm_anchor, page_size_cm, validate as scene_validate,
                    write as scene_write)
+from scene_svg import baseline_offset_px, svg_string, write_svg
 from text_layout import annotate_cmd, pick_font, text_extent
 
 
@@ -782,7 +785,122 @@ def selftest():
             ("export 与 render 不一致", (w0, h0), (w3, h3))
         ok += 1
 
-    print("selftest %d/39 通过" % ok)
+    # 39/40/41) SVG writer（spec §5）：XML、页面 cm、内嵌胶面、item 数/id、白边两遍、
+    #            与 PNG 的墨迹中心（§8 容差 0.03 cm）。
+    with tempfile.TemporaryDirectory() as td:
+        import xml.etree.ElementTree as ET
+        gel = os.path.join(td, "synth.gel.png")
+        sc = _synth_svg_scene(gel, dpi=300)
+        sp = os.path.join(td, "fig.scene.json")
+        scene_write(sc, sp)
+        svg = os.path.join(td, "fig.svg")
+        info = write_svg(sc, svg, gel_path=gel, dpi=300)
+        ps = page_size_cm(sc)
+        ns = "{http://www.w3.org/2000/svg}"
+        root = ET.parse(svg).getroot()
+
+        # 39) 页面尺寸：width/height 带 cm，viewBox 同一组数（1 user unit = 1 cm）
+        w_cm = float(root.get("width")[:-2])
+        h_cm = float(root.get("height")[:-2])
+        vb = [float(v) for v in root.get("viewBox").split()]
+        assert root.get("width").endswith("cm") and root.get("height").endswith("cm"), root.attrib
+        assert abs(w_cm - ps["width_cm"]) < 1e-3 and abs(h_cm - ps["height_cm"]) < 1e-3, \
+            (w_cm, h_cm, ps)
+        assert vb == [0.0, 0.0, w_cm, h_cm], (vb, w_cm, h_cm)
+        assert info["page_cm"] == (ps["width_cm"], ps["height_cm"]), info
+
+        # 胶面：恰好一个 <image>，href 是 data URI，解出来就是 gel PNG 的字节
+        imgs = root.findall(".//%simage" % ns)
+        assert len(imgs) == 1, ("<image> 不是 1 个", len(imgs))
+        href = imgs[0].get("href") or imgs[0].get("{http://www.w3.org/1999/xlink}href")
+        assert href and href.startswith("data:image/png;base64,"), (href or "")[:40]
+        with open(gel, "rb") as f:
+            want = f.read()
+        assert base64.b64decode(href.split(",", 1)[1]) == want, "内嵌的胶面字节与 gel PNG 不一致"
+
+        # 每条 item 一个 <text>（不含白边），id 全在；属性齐全
+        texts = root.findall(".//%stext" % ns)
+        fills = [t for t in texts if not str(t.get("id")).endswith("-outline")]
+        assert len(fills) == len(sc["items"]) == info["n_items"], (len(fills), len(sc["items"]))
+        assert {t.get("id") for t in fills} == {it["id"] for it in sc["items"]}, \
+            ([t.get("id") for t in fills], [it["id"] for it in sc["items"]])
+        for t in fills:
+            assert t.get("data-role") in ("lane", "marker", "free"), t.attrib
+            assert json.loads(t.get("data-bind")) == next(
+                it["bind"] for it in sc["items"] if it["id"] == t.get("id")), t.attrib
+            assert t.get("font-family") == sc["font"]["family"] and t.get("fill")
+            assert t.get("text-anchor") in ("start", "middle", "end"), t.attrib
+
+        # 几何断言：x/y/anchor/字号都能从 scene 复算（不依赖栅格化器）
+        # 基线偏移是实测值（模块头那张表），先钉两个已知点：11px→10、33px→30。
+        assert baseline_offset_px(pick_font(), 11) == 10, baseline_offset_px(pick_font(), 11)
+        assert baseline_offset_px(pick_font(), 33) == 30, baseline_offset_px(pick_font(), 33)
+        for it, t in zip(sc["items"], fills):
+            _left, top_cm, _r, _b = item_box_cm(sc, it)
+            _v, h = norm_anchor(it["anchor"]).split("-")
+            want_anchor = {"left": "start", "center": "middle", "right": "end"}[h]
+            assert t.get("text-anchor") == want_anchor, (it["id"], t.get("text-anchor"), want_anchor)
+            assert abs(float(t.get("x")) - (ps["left_cm"] + float(it["x_cm"]))) < 1e-3, \
+                (it["id"], t.get("x"), ps["left_cm"] + float(it["x_cm"]))
+            px = max(6, int(round(float(it["size_pt"]) / 72.0 * 300)))
+            want_y = ps["top_cm"] + top_cm + baseline_offset_px(sc["font"]["file"], px) * 2.54 / 300
+            assert abs(float(t.get("y")) - want_y) < 1e-3, (it["id"], t.get("y"), want_y)
+            assert abs(float(t.get("font-size")) - float(it["size_pt"]) * 2.54 / 72.0) < 1e-4, \
+                (it["id"], t.get("font-size"))
+        ok += 1
+
+        # 40) 白边：text 数翻倍，每个 outline 都在自己的 fill **前面**（两遍画，不是 paint-order）
+        sc_o = _synth_svg_scene(gel, dpi=300, outline="#ffffff")
+        svg_o = os.path.join(td, "outline.svg")
+        write_svg(sc_o, svg_o, gel_path=gel, dpi=300)
+        root_o = ET.parse(svg_o).getroot()
+        texts_o = root_o.findall(".//%stext" % ns)
+        assert len(texts_o) == 2 * len(sc_o["items"]), (len(texts_o), len(sc_o["items"]))
+        order = [t.get("id") for t in texts_o]
+        for it in sc_o["items"]:
+            ident = it["id"]
+            assert order.index(ident + "-outline") < order.index(ident), \
+                ("outline 不在 fill 前面", ident, order)
+            o = next(t for t in texts_o if t.get("id") == ident + "-outline")
+            f = next(t for t in texts_o if t.get("id") == ident)
+            assert o.get("stroke") == "#ffffff" and o.get("fill") == "#ffffff", o.attrib
+            assert o.get("stroke-linejoin") == "round" and float(o.get("stroke-width")) > 0, o.attrib
+            assert o.get("x") == f.get("x") and o.get("y") == f.get("y"), ("白边几何变了", ident)
+            assert not f.get("stroke"), ("fill text 不该带描边", ident)
+        # scene.outline 为空 ⇒ 没有白边 text（spec §5）
+        sc_n = json.loads(json.dumps(sc_o))
+        sc_n["outline"] = None
+        root_n = ET.fromstring(svg_string(sc_n, gel_path=gel, dpi=300))
+        assert len(root_n.findall(".//%stext" % ns)) == len(sc["items"]), "outline=None 仍画了白边"
+        ok += 1
+
+        # 41) 保真（§8）：同一 scene、同一 dpi → SVG 与 PNG 的每条标签墨迹中心差 ≤ 0.03 cm。
+        #     栅格化优先用 rsvg-convert（本机 ImageMagick 的 SVG 委托就是它）；本机 magick
+        #     自带 MSVG 渲染器按 user unit 排字（墨迹大 3–4 倍），不能当文字度量的基准，
+        #     这时只保留上面的几何断言（brief 允许）。
+        png = os.path.join(td, "fig.png")
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = gp_main(["export", sp, "--png", png, "--dpi", "300"])
+        assert rc == 0, "export（保真对照的 PNG）失败"
+        raster = os.path.join(td, "raster.png")
+        tool = _svg_raster(svg, raster, 300)
+        if tool is None:
+            print("[i] 没有 rsvg-convert，SVG 保真只做几何断言（不做像素比较）")
+        else:
+            worst = 0.0
+            for it in sc["items"]:
+                box = item_box_cm(sc, it)
+                a = _ink_centre_cm(png, box, ps)
+                b = _ink_centre_cm(raster, box, ps)
+                assert a and b, ("区域里找不到墨迹", it["id"], a, b)
+                dx, dy = abs(b[0] - a[0]), abs(b[1] - a[1])
+                worst = max(worst, dx, dy)
+                assert dx <= 0.03 and dy <= 0.03, \
+                    ("SVG 与 PNG 的墨迹中心超出 §8 容差", it["id"], round(dx, 4), round(dy, 4))
+            assert worst <= 0.03, worst
+        ok += 1
+
+    print("selftest %d/42 通过" % ok)
     return 0
 
 
@@ -920,6 +1038,79 @@ def _synth_scene(long_label=False):
                       "250 kD", 6, 7.0, 3.0, "middle-center")]
     return scene_build(items, face, ppc, dpi=dpi, font=font, margin_frac=0.05,
                        gel_image="synth.gel.png")
+
+
+def _synth_svg_scene(gel_path, dpi=300, outline=None):
+    """selftest 用的 SVG scene：真 gel PNG + 四条标签（三种竖直锚点、左右两侧都有）。
+
+    标签彼此隔得远，保真检查才能按 item 的框各自找墨迹。
+    """
+    font = pick_font()
+    ppc = float(dpi) / 2.54                      # 成品 px / cm
+    W, H = int(round(8.6 * ppc)), int(round(6.25 * ppc))
+    _synth_gel(gel_path, (W, H), (4, 4, W - 5, H - 5), [], gel_v=200)
+    face = (0.0, 0.0, float(W), float(H))
+
+    def item(role, bind, text, size, x_cm, y_cm, anchor):
+        px = max(6, int(round(size / 72.0 * dpi)))
+        tw, th = text_extent(font, px, text)
+        v, h = anchor.split("-")
+        ax = x_cm * ppc - (tw if h == "right" else tw / 2.0 if h == "center" else 0.0)
+        ay = y_cm * ppc - (th if v == "bottom" else th / 2.0 if v == "middle" else 0.0)
+        return {"ax": ax, "ay": ay, "box_w": tw, "box_h": th, "text": text,
+                "size_pt": size, "color": "#000000", "role": role,
+                "bind": bind, "anchor": anchor}
+
+    items = [
+        item("lane", {"lane": 1}, "1", 8, 1.0, -0.10, "bottom-center"),
+        item("marker", {"marker_lane": 2, "label_index": 1, "band_y_cm": 1.5},
+             "250 kD", 6, 0.30, 1.5, "middle-right"),
+        item("marker", {"marker_lane": 2, "label_index": 2, "band_y_cm": 4.5},
+             "15 kD", 6, 8.30, 4.5, "middle-left"),
+        item("free", {}, "10", 8, 4.3, 1.0, "top-center"),
+    ]
+    return scene_build(items, face, ppc, dpi=dpi, font=font, outline=outline,
+                       margin_frac=0.05, gel_image=os.path.basename(gel_path))
+
+
+def _svg_raster(svg, png, dpi):
+    """SVG → PNG。用 rsvg-convert（本机 ImageMagick 的 SVG 委托）；没有就返回 None。
+
+    不用 `magick` 直接栅格化：这台机器上 IM 走内置 MSVG 渲染器，文字按 user unit 排，
+    墨迹大 3–4 倍（实测 8 pt 排成 ~0.44 cm 宽），不能当作 §8 的文字度量基准。
+    """
+    exe = shutil.which("rsvg-convert")
+    if not exe:
+        return None
+    _run([exe, "--dpi-x", str(dpi), "--dpi-y", str(dpi), "-o", png, svg])
+    return exe
+
+
+def _ink_centre_cm(path, box, ps, thr=100, pad_cm=0.12):
+    """png 里 box（胶面 cm 坐标）附近墨迹 bbox 的中心（cm，胶面坐标）。
+
+    区域按该图自己的 px/cm 换算（两张图的整数像素尺寸可能差 1 px）；只认深色，
+    合成胶的灰底（gray(200)）不会被当成字。
+    """
+    w, h, rgb = read_ppm(path, None)
+    g = to_gray(w, h, rgb)
+    sx, sy = w / ps["width_cm"], h / ps["height_cm"]
+    pad = int(round(pad_cm * sx))
+    x0 = int((box[0] + ps["left_cm"]) * sx) - pad
+    x1 = int((box[2] + ps["left_cm"]) * sx) + pad
+    y0 = int((box[1] + ps["top_cm"]) * sy) - pad
+    y1 = int((box[3] + ps["top_cm"]) * sy) + pad
+    xs, ys = [], []
+    for y in range(max(0, y0), min(h, y1)):
+        row = y * w
+        for x in range(max(0, x0), min(w, x1)):
+            if g[row + x] < thr:
+                xs.append(x)
+                ys.append(y)
+    if not xs:
+        return None
+    return ((min(xs) + max(xs) + 1) / 2.0 / sx - ps["left_cm"],
+            (min(ys) + max(ys) + 1) / 2.0 / sy - ps["top_cm"])
 
 
 def _t2_preset(width_cm, height_cm, trim_top=0.0, trim_bottom=0.0, anchor="bottom",
