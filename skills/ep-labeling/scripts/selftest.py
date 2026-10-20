@@ -10,9 +10,9 @@ from config import load_gel_size
 from gel_area import compute, estimate_pitch_px
 from magick_io import MAGICK, _run, read_ppm, to_gray
 from gel_detect import bg_plane, components, detect_gel, ink_mask
-from lane_detect import (clusters, fat_rows, fill_gaps, group_rows, lanes_and_bands,
-                         pitch_from_row, snap_to_anchors)
-from geometry import load_dims_after, rotate_pt, rotated_rect_bbox
+from lane_detect import bands_for_lanes, clusters, fat_rows, group_rows
+from lane_fit import find_lanes
+from geometry import load_dims_after, rect_to_analysis, rotate_pt, rotated_rect_bbox
 from mw_report import build_cal, estimate, marker_pairs, parse_mw
 from text_layout import annotate_cmd, pick_font, text_extent
 
@@ -173,83 +173,121 @@ def selftest():
             rows[-1] - rows[0] + 1)
         ok += 1
 
-    # 8) 补位：差值对得上整数格才补，对不上就报出来不补
-    marks, skipped = fill_gaps([0, 10, 40], [4, 4, 4], 10)
-    assert [round(c, 1) for c, _, _ in marks] == [0, 10, 20, 30, 40], marks
-    assert [it for _, _, it in marks] == [False, False, True, True, False]
-    assert not skipped
-    marks2, skipped2 = fill_gaps([0, 10, 35], [4, 4, 4], 10)
-    assert len(marks2) == 3 and len(skipped2) == 1 and skipped2[0][3] == 2.5, (marks2, skipped2)
-    ok += 1
+    # 旧算法已移除：fill_gaps / pitch_from_row 已删除（泳道数恒等于先验 lane_count，
+    # 间距来自预设而不是「条带最密的一行」），对应的旧用例一并删除。
 
-    # 9) 间距量自「条带最密的一行」，不量整块胶列剖面：造一行每 20 px 一条带
-    w2, h2 = 200, 60
-    m = bytearray(w2 * h2)
-    for x in (30, 50, 70, 90, 110):
-        for y in range(20, 30):
-            for dx in range(-2, 3):
-                m[y * w2 + x + dx] = 1
-    for y in range(40, 45):                      # 另加一条竖纹（不该被当成间距来源）
-        m[y * w2 + 30] = 1
-    p, row = pitch_from_row(m, w2, 0, w2 - 1, 0, h2 - 1)
-    assert abs(p - 20) <= 0.5, (p, row)
-    assert row == 20, row
-    ok += 1
-
-    # 10) 端到端：5 条泳道（其中一条只有很淡的带）+ 一道竖纹 → 必须正好 5 条，竖纹不算泳道
+    # 8) 端到端：5 条泳道（第 3 条只有很淡的带）+ 一道竖纹 → 正好 5 条、位置 ≤3 px。
+    #    旧算法已移除：旧版用泳道启发式（列投影 + 验伪 + 补位）找泳道；T3 起泳道恒由
+    #    stage 2 的 5 条先验格点给出，竖纹不可能再「变成」一条泳道，只在细化窗口外干扰不了它。
     with tempfile.TemporaryDirectory() as td:
         src_img = os.path.join(td, "synthetic_gel.png")
-        lanes_x = (120, 150, 180, 210, 240)
-        cmd = [MAGICK, "-size", "400x300", "xc:white", "-fill", "gray(180)",
-               "-draw", "rectangle 100,80 340,260"]
-        for i, x in enumerate(lanes_x):
-            v = 165 if i == 2 else 120
-            cmd += ["-fill", "gray(%d)" % v, "-draw", "rectangle %d,180 %d,190" % (x - 6, x + 6)]
-        cmd += ["-fill", "gray(172)", "-draw", "rectangle 300,80 302,260", src_img]   # 竖纹
-        _run(cmd)
-        lb = lanes_and_bands(src_img, (100, 80, 340, 260), 0.0, longest=400)  # 别放大：rect 是原图坐标
-        got = [c for c, _ in lb["lanes"]]
-        assert len(got) == 5, ("泳道数不对", got, lb["dropped"])
-        for want_x, g in zip(lanes_x, got):
-            assert abs(want_x - g) <= 3, (lanes_x, got)
-        assert all(abs(g - 301) > 6 for g in got), ("竖纹被当成泳道", got)
-        assert lb["measured"] == 5 and not any(lb["interp"])
+        _synth_gel(src_img, (400, 300), (100, 60, 340, 260),
+                   [124, 172, 220, 268, 316], faint={2: 168},
+                   streak=(292, 60, 260))
+        ga = _synth_ga((100, 60, 340, 260), 48.0, canvas=(400, 300))
+        lf = find_lanes(src_img, ga, 5, longest=400)
+        got = [ln["x_analysis"] for ln in lf["lanes"]]
+        want = [124, 172, 220, 268, 316]
+        assert len(got) == 5, ("泳道数不对", got)
+        for w, g in zip(want, got):
+            assert abs(w - g) <= 3, (want, got)
+        assert all(abs(g - 292) > 6 for g in got), ("竖纹被当成了泳道", got)
+        assert lf["lanes"][2]["measured"], ("淡道 3 应仍有像素证据", lf["lanes"][2])
         ok += 1
 
-    # 11) 文字对齐几何：-annotate 的 y 是框顶边；marker 框中心对条带行、泳道名框底边在胶顶之上 gap
+    # 9) 空泳道：15 条格点里第 7 条完全没条带 → 仍返回 15 条；第 7 条 measured=False、
+    #    evidence 有值（可以是 0）、x 落在格点上。空道不是「识别失败」，是 estimated 泳道。
+    with tempfile.TemporaryDirectory() as td:
+        src_img = os.path.join(td, "empty_lane.png")
+        xs = [109 + 18 * i for i in range(15)]          # 胶面 100..370，格点 109..361
+        _synth_gel(src_img, (400, 300), (100, 60, 370, 260), xs, skip={6})
+        ga = _synth_ga((100, 60, 370, 260), 18.0, canvas=(400, 300))
+        lf = find_lanes(src_img, ga, 15, longest=400)
+        assert len(lf["lanes"]) == 15, len(lf["lanes"])
+        lane7 = lf["lanes"][6]
+        assert lane7["measured"] is False, lane7
+        assert isinstance(lane7["evidence"], float) and lane7["evidence"] >= 0.0, lane7
+        assert abs(lane7["x_analysis"] - 217.0) <= 1.0, lane7      # 第 7 条的格点位置（109+6×18）
+        assert sum(1 for ln in lf["lanes"] if ln["measured"]) == 14, lf["lanes"]
+        ok += 1
+
+    # 10) 偏心照片：胶块不在画面中央（左偏/上偏）→ 格点对齐到胶，不跟着画面中心跑。
+    with tempfile.TemporaryDirectory() as td:
+        src_img = os.path.join(td, "off_centre.png")
+        xs = [84, 132, 180, 228, 276]                   # 胶面 60..300，宽 240，pitch 48
+        _synth_gel(src_img, (500, 400), (60, 50, 300, 350), xs)
+        ga = _synth_ga((60, 50, 300, 350), 48.0, canvas=(500, 400))
+        lf = find_lanes(src_img, ga, 5, longest=500)
+        got = [ln["x_analysis"] for ln in lf["lanes"]]
+        assert len(got) == 5, got
+        for w, g in zip(xs, got):
+            assert abs(w - g) <= 2, (xs, got)
+        assert abs(sum(got) / len(got) - 180.0) <= 3, ("跟着画面中心跑了", got)
+        assert abs(sum(got) / len(got) - 250.0) > 30, ("用了画面中心而不是胶中心", got)
+        ok += 1
+
+    # 11) 格点拟合：15 条等距竖线（间距 18 px）→ 拟合 pitch 与真值差 ≤0.5 px、全部 measured。
+    #    顺带验 geometry.rect_to_analysis 是 rotated_rect_bbox 的严格逆变换（5° 往返 ≤1 px）。
+    with tempfile.TemporaryDirectory() as td:
+        src_img = os.path.join(td, "lattice.png")
+        xs = [74 + 18 * i for i in range(15)]          # 胶面 65..335，宽 270
+        _synth_gel(src_img, (400, 300), (65, 60, 335, 260), xs,
+                   band_y=(70, 255), band_v=120, band_half=1)
+        ga = _synth_ga((65, 60, 335, 260), 18.0, canvas=(400, 300))
+        lf = find_lanes(src_img, ga, 15, longest=400)
+        assert len(lf["lanes"]) == 15, len(lf["lanes"])
+        assert abs(lf["pitch"] - 18.0) <= 0.5, ("pitch 偏差", lf["pitch"])
+        assert all(ln["measured"] for ln in lf["lanes"]), \
+            [ln for ln in lf["lanes"] if not ln["measured"]]
+        for w, ln in zip(xs, lf["lanes"]):
+            assert abs(w - ln["x_analysis"]) <= 1.5, (xs, [x["x_analysis"] for x in lf["lanes"]])
+        # 旋转往返：rect_orig → rotated_rect_bbox → rect_to_analysis。
+        # 注意 bbox 是「旋转后四角的轴对齐框」，逆变换回来必然比原矩形略大（不是逐边相等）；
+        # 能钉住的是中心不漂，以及它确实包含原矩形。
+        ang = 5.0
+        (W0, H0), (W1, H1) = load_dims_after(src_img, ang)
+        rb, _ = rotated_rect_bbox((65, 60, 335, 260), ang, (W0, H0), (W1, H1))
+        back = rect_to_analysis(rb, ang, {"path": src_img, "image": (W0, H0),
+                                         "analysis": (W0, H0)})
+        assert abs((back[0] + back[2]) / 2.0 - 200.0) <= 1, back
+        assert abs((back[1] + back[3]) / 2.0 - 160.0) <= 1, back
+        assert back[0] <= 65 and back[1] <= 60 and back[2] >= 335 and back[3] >= 260, back
+        ok += 1
+
+    # 12) 条数恒等：任何输入都 len(lanes) == lane_count（5 / 15 两个预设各测一次，且是空胶）。
+    with tempfile.TemporaryDirectory() as td:
+        src_img = os.path.join(td, "blank.png")
+        _synth_gel(src_img, (400, 300), (100, 60, 370, 260), [])
+        for n, pc in ((5, 54.0), (15, 18.0)):
+            ga = _synth_ga((100, 60, 370, 260), pc, canvas=(400, 300))
+            lf = find_lanes(src_img, ga, n, longest=400)
+            assert len(lf["lanes"]) == n, (n, len(lf["lanes"]))
+            assert not any(ln["measured"] for ln in lf["lanes"]), lf["lanes"]
+        ok += 1
+
+    # 13) 文字对齐几何：-annotate 的 y 是框顶边；marker 框中心对条带行、泳道名框底边在胶顶之上 gap
     for n, b, m in test_annotate_geometry():
         if not b:
             raise AssertionError("对齐几何：%s —— %s" % (n, m))
     ok += 1          # 一组 6 项算一项，免得分子分母对不上
 
-    # 12) 泳道中心吸附锚点：空泳道被列投影的孤立尖峰钉在 308（真值 305），旁边那条
-    #     因为宽 run 按自身宽度均分落在 319.6（真值 321.5）→ 11 和 12 挤成 11.6。
-    #     吸附到「条带最密那一行」的 run 后，间距必须回到一个间距左右。
-    cx = [269.6, 284.7, 308.0, 319.6, 336.6]
-    anchors = [269.5, 286.5, 305.0, 321.5, 339.0]
-    got = snap_to_anchors(cx, anchors, 18.0)
-    assert [round(v, 1) for v in got] == anchors, got
-    gaps = [round(got[i + 1] - got[i], 1) for i in range(len(got) - 1)]
-    assert all(14.0 <= g <= 20.0 for g in gaps), ("泳道挤在一起没修好", gaps)
-    # 偏超过半个间距的泳道不许被拉动（没有条带证据的泳道要保留列投影的位置）
-    assert snap_to_anchors([100.0, 340.0], [120.0], 18.0) == [100.0, 340.0]
-    assert snap_to_anchors([100.0], [], 18.0) == [100.0]
-    ok += 1
+    # 旧算法已移除：snap_to_anchors 已删除（泳道中心不再吸附到「条带最密那一行」的锚点，
+    # stage 2 只用列剖面 + 先验格点；原先的看护用例随函数一起删掉）。
 
-    # 13) 并带检测：一条行塞两条带（21/20 kD）时，那一行必须比同泳道其他行厚一截
+    # 14) 并带检测：一条行塞两条带（21/20 kD）时，那一行必须比同泳道其他行厚一截
     assert fat_rows([(100, 6), (120, 6), (140, 6), (160, 15), (180, 6)]) == [(160, 2.5)]
     assert fat_rows([(10, 5), (20, 5), (30, 5)]) == []      # 均匀的行不许误报
     assert fat_rows([]) == []
     ok += 1
 
-    # 14) 并带标签的行分组：{"rows": 2} 的标签吃两条带、落在它们中间；其余一一对应
+    # 15) 并带标签的行分组：{"rows": 2} 的标签吃两条带、落在它们中间；其余一一对应
     assert group_rows([10, 20, 30], [1, 2]) == [10.0, 25.0]
     assert group_rows([10, 20, 30], [1, 1, 1]) == [10.0, 20.0, 30.0]
     assert group_rows([10, 20], [1]) == [10.0]
     assert group_rows([], [1, 2]) == []
     ok += 1
 
-    # 15) 字号必须真的生效：`annotate_cmd` 漏写 -pointsize 时 IM 一律按默认 12 pt 画，
+    # 16) 字号必须真的生效：`annotate_cmd` 漏写 -pointsize 时 IM 一律按默认 12 pt 画，
     #     96/300 dpi 的墨迹都会是同一高度（实测踩过：两个 dpi 的字相对胶面大小不同）。
     with tempfile.TemporaryDirectory() as td:
         o = os.path.join(td, "pt.png")
@@ -266,7 +304,7 @@ def selftest():
         assert 14 <= h_small <= 20 and 30 <= h_big <= 40, (h_small, h_big)
     ok += 1
 
-    # 16) 分子量标定：完美的 log 线性 marker → 两种方法都应还原；interp 不外推、logfit 外推并标记
+    # 17) 分子量标定：完美的 log 线性 marker → 两种方法都应还原；interp 不外推、logfit 外推并标记
     assert parse_mw("21/20 kD") == [21.0, 20.0] and parse_mw("250 kD") == [250.0] and parse_mw("M") == []
     ents = [{"text": "100 kD"}, {"text": "21/20 kD", "rows": 2}, {"text": "10 kD"}]
     pr = marker_pairs(ents, [1, 2, 1], [10, 20, 24, 30], lambda e, d: dict(e))
@@ -282,7 +320,7 @@ def selftest():
     assert ex and abs(mw - 10 ** (2.0 - 2.0)) < 1e-6, (mw, ex)
     ok += 1
 
-    # 17) 强制预设闸门：probe 没给 --gel-size 必须在**跑检测之前**就失败。
+    # 18) 强制预设闸门：probe 没给 --gel-size 必须在**跑检测之前**就失败。
     #     用一张不存在的图：真跑到 detect_gel 会报别的错，只有先过闸门才会是 spec 那一行。
     from gel_photo import main as gp_main
     err = io.StringIO()
@@ -292,7 +330,7 @@ def selftest():
     assert rc != 0 and "gel preset required (--gel-size FILE)" in msg, (rc, msg)
     ok += 1
 
-    # 18) --gel-cm 不再是 --gel-size 的替代：只给 --gel-cm 同样被闸门挡下
+    # 19) --gel-cm 不再是 --gel-size 的替代：只给 --gel-cm 同样被闸门挡下
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
         rc = gp_main(["render", "/nonexistent/t1-gate-gel-cm.png", "--out", "/tmp/t1-gate.png",
@@ -301,7 +339,7 @@ def selftest():
     assert rc != 0 and "gel preset required (--gel-size FILE)" in msg, (rc, msg)
     ok += 1
 
-    # 19) 预设 schema：缺 lane_count 报错、不变式破坏报偏差、合法预设返回 dict 且 anchor 默认 bottom
+    # 20) 预设 schema：缺 lane_count 报错、不变式破坏报偏差、合法预设返回 dict 且 anchor 默认 bottom
     with tempfile.TemporaryDirectory() as td:
         good = {"name": "t", "width_cm": 8.6, "height_cm": 6.9,
                 "lane_count": 15, "lane_pitch_cm": 0.565}
@@ -350,7 +388,7 @@ def selftest():
             assert sg["lane_count"] == 15 and sg["anchor"] == "bottom", sg
     ok += 1
 
-    # 20) stage 1：预设高比探测框高 8% → 胶面按**预设**定高（不是照抄探测框）。
+    # 21) stage 1：预设高比探测框高 8% → 胶面按**预设**定高（不是照抄探测框）。
     #     8% 在 spec §4.4 的 10% 容差内 ⇒ 不该有 warning（这是「只警告、不静默改图」的另一半）；
     #     再补一档 +12% 验 height warning 真的会打（spec §8 的「+8% 且 warning」与 10% 容差互相矛盾，
     #     两档一起测才能同时钉住「形状跟预设」和「>10% 才警告」）。
@@ -384,7 +422,7 @@ def selftest():
         assert abs((ga12["gel_box"][3] - ga12["gel_box"][1]) - p12["height_cm"] * ppc) <= 0.01 * ppc
         ok += 1
 
-        # 21) anchor：同一条探测框，bottom 保下边 / top 保上边 / center 保中心（±1 px）
+        # 22) anchor：同一条探测框，bottom 保下边 / top 保上边 / center 保中心（±1 px）
         base = _t2_preset(6.0, h_px / ppc * 0.8)      # 比探测框矮 20%，三条边才分得开
         boxes = {}
         for anc in ("bottom", "top", "center"):
@@ -401,7 +439,7 @@ def selftest():
                    - (bb[1] + bb[3]) / 2.0) <= 1, (boxes["center"], bb)
         ok += 1
 
-        # 22) trim：bottom anchor、trim_top=0.3 → 高 = (height_cm − 0.3) × px_per_cm；下边不动
+        # 23) trim：bottom anchor、trim_top=0.3 → 高 = (height_cm − 0.3) × px_per_cm；下边不动
         p22 = _t2_preset(6.0, 6.0, trim_top=0.3)
         with contextlib.redirect_stdout(io.StringIO()):
             ga22 = compute(info, p22, 0.0, pitch_px=ppc * p22["lane_pitch_cm"])
@@ -412,7 +450,7 @@ def selftest():
         assert abs(ga22["height_cm"] - 5.7) < 1e-6, ga22["height_cm"]
         ok += 1
 
-    # 23) 裁过的照片：gel_lanes=8 → 定标用 8 × lane_pitch_cm（不用整块 width_cm）；
+    # 24) 裁过的照片：gel_lanes=8 → 定标用 8 × lane_pitch_cm（不用整块 width_cm）；
     #     并验 estimate_pitch_px 的廉价估计（stage 1 的预估值，精度由 T3 的格点拟合复核）
     with tempfile.TemporaryDirectory() as td:
         src = os.path.join(td, "stage1_crop.png")
@@ -447,8 +485,40 @@ def selftest():
         assert 27.0 <= est <= 33.0, est
         ok += 1
 
-    print("selftest %d/23 通过" % ok)
+    print("selftest %d/24 通过" % ok)
     return 0
+
+
+def _synth_gel(path, size, gel_rect, lane_xs, faint=None, skip=None, streak=None,
+               band_y=(170, 180), band_v=120, band_half=6, gel_v=180):
+    """用 magick 现造一张合成胶（selftest 专用，不读用户文件）。
+
+    lane_xs = 泳道中心 x；faint = {序号: 灰度} 让某条道淡一点；skip = {序号} 该道完全没条带；
+    streak = (x, y0, y1) 造一道竖纹（默认灰度 172，比胶面 180 略暗、整列均匀）。
+    """
+    faint = faint or {}
+    skip = set(skip or ())
+    W, H = size
+    x0, y0, x1, y1 = gel_rect
+    cmd = [MAGICK, "-size", "%dx%d" % (W, H), "xc:white", "-fill", "gray(%d)" % gel_v,
+           "-draw", "rectangle %d,%d %d,%d" % (x0, y0, x1, y1)]
+    by0, by1 = band_y
+    for i, x in enumerate(lane_xs):
+        if i in skip:
+            continue
+        v = faint.get(i, band_v)
+        cmd += ["-fill", "gray(%d)" % v,
+                "-draw", "rectangle %d,%d %d,%d" % (x - band_half, by0, x + band_half, by1)]
+    if streak:
+        sx, sy0, sy1 = streak
+        cmd += ["-fill", "gray(172)", "-draw", "rectangle %d,%d %d,%d" % (sx - 1, sy0, sx + 1, sy1)]
+    _run(cmd + [path])
+
+
+def _synth_ga(gel_box, px_per_cm, lane_pitch_cm=1.0, canvas=None):
+    """selftest 用的 stage 1 冻结输出（角度 0；px_per_cm 与 lane_pitch_cm 一起把先验钉死）。"""
+    return {"gel_box": gel_box, "angle": 0.0, "px_per_cm": px_per_cm,
+            "lane_pitch_cm": lane_pitch_cm, "canvas": canvas}
 
 
 def _t2_preset(width_cm, height_cm, trim_top=0.0, trim_bottom=0.0, anchor="bottom",
