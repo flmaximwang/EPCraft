@@ -15,7 +15,7 @@
 
 **不读条带**：本模块只有列剖面（每列有多少像素低于暗阈值），没有行剖面、没有 band rows、
 没有「条带最密的一行」。泳道的 measured/estimated 与 x 细化都只由列剖面决定。
-本模块也不 import lane_detect（那里有 stage 3 的条带代码）：stage 2 不能依赖 stage 3。
+本模块也不 import band_fit（stage 3 的条带代码）：stage 2 不能依赖 stage 3。
 """
 from geometry import load_dims_after, rect_to_analysis, rotate_pt
 from magick_io import identify, read_ppm, to_gray

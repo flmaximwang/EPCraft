@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""stage 3 的桥：给定**冻结的泳道 x**，求每条泳道的条带行。
+"""stage 3：给定**冻结的泳道 x**，求每条泳道的条带行。
 
-泳道 x 由 stage 2（lane_fit.py）给出，本模块不再猜泳道、不再改泳道：
-  旧算法里的 pitch_from_row / snap_to_anchors / fill_gaps / split_wide / evidence 验伪 /
-  want 补位全部移除（T3）。stage 3 只读冻结的泳道，条带结果也不许回流到泳道。
+管线是严格串行的（spec §2 决策 3）：胶面 → 泳道 → 条带，每一级只读上一级的冻结输出。
+本模块只做第三级：
 
-条带算法本身不变（T4 再清理）：沿 x 平均的行剖面 → top-hat → 峰 = (y, 半高宽, 深度)。
-池化的判据：胶内中位数 − 3·1.4826·MAD（严格，只要真条带）；泳道判据的宽松阈值只用于
-记录（bands_for_lanes 的返回里仍带着，方便 probe 打印），不参与任何接受/拒绝。
+    stage 2 的冻结输出（每条泳道的 x，分析尺度）
+      ├─ 泳道内沿 x 平均的行剖面（ImageJ 的 Plot Profile 口径）
+      ├─ top-hat（减宽窗基线）后取局部极大 → (y, 半高宽, 深度)
+      └─ 另用更细的栅格扫行，换算回分析尺度（梯子在高分子量端才分得开）
+
+**不回流**：本模块不返回任何泳道位置、不改泳道、不按条带证据丢弃泳道。条带行永远只
+向下游（mw_report / 记录 / 出图）走；stage 2 已经冻结，条带结果不参与它的任何判断。
+本模块也不 import stage 2/4（lane_fit / lane_select / gel_photo）：stage 3 不能反向依赖。
+
+旧算法里的 pitch_from_row / snap_to_anchors / fill_gaps / split_wide / evidence 验伪 /
+want 补位全部留在 T3 之前；stage 3 只读冻结的泳道。条带算法本身自 T3 起未改动（T4 只搬家）。
 """
 from magick_io import read_ppm, to_gray
 
@@ -43,15 +50,6 @@ def merge_near(runs, d=3.0):
         else:
             out.append((c, w, pk))
     return out
-
-
-def snap_to_band(y, rows, spacing):
-    """把手动给的 y 吸附到最近的**实测条带行**（容差 = 相邻行距的 40%）。"""
-    if not rows:
-        return y
-    tol = max(2.0, 0.4 * (spacing or 8.0))
-    best = min(rows, key=lambda r: abs(r - y))
-    return best if abs(best - y) <= tol else y
 
 
 def lane_row_profile(gray, w, c, half, ya, yb):
@@ -145,9 +143,9 @@ def fat_rows(bands, k=1.6):
     return [(round(t[0], 1), round(t[1] / med, 1)) for t in bands if t[1] >= k * med]
 
 
-def bands_for_lanes(path, box_analysis, lanes_analysis, longest=700, ignore_top=0.12,
-                    row_longest=1200, cue="dark", thr=None):
-    """给冻结的泳道 x（分析尺度）求条带行。
+def find_bands(path, box_analysis, lanes_analysis, longest=700, ignore_top=0.12,
+               row_longest=1200, cue="dark", thr=None):
+    """stage 3：只读冻结的泳道 x（分析尺度），返回每条泳道的条带行。
 
     box_analysis = stage 2 实际用的胶面矩形（分析尺度）；lanes_analysis = 左边→右边的 x 列表。
     返回 {"bands": [[(y_analysis, width, depth), ...]], "row_spacing", "y_range",

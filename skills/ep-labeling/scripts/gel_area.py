@@ -16,7 +16,7 @@
 - 探测框的上缘含上样孔/梳齿、外缘还有一圈光晕，它的高宽比不可靠（参考照片就差了 ~4%）；
 - 所以宽（尺度）沿用探测框，高（形状）由预设给，两者不一致时只报出来（偏差 >10%）。
 
-本模块只依赖 magick_io / geometry（底层）——不 import lane_fit / lane_detect：stage 1 不能反向依赖 stage 2/3。
+本模块只依赖 magick_io / geometry（底层）——不 import lane_fit / band_fit：stage 1 不能反向依赖 stage 2/3。
 """
 from geometry import load_dims_after, rotated_rect_bbox
 from magick_io import read_ppm, to_gray
@@ -40,8 +40,9 @@ def cross_check_height(detected_h_cm, preset_h_cm, tol=TOL):
 def cross_check_scale(px_per_cm, pitch_px, lane_pitch_cm, tol=TOL):
     """泳道间距（实测/估计，旋转画布 px）vs 当前定标推出的 px_per_cm × lane_pitch_cm。
 
-    T3 起 render 不再把 stage 2 的拟合 pitch 传进来（串行：stage 1 先冻结）；默认用
-    estimate_pitch_px() 的独立估计做这道核对。只警告，不改定标。
+    stage 1 先用 estimate_pitch_px() 做一次独立预估；T4 起 run_stages 在拿到 stage 2 的
+    拟合 pitch 后**重跑本函数**，用它替换掉预估值（stage 1 的定标本身仍先冻结，不改）。
+    只警告，不改定标。
     """
     from_pitch = px_per_cm * lane_pitch_cm
     dev = abs(pitch_px - from_pitch) / from_pitch if from_pitch else 0.0
@@ -71,7 +72,7 @@ def _check_canvas(box, canvas):
 # ---------------------------------------------------------------- 泳道间距的廉价预估
 
 def _run_centres(prof, thr):
-    """连续 >= thr 的 run → 加权中心（stage 1 不 import lane_detect，几行本地实现）。"""
+    """连续 >= thr 的 run → 加权中心（stage 1 不 import 泳道/条带模块，几行本地实现）。"""
     runs, cur = [], []
     for i, v in enumerate(prof):
         if v >= thr:
@@ -103,7 +104,7 @@ def estimate_pitch_px(info, angle=None, lane_mad_k=1.5, ignore_top=0.12):
     """stage 1 的**预估值**：胶框内宽松列剖面里 run 中心距的中位数（旋转画布 px）。
 
     只用来做尺度交叉核对，不参与定标；精度由 stage 2 的格点拟合复核（T3）。
-    宽松阈值的取法与 lane_detect 找泳道时一致（胶内中位数 − k·1.4826·MAD），
+    宽松阈值的取法与 stage 2 的列剖面一致（胶内中位数 − k·1.4826·MAD），
     这样「只有一条淡带」的泳道也能在列剖面上露头；上缘 ignore_top 那段（上样孔）不参与。
 
     `angle` 只为签名对称（旋转前后距离不变，所以用原图→分析的缩放换算即可）。
