@@ -13,8 +13,8 @@
       "id": "should-trigger-02",
       "type": "should_trigger",
       "prompt": "同一张照片，分子量字号想改成 6 pt、泳道名居左，重跑一版。",
-      "expected_behavior": "属本 skill 且只改配置：改 markers.json 的 size=6（pt）与 lanes.json 的 align=left，重跑同一条 render（照片、探测、胶体尺寸都不变）。不要重新探测、不要改脚本。",
-      "notes": "触发点是「配置改一下重跑」。"
+      "expected_behavior": "属本 skill，但这是**文字层**改动，不要重跑 render。打开上一次的 out.scene.json（或用户 Save 下来的 out.html），把 role=marker 的 size_pt 全改成 6；泳道名改成左对齐（anchor=bottom-left，x_cm 放在原泳道中心），再 `export out.scene.json --png out.png --dpi <原 dpi>`。检测、胶面像素、泳道位置和分子量都不动，只有页面留白按页面规则可能变化；给用户新的 PNG 和（若他还要改）新的 html。",
+      "notes": "文字层改动听起来像「配置改一下重跑」，现在走 export；见 SKILL.md 步骤 9。"
     },
     {
       "id": "should-trigger-03",
@@ -147,6 +147,55 @@
       "prompt": "我只留第 3、4、5 条泳道，结果脚本说 marker 泳道不在里面，停了。",
       "expected_behavior": "这是设计好的闸门，不是 bug：脚本不替用户决定，停下并列出会被裁掉的 marker 泳道。问用户选哪个：`--marker-policy calibrate-only`（marker 泳道只用于定标/分子量，成品里不画 marker 标签、没有分子量刻度可读）还是 `--marker-policy keep`（把离保留泳道最近的 marker 泳道加进选择，多一段拼接、图注同样要披露拼接）。每次都问、不要默认；两个都不给就继续报错退出。",
       "notes": "对应 spec §6b「脚本不替用户决定」与 §8 的缺 marker 失败用例。"
+    },
+    {
+      "id": "should-trigger-20",
+      "type": "should_trigger",
+      "prompt": "把泳道 3 改名 WT。",
+      "expected_behavior": "这是纯文字改动，走 `export`，**不要重跑 render、不要重新探测**。在上一次的 fig.scene.json 里找到 `bind.lane == 3`（id 为 `lane-3`）的 item，把 `text` 改成 `WT`；若用户给的是编辑过的 fig.html，就在浏览器里改完下载 scene 或 PNG。然后 `python3 scripts/gel_photo.py export fig.scene.json --png out.png [--dpi 300]`（约 1 秒）。胶面、泳道位置、分子量都不变；标签变长时页面按 §4 规则自动加宽。",
+      "notes": "路由：文字层 → export。英文同义请求（rename lane 3 to WT）走同一条路。"
+    },
+    {
+      "id": "should-trigger-21",
+      "type": "should_trigger",
+      "prompt": "rename lane 3 to WT",
+      "expected_behavior": "同 should-trigger-20：找到 scene 里 `bind.lane == 3` 的 item（id `lane-3`），把 `text` 改成 `WT`，再 `python3 scripts/gel_photo.py export fig.scene.json --png out.png`。不重跑 render，不重新检测；只在用户要改胶面/泳道/裁剪时才回到 render。",
+      "notes": "英文触发词也要落到同一条 export 路由。"
+    },
+    {
+      "id": "should-trigger-22",
+      "type": "should_trigger",
+      "prompt": "删掉 15 kD 那个标签。",
+      "expected_behavior": "纯文字改动，走 `export`：在 fig.scene.json 的 `items[]` 里删掉 `role=marker` 且 `text` 含 15（如 `15 kDa` / `15 kD`）的那一项，然后 `python3 scripts/gel_photo.py export fig.scene.json --png out.png`。**不要**重跑 render 或重新检测；marker 泳道、条带和 MW 数字都不动。删掉最外侧标签后页面留白按页面规则收回，这是正常的。",
+      "notes": "路由：删标签 → export；若删错或想恢复，用撤销/原 scene，不要靠重跑。"
+    },
+    {
+      "id": "should-trigger-23",
+      "type": "should_trigger",
+      "prompt": "这张胶只保留 1–5 道，重新出一版。",
+      "expected_behavior": "这是**分析改动**，必须重跑 `render`：`--keep-lanes 1-5`（1 起，顺序按胶上从左到右，不重排）。连续保留的 1–5 是一段、无拼缝；标签仍用原号。若 marker 泳道不在 1–5 里，脚本会停下并列出会被裁掉的 marker 泳道，问用户选 `--marker-policy calibrate-only` 还是 `keep`，不要替用户决定。重跑会生成全新的 scene；之前的文字改动不会带过来（`bind` 是以后才做的）。",
+      "notes": "路由：裁剪/保留泳道 → render。对应 SKILL.md Checkpoints 的「Analysis change」。"
+    },
+    {
+      "id": "should-trigger-24",
+      "type": "should_trigger",
+      "prompt": "marker 标签字号改成 7。",
+      "expected_behavior": "纯文字改动，走 `export`：把 fig.scene.json 里所有 `role=marker` 的 item 的 `size_pt` 改成 7（泳道名不动；编辑器里可按 role 批量改），再 `python3 scripts/gel_photo.py export fig.scene.json --png out.png [--dpi 300]`。**不要重跑 render**；检测、胶面、条带位置、MW 都不变，页面留白按字号重新推导。",
+      "notes": "路由：字号/颜色 → export；只有要换 marker 预设或重配条带才回 render。"
+    },
+    {
+      "id": "edge-case-25",
+      "type": "edge_case",
+      "prompt": "胶面裁得太紧了，上缘把孔底切掉了，帮我重新裁。",
+      "expected_behavior": "这是**分析改动**（胶面像素/裁切），走 `render`：先看 `probe --debug` 的胶框与 `[!]`，用 `--rect x0,y0,x1,y1` 修探测框，或用预设的 `trim_top_cm` / `trim_bottom_cm`（命令行 `--trim-top-cm` / `--trim-bottom-cm`）调整成品裁切；必要时核 `anchor`。重跑后得到新胶面、新 scene；不能靠编辑 scene 或 `export` 修裁切。若用户说的只是「白边太窄」，那是页面规则跟着标签走，不是裁切。",
+      "notes": "路由：裁切 → render；与「白边/页面留白」区分开。"
+    },
+    {
+      "id": "edge-case-26",
+      "type": "edge_case",
+      "prompt": "我想换一套 marker 预设。",
+      "expected_behavior": "这是**分析改动**，走 `render`：`--markers data/markers.json --preset <序号或关键词>`（命中不止一个时脚本会列出全部）。marker 标签、定标和 MW 都会重算，所以必须重新出图；若新预设的条带数与实测不符，脚本会拒绝出图，走 `y_px` 手动标定，别用 `--pair-force`。重跑产生新 scene，之前的文字编辑不自动保留。",
+      "notes": "路由：换预设 → render；不要试图只改 scene 里的 marker 文字来代替标定。"
     }
   ]
 }
