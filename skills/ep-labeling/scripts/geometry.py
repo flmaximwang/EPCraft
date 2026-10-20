@@ -64,6 +64,32 @@ def rect_to_analysis(rect, angle, info, canvas=None):
             int(round(max(xs))), int(round(max(ys))))
 
 
+def analysis_to_canvas(x, y, angle, info, canvas=None):
+    """分析缩略图坐标里的单个点 → 旋转后画布坐标（`rect_to_analysis` 的逐点逆变换）。
+
+    条带行只在 stage 3 里有分析尺度 y；写 record 前要换成画布坐标再减 gel_box。
+    旋转画布的 y 依赖 x（转过之后不再水平），所以必须带上该带所在泳道的 x 一起转，
+    不能只把 y 乘个比例。
+
+    info  = detect_gel() 的返回（需要 image / analysis / path）。
+    canvas= 旋转后的画布尺寸 (W1, H1)；不给就现算（多两次 magick 外呼）。
+    """
+    W0, H0 = info["image"]
+    w, h = info["analysis"]
+    if canvas is None:
+        _, (W1, H1) = load_dims_after(info["path"], angle)
+    else:
+        W1, H1 = canvas
+    cx, cy = W0 / 2.0, H0 / 2.0
+    nx, ny = W1 / 2.0, H1 / 2.0
+    sx, sy = w / float(W0), h / float(H0)
+    # rect_to_analysis 的做法：画布点 →（绕画布中心反转到原图坐标）→（把中心从画布挪回原图）→ 乘分析比例。
+    # 逐点版就是把这三步倒过来：先除比例，再把中心挪到画布，最后正向旋转。
+    ox, oy = x / sx, y / sy
+    qx, qy = ox - (cx - nx), oy - (cy - ny)
+    return rotate_pt(qx, qy, nx, ny, angle)
+
+
 def load_dims_after(path, angle):
     W0, H0 = identify(path)
     if abs(angle) < 1e-6:
