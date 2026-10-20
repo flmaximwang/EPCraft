@@ -1185,6 +1185,18 @@ var typ = String.fromCharCode(withp[37], withp[38], withp[39], withp[40]);
 if (typ !== "pHYs") { console.error("[js] IHDR 后不是 pHYs: " + typ); process.exit(5); }
 var ppm = ((withp[41] << 24) | (withp[42] << 16) | (withp[43] << 8) | withp[44]) >>> 0;
 if (ppm !== 11811) { console.error("[js] ppm=" + ppm + " 不是 11811"); process.exit(6); }
+// placements 必须以**页面**为原点（含页面留白）：漏加 (L, T) 时 marker 列会是负数，
+// canvas 上就被裁掉、PNG 只剩胶面（这就是 E4 第一版的真实故障）。
+var pl = C.placements(SCENE, 96);
+if (pl.length !== SCENE.items.length) { console.error("[js] placements 数不对"); process.exit(10); }
+var minx = Math.min.apply(null, pl.map(function (p) { return p.x; }));
+var miny = Math.min.apply(null, pl.map(function (p) { return p.y; }));
+if (!(minx >= 0 && miny >= 0)) {
+  console.error("[js] 有标签落在页面外：min x=" + minx + " min y=" + miny); process.exit(11);
+}
+if (pl[0].page.L !== pp.L || pl[0].page.T !== pp.T) {
+  console.error("[js] placements 的页面留白与 pagePx 不一致"); process.exit(12);
+}
 var svg = C.sceneToSvg(SCENE, "data:image/png;base64,");
 var roles = (svg.match(/data-role=/g) || []).length;
 if (roles !== SCENE.items.length) {
@@ -1195,6 +1207,12 @@ for (var k = 0; k < SCENE.items.length; k++) {
   if (svg.indexOf('id="' + SCENE.items[k].id + '"') < 0) {
     console.error("[js] SVG 缺 id " + SCENE.items[k].id); process.exit(8);
   }
+}
+// SVG 坐标也以页面左上角为原点：最左的标签 x 必须 ≥ 0，且与 placements 差 < 1px。
+var xs = svg.match(/<text id="[^"]+"[^>]* x="([-0-9.]+)"/g) || [];
+var sx = xs.map(function (m) { return parseFloat(m.match(/x="([-0-9.]+)"/)[1]); });
+if (!sx.length || Math.min.apply(null, sx) < 0) {
+  console.error("[js] SVG 标签落在页面外（少了页面留白）：" + sx.slice(0, 3)); process.exit(13);
 }
 console.log("[js] core ok：pagePx " + pp.W + "x" + pp.H + "，pHYs ppm " + ppm +
             "，SVG " + roles + " 条 <text>，长度 " + svg.length);

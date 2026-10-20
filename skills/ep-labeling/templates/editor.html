@@ -381,6 +381,27 @@ main{display:grid; grid-template-columns:minmax(0,1fr) 280px; height:calc(100% -
     return { W: faceW + L + R, H: faceH + T + B, L: L, T: T, faceW: faceW, faceH: faceH };
   }
 
+  // 每条标签在**页面像素**里的位置（canvas 画 PNG 与 node 自检共用这一份口径）。
+  // scene 的原点在胶面左上角（spec §4），所以必须加页面留白 (L, T)：
+  // 少了这一步，负坐标的 marker 列和胶顶上方的泳道名会被画到画布外，整层文字消失。
+  function placements(scene, dpi) {
+    var d = +dpi || _sceneDpi(scene);
+    var ppc = d / 2.54;
+    var pp = pagePx(scene, d);
+    return (scene.items || []).map(function (it) {
+      var box = itemBoxCm(scene, it);
+      var m = _metrics(scene, it);
+      var px = Math.max(6, Math.round((+it.size_pt || 0) / 72 * d));
+      return {
+        id: it.id, text: String(it.text == null ? "" : it.text),
+        color: it.color || "#000000", sizePx: px,
+        x: pp.L + box.left * ppc,
+        y: pp.T + (box.top + m.ascent_cm) * ppc,
+        page: pp
+      };
+    });
+  }
+
   function _num(v) {
     var n = Math.round((+v || 0) * 10000) / 10000;
     return String(n);
@@ -416,8 +437,10 @@ main{display:grid; grid-template-columns:minmax(0,1fr) 280px; height:calc(100% -
       var m = _metrics(scene, item);
       var p = normAnchor(item.anchor).split("-");
       var v = p[0], hz = p[1];
-      var x = hz === "left" ? box.left : (+item.x_cm || 0);
-      var y = box.top + m.ascent_cm;          // baseline = 框顶 + 字体 ascent
+      // scene 的坐标原点在**胶面左上角**（spec §4）；SVG 的画布原点是页面左上角，
+      // 所以条目必须加上页面留白 (left_cm, top_cm)，与胶面 <image> 的 x/y 同一口径。
+      var x = (hz === "left" ? box.left : (+item.x_cm || 0)) + ps.left_cm;
+      var y = box.top + m.ascent_cm + ps.top_cm;   // baseline = 框顶 + 字体 ascent
       var anchor = hz === "left" ? "start" : hz === "right" ? "end" : "middle";
       var geom = 'x="' + _num(x) + '" y="' + _num(y) + '" text-anchor="' + anchor +
         '" font-family="' + _esc(fam) + '" font-size="' + _num(item.size_pt) + 'pt"';
@@ -488,6 +511,7 @@ main{display:grid; grid-template-columns:minmax(0,1fr) 280px; height:calc(100% -
     pageSizeCm: pageSizeCm,
     itemBoxCm: itemBoxCm,
     pagePx: pagePx,
+    placements: placements,
     sceneToSvg: sceneToSvg,
     insertPhys: insertPhys,
     normAnchor: normAnchor,
@@ -956,14 +980,9 @@ main{display:grid; grid-template-columns:minmax(0,1fr) 280px; height:calc(100% -
 
     var ppc = dpi / 2.54;
     var family = (scene.font && scene.font.family) || "Arial";
-    var prepared = scene.items.map(function (it) {
-      var box = core.itemBoxCm(scene, it);
-      var m = core.inkMetrics(scene, it);
-      var px = Math.max(6, Math.round((+it.size_pt || 0) / 72 * dpi));
-      return {
-        it: it, text: String(it.text == null ? "" : it.text),
-        x: box.left * ppc, y: (box.top + m.ascent_cm) * ppc, px: px
-      };
+    // 位置口径只有一份：core.placements()（页面像素，已含页面留白）。
+    var prepared = core.placements(scene, dpi).map(function (p) {
+      return {it: itemById(p.id), text: p.text, color: p.color, x: p.x, y: p.y, px: p.sizePx};
     });
     ctx.textAlign = "left";
     ctx.textBaseline = "alphabetic";
@@ -979,7 +998,7 @@ main{display:grid; grid-template-columns:minmax(0,1fr) 280px; height:calc(100% -
     }
     prepared.forEach(function (p) {
       ctx.font = p.px + "px " + family;
-      ctx.fillStyle = p.it.color || "#000000";
+      ctx.fillStyle = p.color || "#000000";
       ctx.fillText(p.text, p.x, p.y);
     });
     return cv;
