@@ -680,8 +680,13 @@ def selftest():
                 return True
             return False
 
-        assert rejected(lambda x: x["items"][0].__setitem__("anchor", "right-middle")), \
+        assert rejected(lambda x: x["items"][0].__setitem__("anchor", "diagonal")), \
             "非法 anchor 没报错"
+        # spec §4 的例句用 right-middle（横-竖）：两种顺序都收，规范成 middle-right
+        alias = json.loads(json.dumps(sc))
+        alias["items"][0]["anchor"] = "right-middle"
+        assert item_box_cm(alias, alias["items"][0]) == item_box_cm(sc, sc["items"][0]), \
+            "right-middle 没有归一成 middle-right"
         assert rejected(lambda x: x["items"][1].__setitem__("id", x["items"][0]["id"])), \
             "重复 id 没报错"
         for k in ("rect", "bbox", "angle", "scale"):

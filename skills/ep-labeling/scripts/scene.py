@@ -29,6 +29,26 @@ ANCHORS = tuple("%s-%s" % (v, h)
                 for v in ("top", "middle", "bottom")
                 for h in ("left", "center", "right"))
 
+# spec §4 的例句把 marker 的锚点写成 `right-middle`（横-竖），而句式给的是
+# `{top|middle|bottom}-{left|center|right}`（竖-横）。两种都收：两轴各出现一次，
+# 读起来无歧义；写入统一用竖-横的规范名。
+_AXIS_V = ("top", "middle", "bottom")
+_AXIS_H = ("left", "center", "right")
+
+
+def norm_anchor(anchor):
+    """锚点名 → 规范形式（竖-横，如 middle-right）；非法抛 RuntimeError。"""
+    parts = str(anchor).split("-")
+    if len(parts) != 2:
+        raise RuntimeError("anchor=%r 非法（要 <竖>-<横>，如 bottom-center）" % (anchor,))
+    a, b = parts
+    if a in _AXIS_H and b in _AXIS_V:          # right-middle → middle-right
+        a, b = b, a
+    if a not in _AXIS_V or b not in _AXIS_H:
+        raise RuntimeError("anchor=%r 非法（要 <竖>-<横>，如 bottom-center）" % (anchor,))
+    return "%s-%s" % (a, b)
+
+
 ROLES = ("lane", "marker", "free")
 
 REQUIRED = ("version", "gel", "page", "output", "font", "items")
@@ -78,10 +98,11 @@ def item_box_cm(scene, item):
     w, h = _cm_box_size(scene, item)
     x = _f(item["x_cm"], "items[].x_cm")
     y = _f(item["y_cm"], "items[].y_cm")
-    anchor = str(item.get("anchor", ""))
-    if anchor not in ANCHORS:
+    try:
+        anchor = norm_anchor(item.get("anchor", ""))
+    except RuntimeError:
         raise RuntimeError("scene：标签 %r 的 anchor=%r 非法（只接受 %s）"
-                           % (item.get("id"), anchor, " / ".join(ANCHORS)))
+                           % (item.get("id"), item.get("anchor"), " / ".join(ANCHORS)))
     vertical, horizontal = anchor.split("-")
     left = x - (w if horizontal == "right" else w / 2.0 if horizontal == "center" else 0.0)
     top = y - (h if vertical == "bottom" else h / 2.0 if vertical == "middle" else 0.0)
@@ -311,7 +332,9 @@ def validate(scene):
         if it["role"] not in ROLES:
             raise RuntimeError("scene：%s 的 role=%r 非法（只接受 %s）"
                                % (ident, it["role"], " / ".join(ROLES)))
-        if it["anchor"] not in ANCHORS:
+        try:
+            norm_anchor(it["anchor"])
+        except RuntimeError:
             raise RuntimeError("scene：%s 的 anchor=%r 非法（只接受 %s）"
                                % (ident, it["anchor"], " / ".join(ANCHORS)))
         if _f(it["size_pt"], "items[].size_pt") <= 0:
