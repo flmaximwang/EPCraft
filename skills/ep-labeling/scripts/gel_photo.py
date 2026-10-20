@@ -14,7 +14,8 @@
     magick_io    magick 外呼 / PPM        gel_detect   认胶面          gel_area     stage 1 胶面区域
     lane_fit     stage 2 泳道格点         band_fit     stage 3 条带     geometry    旋转与位置口径
     text_layout  字体与写字               config       配置读取        debug_overlay 覆盖图
-    scene        版式数据（cm/pt）        env_check    doctor          selftest     自检
+    scene        版式数据（cm/pt）        scene_png    scene → PNG（唯一的画字路径）
+    env_check    doctor          selftest     自检
 本文件不带任何数据路径：预设与胶体尺寸由调用方用 --markers / --gel-size 显式给出。
 
 坐标约定
@@ -47,9 +48,10 @@ from mw_report import format_report, report as mw_report_build                  
 from record import (bands_from_rows as record_bands_from_rows,                   # noqa: E402
                     build as record_build, write as record_write)
 from scene import (build as scene_build, load as scene_load,                   # noqa: E402
-                   page_size_cm, write as scene_write)
+                   write as scene_write)
+from scene_png import write_png as scene_png_write                                     # noqa: E402
 from selftest import selftest                                                        # noqa: E402
-from text_layout import annotate_cmd, ink_height, pick_font, text_extent             # noqa: E402
+from text_layout import ink_height, pick_font, text_extent                           # noqa: E402
 
 
 def _rect_arg(s):
@@ -669,9 +671,8 @@ def cmd_render(args):
                 pass
             raise
 
-    # ---- 胶面 PNG（无字）+ scene（spec §3/§4）
-    #      胶面图直接取成品画布的 gel 区域：同一批 magick 操作（裁切/正畸/拼接/缝线），
-    #      只是不加字 —— 所以它必然与成品里的胶面区域逐像素一致。
+    # ---- 胶面 PNG（无字，spec §3）：直接取成品画布的 gel 区域 —— 同一批 magick 操作
+    #      （裁切/正畸/拼接/缝线），只是不加字，所以它必然与成品里的胶面区域逐像素一致。
     stem = os.path.splitext(args.out)[0]
     gel_path = stem + ".gel.png"
     scene_path = stem + ".scene.json"
@@ -679,12 +680,9 @@ def cmd_render(args):
                            "-units", "PixelsPerInch", "-density", str(dpi), gel_path]
     _run(gel_cmd)
 
-    # ---- 旧画字路径保留：render 的成品 PNG 仍由原命令画（不改一张像素）
-    cmd = annotate_cmd(base, out_items, font, None if args.no_outline else args.outline)
-    cmd += ["-units", "PixelsPerInch", "-density", str(dpi), args.out]
-    _run(cmd)
-
-    # 版式冻结成数据：锚点 cm + 字号 pt，从此 writer 不需要 layout 代码。
+    # ---- 版式冻结成数据（spec §4）：先建 scene，再交给唯一的 PNG writer 画字。
+    #      锚点 cm 仍按**成品 px** 反算（out_items / out_origin=(L,T)），
+    #      这样 writer 从 cm 回到 px 时不会出现亚像素漂移（硬要求：fig.png 逐像素不变）。
     scene = scene_build(items, face_bb, ppc, dpi=dpi, font=font,
                         outline=None if args.no_outline else args.outline,
                         margin_frac=args.margin_frac,
@@ -694,6 +692,12 @@ def cmd_render(args):
                         out_origin=(L, T))
     scene_write(scene, scene_path)
     print("[i] scene 已写 %s；胶面图 %s" % (scene_path, gel_path))
+
+    # ---- 成品 PNG：只读 scene（页面/胶面/每条文字都从版式数据来）
+    res = scene_png_write(scene, args.out, gel_path=gel_path, font_path=font)
+    W, H, L, T = res["width_px"], res["height_px"], res["left_px"], res["top_px"]
+    face_w_px, face_h_px = res["face_w_px"], res["face_h_px"]
+
     if tmp_face:
         try:
             os.unlink(tmp_face)
@@ -701,7 +705,7 @@ def cmd_render(args):
             pass
 
     if args.debug:
-        for ox, oy, t, s, c in out_items:
+        for ox, oy, t, s, c in res["out_items"]:
             print("    [item] %-8s x0=%7.1f y0=%7.1f (pt=%.1f)" % (t, ox, oy, s))
     # 手动标定（y_px / y_frac）的行必须进 record：MW 只读 record，
     # 否则人会以为标定生效了、报告其实用的自动行。--no-mw 时也要写对。
@@ -741,8 +745,9 @@ def cmd_render(args):
         draw_debug(args.image, info, lb_dbg, args.debug, cfg_rows=rows if mk_labels else None,
                    box_analysis=lf["box_analysis"])
         print("debug 覆盖图:", args.debug, "（红框=按预设定形的胶面，红/绿线=泳道/条带行，品红=配置指定的 marker 行）")
+    R, B = W - L - face_w_px, H - T - face_h_px
     print("输出 %s（%d×%d px, %d dpi；%d 条文字）= 胶面 %d×%d + 白底留白 L%d R%d T%d B%d" % (
-        args.out, W, H, dpi, len(out_items), face_w_px, face_h_px, L, R, T, B))
+        args.out, W, H, dpi, res["items"], face_w_px, face_h_px, L, R, T, B))
     print("[i] 实际尺寸：胶面 %.2f×%.2f cm（%d×%d px）· 成品 %.2f×%.2f cm（含白底留白）" % (
         face_w_px / dpi * 2.54, face_h_px / dpi * 2.54, face_w_px, face_h_px,
         W / dpi * 2.54, H / dpi * 2.54))
@@ -750,52 +755,27 @@ def cmd_render(args):
 
 
 def cmd_export(args):
-    """scene JSON → PNG（只读 scene，不跑检测；spec §7 的 E1 子集）。
+    """scene JSON → PNG（只读 scene，不跑检测；spec §7）。
 
-    E1 自身仍用 render 的旧画字路径；这里让 scene 成为可独立复现的版式数据：
-    页面按 scene.page_size_cm() 推、胶面按 gel.width/height_cm 放、文字按 anchor + size_pt 摆。
+    页面按 scene.page_size_cm() 推、胶面按 gel.width/height_cm 放、文字按 anchor + size_pt 摆；
+    画字路径全在 scene_png.write_png（与 render 同一条，所以 export 能逐像素复现 render）。
+    `--dpi` 只覆盖本次，不写回 scene 文件。
     """
     sc = scene_load(args.scene)
     if not args.png:
         raise RuntimeError("export 目前只支持 --png <输出.png>")
-    dpi = int(args.dpi or sc["output"]["dpi"])
     gel_path = sc["gel"]["image"]
     if not os.path.isabs(gel_path):
         gel_path = os.path.join(os.path.dirname(os.path.abspath(args.scene)), gel_path)
     if not os.path.isfile(gel_path):
         raise RuntimeError("scene 指向的胶面图不存在：%s" % gel_path)
 
-    out_ppc = dpi / 2.54
-    ps = page_size_cm(sc)
-    face_w_px = int(round(float(sc["gel"]["width_cm"]) * out_ppc))
-    face_h_px = int(round(float(sc["gel"]["height_cm"]) * out_ppc))
-    L = int(round(ps["left_cm"] * out_ppc))
-    R = int(round(ps["right_cm"] * out_ppc))
-    T = int(round(ps["top_cm"] * out_ppc))
-    B = int(round(ps["bottom_cm"] * out_ppc))
-    W, H = face_w_px + L + R, face_h_px + T + B
-    bg = (sc.get("page") or {}).get("background") or "#ffffff"
-
-    out_items = []
-    for it in sc["items"]:
-        px = max(6, int(round(float(it["size_pt"]) / 72.0 * dpi)))
-        tw, th = text_extent(sc["font"].get("file"), px, it["text"])
-        v, h = it["anchor"].split("-")
-        xa = L + float(it["x_cm"]) * out_ppc
-        ya = T + float(it["y_cm"]) * out_ppc
-        ax = xa - (tw if h == "right" else tw / 2.0 if h == "center" else 0.0)
-        ay = ya - (th if v == "bottom" else th / 2.0 if v == "middle" else 0.0)
-        out_items.append((ax, ay, it["text"], px, it["color"]))
-
-    base = [MAGICK, "-size", "%dx%d" % (W, H), "xc:" + bg,
-            "(", gel_path, "-repage", "+0+0", ")",
-            "-gravity", "northwest", "-geometry", "+%d+%d" % (L, T), "-composite"]
-    cmd = annotate_cmd(base, out_items, sc["font"].get("file"),
-                       (sc.get("outline") or {}).get("color"))
-    cmd += ["-units", "PixelsPerInch", "-density", str(dpi), args.png]
-    _run(cmd)
+    res = scene_png_write(sc, args.png, dpi=args.dpi, gel_path=gel_path)
+    R, B = (res["width_px"] - res["left_px"] - res["face_w_px"],
+            res["height_px"] - res["top_px"] - res["face_h_px"])
     print("输出 %s（%d×%d px, %d dpi；%d 条文字）= 胶面 %d×%d + 白底留白 L%d R%d T%d B%d" % (
-        args.png, W, H, dpi, len(out_items), face_w_px, face_h_px, L, R, T, B))
+        args.png, res["width_px"], res["height_px"], res["dpi"], res["items"],
+        res["face_w_px"], res["face_h_px"], res["left_px"], R, res["top_px"], B))
     return 0
 
 
