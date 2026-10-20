@@ -5,7 +5,8 @@
 子命令
     probe   <图>                          只探测：报胶框/角度/泳道 x/条带行；--debug 出一张覆盖图
     render  <图> --out 出.png [配置...]    出成品：裁切+正畸（+缩放+dpi）→ 写字 → PNG
-    export  <scene.json> --png 出.png      只读 scene 出图（不跑检测）
+    export  <scene.json> --png 出.png [--svg 出.svg]
+                                          只读 scene 出图（不跑检测；SVG 见 spec §5）
     doctor                                环境自检
     selftest                              不读用户文件的算法自检
 
@@ -15,7 +16,7 @@
     lane_fit     stage 2 泳道格点         band_fit     stage 3 条带     geometry    旋转与位置口径
     text_layout  字体与写字               config       配置读取        debug_overlay 覆盖图
     scene        版式数据（cm/pt）        scene_png    scene → PNG（唯一的画字路径）
-    env_check    doctor          selftest     自检
+    scene_svg    scene → SVG             env_check    doctor          selftest     自检
 本文件不带任何数据路径：预设与胶体尺寸由调用方用 --markers / --gel-size 显式给出。
 
 坐标约定
@@ -50,6 +51,7 @@ from record import (bands_from_rows as record_bands_from_rows,                  
 from scene import (build as scene_build, load as scene_load,                   # noqa: E402
                    write as scene_write)
 from scene_png import write_png as scene_png_write                                     # noqa: E402
+from scene_svg import write_svg as scene_svg_write                                     # noqa: E402
 from selftest import selftest                                                        # noqa: E402
 from text_layout import ink_height, pick_font, text_extent                           # noqa: E402
 
@@ -693,6 +695,13 @@ def cmd_render(args):
     scene_write(scene, scene_path)
     print("[i] scene 已写 %s；胶面图 %s" % (scene_path, gel_path))
 
+    if args.svg:
+        # spec §3/§5：--svg 时在同一 stem 再写一份独立 SVG（胶面已内嵌，不引用外部文件）。
+        svg_path = stem + ".svg"
+        si = scene_svg_write(scene, svg_path, gel_path=gel_path, dpi=dpi)
+        print("[i] SVG 已写 %s（%d 条文字；页面 %.2f×%.2f cm；%.1f KB）" % (
+            svg_path, si["n_items"], si["page_cm"][0], si["page_cm"][1], si["bytes"] / 1024.0))
+
     # ---- 成品 PNG：只读 scene（页面/胶面/每条文字都从版式数据来）
     res = scene_png_write(scene, args.out, gel_path=gel_path, font_path=font)
     W, H, L, T = res["width_px"], res["height_px"], res["left_px"], res["top_px"]
@@ -755,22 +764,31 @@ def cmd_render(args):
 
 
 def cmd_export(args):
-    """scene JSON → PNG（只读 scene，不跑检测；spec §7）。
+    """scene JSON → PNG / SVG（只读 scene，不跑检测；spec §7）。
 
     页面按 scene.page_size_cm() 推、胶面按 gel.width/height_cm 放、文字按 anchor + size_pt 摆；
     画字路径全在 scene_png.write_png（与 render 同一条，所以 export 能逐像素复现 render）。
+    `--svg` 走 scene_svg（spec §5），可以和 `--png` 一起给：两条输出都从同一份 scene 来。
     `--dpi` 只覆盖本次，不写回 scene 文件。
     """
     sc = scene_load(args.scene)
-    if not args.png:
-        raise RuntimeError("export 目前只支持 --png <输出.png>")
+    if not args.png and not args.svg:
+        raise RuntimeError("export 需要 --png 和/或 --svg <输出路径>")
+    dpi = int(args.dpi or sc["output"]["dpi"])
     gel_path = sc["gel"]["image"]
     if not os.path.isabs(gel_path):
         gel_path = os.path.join(os.path.dirname(os.path.abspath(args.scene)), gel_path)
     if not os.path.isfile(gel_path):
         raise RuntimeError("scene 指向的胶面图不存在：%s" % gel_path)
 
-    res = scene_png_write(sc, args.png, dpi=args.dpi, gel_path=gel_path)
+    if args.svg:
+        si = scene_svg_write(sc, args.svg, gel_path=gel_path, dpi=dpi)
+        print("[i] SVG 已写 %s（%d 条文字；页面 %.2f×%.2f cm；%.1f KB）" % (
+            args.svg, si["n_items"], si["page_cm"][0], si["page_cm"][1], si["bytes"] / 1024.0))
+    if not args.png:
+        return 0
+
+    res = scene_png_write(sc, args.png, dpi=dpi, gel_path=gel_path)
     R, B = (res["width_px"] - res["left_px"] - res["face_w_px"],
             res["height_px"] - res["top_px"] - res["face_h_px"])
     print("输出 %s（%d×%d px, %d dpi；%d 条文字）= 胶面 %d×%d + 白底留白 L%d R%d T%d B%d" % (
@@ -837,15 +855,18 @@ def main(argv=None):
                    help="样品带分子量的标定方法：logfit=log10(MW)~y 直线（会外推）/ interp=marker 带之间内插（不外推）")
     r.add_argument("--no-mw", action="store_true", help="不输出分子量报告")
     r.add_argument("--debug", help="再出一张检测覆盖图")
+    r.add_argument("--svg", action="store_true",
+                   help="同时写 <out 同 stem>.svg（矢量；胶面内嵌，spec §5）")
     add_detect(r)
     r.set_defaults(func=cmd_render)
 
     s = sub.add_parser("selftest")
     s.set_defaults(func=lambda a: selftest())
 
-    e = sub.add_parser("export", help="从 scene JSON 出 PNG（只读 scene，不跑检测）")
+    e = sub.add_parser("export", help="从 scene JSON 出 PNG / SVG（只读 scene，不跑检测）")
     e.add_argument("scene", help="render 写出的 <out>.scene.json")
     e.add_argument("--png", help="输出 PNG 路径")
+    e.add_argument("--svg", help="输出 SVG 路径（可与 --png 同时给，也可只给 --svg）")
     e.add_argument("--dpi", type=int, default=None, help="覆盖 scene 里的 output.dpi")
     e.set_defaults(func=cmd_export)
 
