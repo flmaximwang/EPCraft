@@ -12,6 +12,8 @@ import shutil
 import subprocess
 
 from config import load_gel_size
+from editor import DEFAULT_TEMPLATE as EDITOR_TEMPLATE
+from editor import extract as editor_extract, write_html as editor_write_html
 from gel_area import compute, estimate_pitch_px
 from magick_io import MAGICK, _run, read_ppm, to_gray
 from gel_detect import bg_plane, components, detect_gel, ink_mask
@@ -786,6 +788,67 @@ def selftest():
         assert (w0, h0, bytes(body0)) == (w3, h3, bytes(body3)), \
             ("export 与 render 不一致", (w0, h0), (w3, h3))
         ok += 1
+        # 44) 编辑器 HTML：模板里恰好一个 #scene 数据块（解析回同一 scene）、一个
+        #     data:image/png;base64 URI（解码回同一胶面），且没有任何网络 URL。
+        html_path = stem + ".html"
+        assert os.path.isfile(html_path), ("render 没写编辑器", html_path)
+        with open(html_path, encoding="utf-8") as f:
+            html = f.read()
+        blocks = re.findall(
+            r'<script\b[^>]*\bid\s*=\s*["\']scene["\'][^>]*>([\s\S]*?)</script>',
+            html, re.I)
+        assert len(blocks) == 1, ("#scene 块不是恰好一个", len(blocks))
+        assert json.loads(blocks[0]) == scene, "HTML 里的 scene 与 render 写的不一致"
+        uris = re.findall(r'data:image/png;base64,([A-Za-z0-9+/=]+)', html)
+        assert len(uris) == 1, ("胶面 data URI 不是恰好一个", len(uris))
+        with open(gel_png, "rb") as f:
+            assert base64.b64decode(uris[0]) == f.read(), "HTML 里的胶面字节变了"
+        assert not re.search(r'https?://|//cdn', html), "编辑器模板里有网络 URL"
+        ok += 1
+
+        # 44b) --no-editor：批量模式不写 HTML。
+        out_no = os.path.join(td, "fig-noeditor.png")
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = gp_main(["render", src, "--out", out_no, "--markers", mk_cfg,
+                          "--lanes", lane_cfg, "--gel-size", gel_cfg, "--dpi", "96",
+                          "--no-editor"])
+        assert rc == 0, "--no-editor render 失败"
+        assert not os.path.exists(os.path.splitext(out_no)[0] + ".html"), \
+            "--no-editor 仍然写了 HTML"
+
+        # 45) extract 往返：改 parsed scene 里一条文字，写回 HTML 再 extract ——
+        #     文字是新的、胶面字节一个不差（spec §6 的 Save 就是这么写文件）。
+        sc2, gel2 = editor_extract(html_path)
+        assert gel2 == base64.b64decode(uris[0]), "extract 的胶面字节不对"
+        sc2["items"][0]["text"] = "EDITED 250 kD"
+        j2 = json.dumps(sc2, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c")
+        edited_html = re.sub(
+            r'(<script\b[^>]*\bid\s*=\s*["\']scene["\'][^>]*>)[\s\S]*?(</script>)',
+            lambda m: m.group(1) + j2 + m.group(2), html, count=1, flags=re.I)
+        edited_path = os.path.join(td, "fig-edited.html")
+        with open(edited_path, "w", encoding="utf-8") as f:
+            f.write(edited_html)
+        sc3, gel3 = editor_extract(edited_path)
+        assert sc3["items"][0]["text"] == "EDITED 250 kD", "extract 没读到改过的文字"
+        assert gel3 == gel2, "extract 第二次的胶面字节变了"
+        ok += 1
+
+        # 46) export 直接吃编辑器 HTML：与 render 的成品逐像素相同（scene + 内嵌胶面）。
+        from_html = os.path.join(td, "from-html.png")
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = gp_main(["export", html_path, "--png", from_html])
+        assert rc == 0, "export HTML 失败"
+        w4, h4, body4 = read_ppm(from_html, None)
+        assert (w0, h0, bytes(body0)) == (w4, h4, bytes(body4)), \
+            ("export HTML 与 render 不一致", (w0, h0), (w4, h4))
+        ok += 1
+
+        # 47) JS core 在 node 下验：pHYs ppm=11811@300dpi、签名不变、pagePx 对得上
+        #     Python 的 page_size_cm、sceneToSvg 每条一个正文 <text>。没 node 就明确跳过。
+        note = _js_core_test(scene, gel_png, td, expected=(w0, h0, lm, tp, face_w_px, face_h_px))
+        print("[i] JS core：%s" % note)
+        ok += 1
+
 
         # 39) export 复现 render：magick compare -metric AE 必须为 0（逐像素；不只比同一份字节）
         assert _ae(out, exp).split()[0] == "0", ("export 与 render 的 AE 不为 0", _ae(out, exp))
@@ -1012,6 +1075,7 @@ def selftest():
     return 0
 
 
+
 def _ae(a, b):
     """magick compare -metric AE：两张 PNG 的差异像素数（字符串，期望 "0"）。"""
     p = subprocess.run([MAGICK, "compare", "-metric", "AE", a, b, "null:"],
@@ -1049,6 +1113,105 @@ def _scene_one_label(text, x_cm=1.0, y_cm=3.0, size=8.0, dpi=96):
             "anchor": "middle-right"}
     return scene_build([item], face, ppc, dpi=dpi, font=font, margin_frac=0.05,
                        gel_image="gel.png")
+
+
+
+def _js_core_test(scene, gel_png_path, td, expected):
+    """把模板里的 #core 拿到 node 下跑（spec §9：没有 node 就明确跳过，不静默）。
+
+    measureText 用 Python text_extent 的同一组数字做 stub，所以 pagePx 必须对得上
+    render 的像素；pHYs 用真的胶面 PNG 验签名/块类型/ppm；SVG 数 data-role。
+    """
+    node = None
+    for cand in ("/Users/maxim/.local/bin/node", shutil.which("node")):
+        if cand and os.path.isfile(cand):
+            node = cand
+            break
+    if not node:
+        return "node 未找到，跳过（spec §9：只在有 node 时跑）"
+
+    with open(EDITOR_TEMPLATE, encoding="utf-8") as f:
+        tpl = f.read()
+    m = re.search(r'<script\b[^>]*\bid\s*=\s*["\']core["\'][^>]*>([\s\S]*?)</script>',
+                  tpl, re.I)
+    assert m, "编辑器模板里找不到 #core"
+    dpi = int(scene["output"]["dpi"])
+    metrics = {}
+    for it in scene["items"]:
+        px = max(6, int(round(float(it["size_pt"]) / 72.0 * dpi)))
+        w, h = text_extent(scene["font"].get("file"), px, it["text"])
+        metrics["%d|%s" % (px, it["text"])] = [w, h]
+    with open(gel_png_path, "rb") as f:
+        png_b64 = base64.b64encode(f.read()).decode("ascii")
+
+    harness = r'''
+"use strict";
+var METRICS = %s;
+var ctx = {
+  font: "",
+  measureText: function (text) {
+    var px = parseInt(this.font, 10);
+    var v = METRICS[px + "|" + text];
+    var w = v ? v[0] : text.length * 0.55 * px;
+    var asc = v ? v[1] : 0.72 * px;
+    return {width: w, actualBoundingBoxLeft: 0, actualBoundingBoxRight: w,
+            actualBoundingBoxAscent: asc, actualBoundingBoxDescent: 0,
+            fontBoundingBoxAscent: asc, fontBoundingBoxDescent: 0};
+  }
+};
+function OffscreenCanvas() { this.getContext = function () { return ctx; }; }
+var PNG_B64 = %s;
+var SCENE = %s;
+var EXPECT = %s;
+%s
+var C = globalThis.__editorCore;
+if (!C) { console.error("[js] core 没有导出 __editorCore"); process.exit(2); }
+var pp = C.pagePx(SCENE, 96);
+var keys = ["W", "H", "L", "T", "faceW", "faceH"];
+for (var i = 0; i < keys.length; i++) {
+  if (Math.abs(pp[keys[i]] - EXPECT[keys[i]]) > 1) {
+    console.error("[js] pagePx " + keys[i] + " " + pp[keys[i]] + " != " + EXPECT[keys[i]]);
+    process.exit(3);
+  }
+}
+var png = Buffer.from(PNG_B64, "base64");
+var ab = png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength);
+var withp = new Uint8Array(C.insertPhys(ab, 300));
+var sig = [137, 80, 78, 71, 13, 10, 26, 10];
+for (var s = 0; s < 8; s++) {
+  if (withp[s] !== sig[s]) { console.error("[js] PNG 签名被破坏"); process.exit(4); }
+}
+var typ = String.fromCharCode(withp[37], withp[38], withp[39], withp[40]);
+if (typ !== "pHYs") { console.error("[js] IHDR 后不是 pHYs: " + typ); process.exit(5); }
+var ppm = ((withp[41] << 24) | (withp[42] << 16) | (withp[43] << 8) | withp[44]) >>> 0;
+if (ppm !== 11811) { console.error("[js] ppm=" + ppm + " 不是 11811"); process.exit(6); }
+var svg = C.sceneToSvg(SCENE, "data:image/png;base64,");
+var roles = (svg.match(/data-role=/g) || []).length;
+if (roles !== SCENE.items.length) {
+  console.error("[js] SVG <text> 数 " + roles + " != " + SCENE.items.length);
+  process.exit(7);
+}
+for (var k = 0; k < SCENE.items.length; k++) {
+  if (svg.indexOf('id="' + SCENE.items[k].id + '"') < 0) {
+    console.error("[js] SVG 缺 id " + SCENE.items[k].id); process.exit(8);
+  }
+}
+console.log("[js] core ok：pagePx " + pp.W + "x" + pp.H + "，pHYs ppm " + ppm +
+            "，SVG " + roles + " 条 <text>，长度 " + svg.length);
+''' % (json.dumps(metrics, ensure_ascii=False), json.dumps(png_b64),
+       json.dumps(scene, ensure_ascii=False),
+       json.dumps({"W": expected[0], "H": expected[1], "L": expected[2],
+                   "T": expected[3], "faceW": expected[4], "faceH": expected[5]}),
+       m.group(1))
+
+    path = os.path.join(td, "core-test.js")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(harness)
+    p = subprocess.run([node, path], capture_output=True, text=True)
+    assert p.returncode == 0, ("node core 测试失败\n%s\n%s" % (p.stdout, p.stderr))
+    lines = [ln for ln in p.stdout.splitlines() if ln.startswith("[js]")]
+    assert lines, "node 没打印结果：%s" % p.stdout
+    return lines[-1]
 
 
 def _walk_keys(o):

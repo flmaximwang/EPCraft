@@ -5,8 +5,8 @@
 子命令
     probe   <图>                          只探测：报胶框/角度/泳道 x/条带行；--debug 出一张覆盖图
     render  <图> --out 出.png [配置...]    出成品：裁切+正畸（+缩放+dpi）→ 写字 → PNG
-    export  <scene.json> --png 出.png [--svg 出.svg]
-                                          只读 scene 出图（不跑检测；SVG 见 spec §5）
+    export  <scene.json|fig.html> --png 出.png [--svg 出.svg] [--html 出.html]
+                                          只读 scene 出图（不跑检测）
     doctor                                环境自检
     selftest                              不读用户文件的算法自检
 
@@ -37,6 +37,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import as_entry, load_cfg, load_gel_size, load_markers, parse_gel_cm      # noqa: E402
 from band_fit import find_bands, fat_rows, group_rows                                # noqa: E402
 from debug_overlay import draw_debug                                                 # noqa: E402
+from editor import DEFAULT_TEMPLATE as EDITOR_TEMPLATE                     # noqa: E402
+from editor import extract as editor_extract, write_html as editor_write_html  # noqa: E402
 from env_check import cmd_doctor                                                     # noqa: E402
 from gel_area import compute, cross_check_scale                                      # noqa: E402
 from gel_detect import detect_gel                                                    # noqa: E402
@@ -702,6 +704,12 @@ def cmd_render(args):
         print("[i] SVG 已写 %s（%d 条文字；页面 %.2f×%.2f cm；%.1f KB）" % (
             svg_path, si["n_items"], si["page_cm"][0], si["page_cm"][1], si["bytes"] / 1024.0))
 
+    # 编辑器（spec §3/§6）：自包含 HTML，胶面 base64 + scene JSON。批量跑可 --no-editor 关掉。
+    if not args.no_editor:
+        html_path = stem + ".html"
+        editor_write_html(EDITOR_TEMPLATE, scene, gel_path, html_path)
+        print("[i] 编辑器已写 %s（离线可编辑；--no-editor 可关）" % html_path)
+
     # ---- 成品 PNG：只读 scene（页面/胶面/每条文字都从版式数据来）
     res = scene_png_write(scene, args.out, gel_path=gel_path, font_path=font)
     W, H, L, T = res["width_px"], res["height_px"], res["left_px"], res["top_px"]
@@ -764,37 +772,64 @@ def cmd_render(args):
 
 
 def cmd_export(args):
-    """scene JSON → PNG / SVG（只读 scene，不跑检测；spec §7）。
+    """scene JSON 或编辑器 HTML → PNG / SVG / HTML（只读 scene，不跑检测；spec §7）。
 
-    页面按 scene.page_size_cm() 推、胶面按 gel.width/height_cm 放、文字按 anchor + size_pt 摆；
-    画字路径全在 scene_png.write_png（与 render 同一条，所以 export 能逐像素复现 render）。
-    `--svg` 走 scene_svg（spec §5），可以和 `--png` 一起给：两条输出都从同一份 scene 来。
+    输入两种：`render` 写的 <out>.scene.json，或编辑器存下的 <out>.html
+    （scene 从 #scene 读、胶面从 #gel 的 data URI 取）。两种都只走 scene_png /
+    scene_svg / editor 三个 writer，不碰照片、不跑检测。
+    输出：`--png` / `--svg` / `--html` 任意组合（至少给一个）。
     `--dpi` 只覆盖本次，不写回 scene 文件。
     """
-    sc = scene_load(args.scene)
-    if not args.png and not args.svg:
-        raise RuntimeError("export 需要 --png 和/或 --svg <输出路径>")
+    if not (args.png or args.svg or args.html):
+        raise RuntimeError("export 需要 --png / --svg / --html 至少一个输出路径")
+    tmpdir = None
+    if re.search(r"\.html?$", args.scene, re.I):
+        # 编辑器存下的 HTML：版式在 #scene，胶面在 #gel 的 data URI 里（spec §6/§7）。
+        sc, gel_bytes = editor_extract(args.scene)
+        tmpdir = tempfile.mkdtemp(prefix="ep-export-")
+        name = os.path.basename(sc["gel"].get("image") or "gel.png")
+        gel_path = os.path.join(tmpdir, name)
+        with open(gel_path, "wb") as f:
+            f.write(gel_bytes)
+        sc["gel"]["image"] = gel_path
+    else:
+        sc = scene_load(args.scene)
+        gel_path = sc["gel"]["image"]
+        if not os.path.isabs(gel_path):
+            gel_path = os.path.join(os.path.dirname(os.path.abspath(args.scene)), gel_path)
+        if not os.path.isfile(gel_path):
+            raise RuntimeError("scene 指向的胶面图不存在：%s" % gel_path)
     dpi = int(args.dpi or sc["output"]["dpi"])
-    gel_path = sc["gel"]["image"]
-    if not os.path.isabs(gel_path):
-        gel_path = os.path.join(os.path.dirname(os.path.abspath(args.scene)), gel_path)
-    if not os.path.isfile(gel_path):
-        raise RuntimeError("scene 指向的胶面图不存在：%s" % gel_path)
 
-    if args.svg:
-        si = scene_svg_write(sc, args.svg, gel_path=gel_path, dpi=dpi)
-        print("[i] SVG 已写 %s（%d 条文字；页面 %.2f×%.2f cm；%.1f KB）" % (
-            args.svg, si["n_items"], si["page_cm"][0], si["page_cm"][1], si["bytes"] / 1024.0))
-    if not args.png:
+    try:
+        if args.svg:
+            si = scene_svg_write(sc, args.svg, gel_path=gel_path, dpi=dpi)
+            print("[i] SVG 已写 %s（%d 条文字；页面 %.2f×%.2f cm；%.1f KB）" % (
+                args.svg, si["n_items"], si["page_cm"][0], si["page_cm"][1], si["bytes"] / 1024.0))
+        if args.html:
+            editor_write_html(EDITOR_TEMPLATE, sc, gel_path, args.html)
+            print("[i] 编辑器已写 %s（离线可编辑）" % args.html)
+        if not args.png:
+            return 0
+
+        res = scene_png_write(sc, args.png, dpi=dpi, gel_path=gel_path)
+        R = res["width_px"] - res["left_px"] - res["face_w_px"]
+        B = res["height_px"] - res["top_px"] - res["face_h_px"]
+        print("输出 %s（%d×%d px, %d dpi；%d 条文字）= 胶面 %d×%d + 白底留白 L%d R%d T%d B%d" % (
+            args.png, res["width_px"], res["height_px"], res["dpi"], res["items"],
+            res["face_w_px"], res["face_h_px"], res["left_px"], R, res["top_px"], B))
         return 0
-
-    res = scene_png_write(sc, args.png, dpi=dpi, gel_path=gel_path)
-    R, B = (res["width_px"] - res["left_px"] - res["face_w_px"],
-            res["height_px"] - res["top_px"] - res["face_h_px"])
-    print("输出 %s（%d×%d px, %d dpi；%d 条文字）= 胶面 %d×%d + 白底留白 L%d R%d T%d B%d" % (
-        args.png, res["width_px"], res["height_px"], res["dpi"], res["items"],
-        res["face_w_px"], res["face_h_px"], res["left_px"], R, res["top_px"], B))
-    return 0
+    finally:
+        if tmpdir:
+            for n in os.listdir(tmpdir):
+                try:
+                    os.unlink(os.path.join(tmpdir, n))
+                except OSError:
+                    pass
+            try:
+                os.rmdir(tmpdir)
+            except OSError:
+                pass
 
 
 def main(argv=None):
@@ -851,6 +886,8 @@ def main(argv=None):
     r.add_argument("--outline", default=None,
                    help="文字白边颜色（默认不描边：成品是白底；要压在胶上时才给 white）")
     r.add_argument("--no-outline", action="store_true", help="不要白边")
+    r.add_argument("--no-editor", action="store_true",
+                   help="不写 <out>.html 编辑器（批量出图时用；spec §3）")
     r.add_argument("--mw-method", choices=("logfit", "interp"), default="logfit",
                    help="样品带分子量的标定方法：logfit=log10(MW)~y 直线（会外推）/ interp=marker 带之间内插（不外推）")
     r.add_argument("--no-mw", action="store_true", help="不输出分子量报告")
@@ -863,10 +900,11 @@ def main(argv=None):
     s = sub.add_parser("selftest")
     s.set_defaults(func=lambda a: selftest())
 
-    e = sub.add_parser("export", help="从 scene JSON 出 PNG / SVG（只读 scene，不跑检测）")
-    e.add_argument("scene", help="render 写出的 <out>.scene.json")
+    e = sub.add_parser("export", help="从 scene JSON / 编辑器 HTML 出 PNG / SVG / HTML（不跑检测）")
+    e.add_argument("scene", help="render 写出的 <out>.scene.json，或编辑器存下的 <out>.html")
     e.add_argument("--png", help="输出 PNG 路径")
     e.add_argument("--svg", help="输出 SVG 路径（可与 --png 同时给，也可只给 --svg）")
+    e.add_argument("--html", help="输出编辑器 HTML 路径（spec §7）")
     e.add_argument("--dpi", type=int, default=None, help="覆盖 scene 里的 output.dpi")
     e.set_defaults(func=cmd_export)
 
