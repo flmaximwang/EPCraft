@@ -124,7 +124,8 @@ def _refine_one(prof, x0, xi, pitch, prom_min):
     峰 = 该窗口内「高于半显著度」的连续段的加权中心（sub-pixel）。用半显著度而不是
     全局宽松阈值：相邻两条淡道可能被宽松阈值连成一个宽 run（实测右半边 34 px 宽的
     一片里其实有两条泳道），取半显著度能把它们按中间的谷分开。
-    显著度 = 窗口峰值 − 两侧边缘基线；不够 prom_min 就返回格点位置（estimated）。
+    显著度 = 窗口峰值 − 两侧边缘基线；不够 prom_min、或半显著度段窄于 1/4 pitch，
+    就返回格点位置（estimated）。
     """
     ncol = len(prof)
     half = 0.4 * pitch
@@ -150,6 +151,11 @@ def _refine_one(prof, x0, xi, pitch, prom_min):
     tot = sum(prof[a:b + 1])
     if tot <= 0:
         return xi, False, float(prof[imax]), None
+    # 太窄的峰不是泳道：参考照片第 10 道窗口边上有个 2 px 宽的斑（真泳道的峰 7–13 px），
+    # 不挡就把格点拽偏 6 px。门槛 = 1/4 pitch，与分辨率无关。
+    if b - a + 1 < 0.25 * pitch:
+        e = prof[min(ncol - 1, max(0, int(round(xi)) - x0))]
+        return xi, False, float(e), None
     c = sum((i + x0) * prof[i] for i in range(a, b + 1)) / float(tot)
     return c, True, prom, b - a + 1
 

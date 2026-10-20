@@ -13,20 +13,22 @@
 
 为什么高度要信预设、宽度信探测框：
 - 宽度定标的前提是「画面里就是整块胶」（或用户说了只含 N 条泳道），这个假设给的是**尺度**；
-- 探测框的上缘含上样孔/梳齿、外缘还有一圈光晕，它的高宽比不可靠（参考照片就差了 ~4%）；
-- 所以宽（尺度）沿用探测框，高（形状）由预设给，两者不一致时只报出来（偏差 >10%）。
+- 探测框的上缘取的是胶板（孔底）那条边，不是上样孔之间那排齿（gel_detect.trim_bbox 的 top_cov），
+  所以预设 height_cm 的口径 = **孔底到下缘的胶板高**；两者是同一条物理边，正常只差 1~2 个分析 px；
+- 宽（尺度）沿用探测框，高（形状）由预设给，两者偏差 > HEIGHT_TOL（5%）就报出来，不改图。
 
 本模块只依赖 magick_io / geometry（底层）——不 import lane_fit / band_fit：stage 1 不能反向依赖 stage 2/3。
 """
 from geometry import load_dims_after, rotated_rect_bbox
 from magick_io import read_ppm, to_gray
 
-TOL = 0.10          # 交叉核对的容差（spec §4.4：>10% 才报）
+TOL = 0.10          # 尺度交叉核对的容差（spec §4.4：>10% 才报）
+HEIGHT_TOL = 0.05   # 高度核对的容差（spec §4.4）：探测框上缘已是胶板物理边，参考照片偏差 <1%
 
 
 # ---------------------------------------------------------------- 交叉核对
 
-def cross_check_height(detected_h_cm, preset_h_cm, tol=TOL):
+def cross_check_height(detected_h_cm, preset_h_cm, tol=HEIGHT_TOL):
     """探测框（未定形前）按宽度定标推出来的高 vs 预设 height_cm。只警告，不改图。"""
     dev = abs(detected_h_cm - preset_h_cm) / preset_h_cm if preset_h_cm else 0.0
     ok = dev <= tol

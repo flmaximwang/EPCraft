@@ -741,7 +741,7 @@ def main(argv=None):
     r.add_argument("--pair-force", action="store_true",
                    help="条带数与配置对不上时仍按位置硬配（可能整体错位；默认拒绝出图）")
     r.add_argument("--gel-size", help="胶体尺寸 JSON（必须给；如 data/gel_size.json）")
-    r.add_argument("--gel-cm", help="覆盖 --gel-size 预设里的宽x高（cm），如 8.6x6.9；不能单独使用")
+    r.add_argument("--gel-cm", help="覆盖 --gel-size 预设里的宽x高（cm），如 8.6x6.25；不能单独使用")
     r.add_argument("--gel-lanes", type=int, default=None,
                    help="照片是裁过的、只含 N 条泳道时给 N：改按--gel-size 里的 lane_pitch_cm 的泳道间距定标")
     r.add_argument("--record", help="把探测记录（裁切后胶面的 cm 坐标 JSON）写到这个路径")
@@ -751,7 +751,7 @@ def main(argv=None):
     r.add_argument("--splice-gap-cm", type=float, default=0.15,
                    help="拼接时段与段之间的白缝宽度（cm，默认 0.15；只有一段时没有缝）")
     r.add_argument("--trim-top-cm", type=float, default=None,
-                   help="从胶面上缘再裁掉多少 cm（探测框含上样孔/梳齿那一段；默认读--gel-size 里的 trim_top_cm）")
+                   help="从胶面上缘再裁掉多少 cm（胶面上缘已是孔底，一般不用；默认读--gel-size 里的 trim_top_cm）")
     r.add_argument("--trim-bottom-cm", type=float, default=None,
                    help="从胶面下缘再裁掉多少 cm（默认读--gel-size 里的 trim_bottom_cm）")
     r.add_argument("--angle", type=float, default=None)

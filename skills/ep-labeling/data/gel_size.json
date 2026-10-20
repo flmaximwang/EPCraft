@@ -1,10 +1,9 @@
 {
     "name": "mini-gel",
     "width_cm": 8.6,
-    "height_cm": 6.9,
-    "_说明": "胶体（胶面）预设。必需键：name / width_cm / height_cm / lane_count / lane_pitch_cm。width_cm 用来定标：成品 PNG 里胶面横跨多少像素 = width_cm/2.54 × --dpi；height_cm 用来**定形**：胶面高 = (height_cm − trims)，按 anchor 贴到探测框的某条边（默认 bottom——上缘含上样孔/光晕，最不可信）。lane_count = **整块胶**的泳道数（mini-gel = 15）；lane_pitch_cm = 相邻泳道**中心距**（cm），stage 2 的格点用它落位；加载时校验不变式 lane_count × lane_pitch_cm ≈ width_cm（容差 10%，否则报错）。trim_top_cm/trim_bottom_cm：成品里从胶面上下缘再裁掉的物理长度（cm），默认 0；上缘那 0.3 是上样孔/梳齿那一段（用户 2026-10-13 要求裁掉）。可选 anchor 只接受 bottom / top / center（默认 bottom）。",
-    "_source": "用户口径 2026-10-13：「对于 mini-gel 预设，胶体尺寸为 7.2 cm x 8.6 cm」，随后按实测修正高度：去掉上样孔那一段后实际高度 6.9 cm（原写 7.2 偏大）。width_cm 定标、height_cm 定形（anchor=bottom，减 trim_top 0.3 → 胶面高 6.6 cm）。lane_count × lane_pitch_cm = 15 × 0.565 = 8.475 cm，与 8.6 cm 差 1.5%（在 10% 容差内）；0.565 是 2026-10-13 按实测间距 18.0 分析 px 反推的。",
-    "trim_top_cm": 0.3,
+    "height_cm": 6.25,
+    "_说明": "胶体（胶面）预设。必需键：name / width_cm / height_cm / lane_count / lane_pitch_cm。width_cm 用来定标：成品 PNG 里胶面横跨多少像素 = width_cm/2.54 × --dpi；height_cm 用来**定形**，口径是**胶板高 = 上样孔孔底到胶下缘**（不含孔间立着的那排齿）：胶面高 = (height_cm − trims)，按 anchor 贴到探测框的某条边（默认 bottom）。探测框的上缘取第一条接近满宽的行，正好就是孔底，所以 height_cm 与探测框高是同一条物理边，偏差 >5% 才警告。lane_count = **整块胶**的泳道数（mini-gel = 15）；lane_pitch_cm = 相邻泳道**中心距**（cm），stage 2 的格点用它落位；加载时校验不变式 lane_count × lane_pitch_cm ≈ width_cm（容差 10%，否则报错）。trim_top_cm/trim_bottom_cm：成品里从胶面上下缘再裁掉的物理长度（cm），默认 0；孔和齿已经不在胶面里了，不必再用 trim 去裁它们。可选 anchor 只接受 bottom / top / center（默认 bottom）。",
+    "_source": "用户口径 2026-10-13：「对于 mini-gel 预设，胶体尺寸为 7.2 cm x 8.6 cm」（7.2 含齿）。2026-10-20 在参考照片 IMG_1464 上按 width 8.6 cm 定标实测：齿尖到下缘 ≈7.3 cm、孔底到下缘 6.25–6.27 cm（450×600 到 3024×4032 四档分辨率一致），故 height_cm = 6.25、trim_top 去掉。旧值 6.9 − trim 0.3 = 6.6 cm 让成品顶上多带了约 0.4 cm 的齿。未经尺子复核：拿到实测孔底到下缘的高度后改这里。lane_count × lane_pitch_cm = 15 × 0.565 = 8.475 cm，与 8.6 cm 差 1.5%（在 10% 容差内）；0.565 是 2026-10-13 按实测间距 18.0 分析 px 反推的。",
     "lane_count": 15,
     "lane_pitch_cm": 0.565
 }

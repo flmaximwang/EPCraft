@@ -12,7 +12,7 @@ from gel_area import compute, estimate_pitch_px
 from magick_io import MAGICK, _run, read_ppm, to_gray
 from gel_detect import bg_plane, components, detect_gel, ink_mask
 from band_fit import clusters, fat_rows, group_rows
-from lane_fit import find_lanes
+from lane_fit import _refine_one, find_lanes
 from lane_select import (cropped_out_markers, layout as lane_layout, nearest_marker,
                          parse_keep, strips as lane_strips)
 from geometry import load_dims_after, rect_to_analysis, rotate_pt, rotated_rect_bbox
@@ -270,7 +270,7 @@ def selftest():
         src_img = os.path.join(td, "lattice.png")
         xs = [74 + 18 * i for i in range(15)]          # 胶面 65..335，宽 270
         _synth_gel(src_img, (400, 300), (65, 60, 335, 260), xs,
-                   band_y=(70, 255), band_v=120, band_half=1)
+                   band_y=(70, 255), band_v=120, band_half=3)   # 7 px 宽 ≈ 0.4 pitch，同参考照片最窄的真泳道
         ga = _synth_ga((65, 60, 335, 260), 18.0, canvas=(400, 300))
         lf = find_lanes(src_img, ga, 15, longest=400)
         assert len(lf["lanes"]) == 15, len(lf["lanes"])
@@ -279,6 +279,12 @@ def selftest():
             [ln for ln in lf["lanes"] if not ln["measured"]]
         for w, ln in zip(xs, lf["lanes"]):
             assert abs(w - ln["x_analysis"]) <= 1.5, (xs, [x["x_analysis"] for x in lf["lanes"]])
+        # 窄斑不算泳道：窗口边上一个 2 px 宽、够显著的斑（参考照片第 10 道）→ 留在格点、estimated
+        prof = [0] * 40
+        prof[13], prof[14] = 14, 9
+        assert _refine_one(prof, 0, 20.0, 18.0, 8.9)[:2] == (20.0, False)
+        prof[17:25] = [6, 12, 16, 18, 17, 13, 8, 5]          # 8 px 宽的淡道 → measured
+        assert _refine_one(prof, 0, 20.0, 18.0, 8.9)[1] is True
         # 旋转往返：rect_orig → rotated_rect_bbox → rect_to_analysis。
         # 注意 bbox 是「旋转后四角的轴对齐框」，逆变换回来必然比原矩形略大（不是逐边相等）；
         # 能钉住的是中心不漂，以及它确实包含原矩形。
@@ -426,10 +432,9 @@ def selftest():
             assert sg["lane_count"] == 15 and sg["anchor"] == "bottom", sg
     ok += 1
 
-    # 21) stage 1：预设高比探测框高 8% → 胶面按**预设**定高（不是照抄探测框）。
-    #     8% 在 spec §4.4 的 10% 容差内 ⇒ 不该有 warning（这是「只警告、不静默改图」的另一半）；
-    #     再补一档 +12% 验 height warning 真的会打（spec §8 的「+8% 且 warning」与 10% 容差互相矛盾，
-    #     两档一起测才能同时钉住「形状跟预设」和「>10% 才警告」）。
+    # 21) stage 1：预设高比探测框高 3% / 8% → 胶面都按**预设**定高（不是照抄探测框）。
+    #     高度容差 HEIGHT_TOL = 5%（spec §4.4）：+3% 不该有 warning（「只警告、不静默改图」的另一半），
+    #     +8% 必须打 height warning（spec §8），两档一起钉住「形状跟预设」和「>5% 才警告」。
     with tempfile.TemporaryDirectory() as td:
         src = os.path.join(td, "stage1_gel.png")
         _run([MAGICK, "-size", "400x300", "xc:white", "-fill", "gray(40)",
@@ -439,25 +444,41 @@ def selftest():
         bb, _ = rotated_rect_bbox(info["rect_orig"], 0.0, (W0, H0), (W1, H1))
         w_px, h_px = bb[2] - bb[0], bb[3] - bb[1]
         ppc = w_px / 6.0                              # 整块宽 6 cm 的定标（画布 px / cm）
-        p8 = _t2_preset(6.0, h_px / ppc * 1.08)       # 预设高 = 探测框高 × 1.08
+        p3 = _t2_preset(6.0, h_px / ppc * 1.03)       # 预设高 = 探测框高 × 1.03
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            ga8 = compute(info, p8, 0.0, pitch_px=ppc * p8["lane_pitch_cm"])
-        got_h = ga8["gel_box"][3] - ga8["gel_box"][1]
-        want_h = p8["height_cm"] * ppc
+            ga3 = compute(info, p3, 0.0, pitch_px=ppc * p3["lane_pitch_cm"])
+        got_h = ga3["gel_box"][3] - ga3["gel_box"][1]
+        want_h = p3["height_cm"] * ppc
         assert abs(got_h - want_h) <= 0.01 * want_h, (got_h, want_h)
-        assert abs(got_h / h_px - 1.08) <= 0.01, ("框高没跟着预设走", got_h, h_px)
-        assert ga8["source"] == {"px_per_cm": "width", "height_cm": "preset", "box": "detect"}, \
-            ga8["source"]
-        assert "[!]" not in out.getvalue(), ("8% 在 10% 容差内，不该警告", out.getvalue())
-        # +12%：超出 10% ⇒ 必须打 height warning（两个数都打出来），且形状仍跟预设
-        p12 = _t2_preset(6.0, h_px / ppc * 1.12)
+        assert abs(got_h / h_px - 1.03) <= 0.01, ("框高没跟着预设走", got_h, h_px)
+        assert ga3["source"] == {"px_per_cm": "width", "height_cm": "preset", "box": "detect"}, \
+            ga3["source"]
+        assert "[!]" not in out.getvalue(), ("3% 在 5% 容差内，不该警告", out.getvalue())
+        # +8%：超出 5% ⇒ 必须打 height warning（两个数都打出来），且形状仍跟预设（spec §8）
+        p8 = _t2_preset(6.0, h_px / ppc * 1.08)
         out2 = io.StringIO()
         with contextlib.redirect_stdout(out2):
-            ga12 = compute(info, p12, 0.0, pitch_px=ppc * p12["lane_pitch_cm"])
+            ga8 = compute(info, p8, 0.0, pitch_px=ppc * p8["lane_pitch_cm"])
         msg = out2.getvalue()
-        assert "[!]" in msg and "height" in msg and "%.2f" % p12["height_cm"] in msg, msg
-        assert abs((ga12["gel_box"][3] - ga12["gel_box"][1]) - p12["height_cm"] * ppc) <= 0.01 * ppc
+        assert "[!]" in msg and "height" in msg and "%.2f" % p8["height_cm"] in msg, msg
+        assert abs((ga8["gel_box"][3] - ga8["gel_box"][1]) - p8["height_cm"] * ppc) <= 0.01 * ppc
+        ok += 1
+
+        # 21b) 胶顶的齿：胶板上方立着一排高低不齐的齿（上样孔之间的胶，常被压弯）。
+        #      探测框上缘必须落在胶板（孔底）上，不能落在齿中间；左右、下缘不受齿影响。
+        src_t = os.path.join(td, "stage1_teeth.png")
+        cmd = [MAGICK, "-size", "400x300", "xc:white", "-fill", "gray(40)",
+               "-draw", "rectangle 100,120 300,260"]
+        for i, x in enumerate(range(104, 296, 16)):
+            top = (60, 90, 75, 105)[i % 4]               # 齿高参差 15~60 px
+            cmd += ["-draw", "rectangle %d,%d %d,120" % (x, top, x + 11)]   # 齿占 3/4 宽
+        cmd += [src_t]
+        _run(cmd)
+        it = detect_gel(src_t, 400)
+        bt = it["bbox_analysis"]
+        assert abs(bt[1] - 120) <= 2, ("上缘落在齿里了", bt)
+        assert abs(bt[3] - 260) <= 2 and abs(bt[0] - 100) <= 2 and abs(bt[2] - 300) <= 2, bt
         ok += 1
 
         # 22) anchor：同一条探测框，bottom 保下边 / top 保上边 / center 保中心（±1 px）
@@ -637,7 +658,7 @@ def selftest():
     assert nearest_marker({1}, [1, 2, 3], xs15) is None            # 没有被裁的 marker
     ok += 1
 
-    print("selftest %d/33 通过" % ok)
+    print("selftest %d/34 通过" % ok)
     return 0
 
 

@@ -150,8 +150,13 @@ def comp_mask(w, h, pixels):
     return out
 
 
-def trim_bbox(cm, w, h, bbox, cov=0.5):
-    """按覆盖率裁掉光晕/残影造成的毛边。"""
+def trim_bbox(cm, w, h, bbox, cov=0.5, top_cov=0.9):
+    """按覆盖率裁掉光晕/残影造成的毛边。
+
+    上边单独用 top_cov：胶顶不是一条边，是上样孔之间立着的一排「齿」（常被压弯），
+    齿区每行的覆盖率随齿形乱跳，50% 那条线落在齿中间、没有物理意义（参考照片上
+    就是这样凑出 6.70 cm 的）。第一条**接近满宽**的行才是胶板（孔底）的上缘。
+    """
     x0, y0, x1, y1 = bbox
     rows, cols = {}, {}
     for y in range(y0, y1 + 1):
@@ -166,8 +171,9 @@ def trim_bbox(cm, w, h, bbox, cov=0.5):
         return bbox
     rmax, cmax = max(rows.values()), max(cols.values())
     ys = [y for y, c in rows.items() if c >= cov * rmax]
+    tops = [y for y, c in rows.items() if c >= top_cov * rmax]
     xs = [x for x, c in cols.items() if c >= cov * cmax]
-    return (min(xs), min(ys), max(xs), max(ys))
+    return (min(xs), min(tops), max(xs), max(ys))
 
 
 def fit_edge(m, w, h, bbox, side, frac=(0.2, 0.8)):

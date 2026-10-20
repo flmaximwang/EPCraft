@@ -19,6 +19,7 @@ Today the detected box *is* the crop; the gel preset only gives scale (`width_cm
 ## 3. Preset schema (`data/gel_size.json`, extended)
 
 Required: `name`, `width_cm`, `height_cm`, `lane_count`, `lane_pitch_cm`.
+`height_cm` is the **slab height**: from the bottom of the wells to the lower edge. It excludes the teeth of gel left standing between the wells (amended 2026-10-20, see §4).
 Optional: `trim_top_cm`, `trim_bottom_cm`, `anchor` (`bottom` | `top` | `center`, default `bottom`), `_source`.
 
 `lane_count` = lanes on the whole gel. `lane_pitch_cm` = centre-to-centre distance. Invariant checked on load: `lane_count × lane_pitch_cm ≈ width_cm` within 10 %, else error.
@@ -28,10 +29,10 @@ Cropped photos: the user passes `--gel-lanes N` (visible lanes); width and expec
 
 Input: photo, preset. Output (frozen): `gel_box` = rotated rectangle in photo pixels, `angle`, `px_per_cm`, `source` of each number.
 
-1. Detect box and tilt as today (`detect_gel`, `--rect` still skips detection).
+1. Detect box and tilt as today (`detect_gel`, `--rect` still skips detection). The box's top edge is the first row covering ≥ 90 % of the widest row, which is the slab top (well bottoms). Left, right and bottom keep the 50 % coverage rule. Reason: above the slab stands a row of irregular, often bent teeth, and a 50 % line falls somewhere inside them with no physical meaning. On the reference photo it produced 6.70 cm, while the slab measures 6.25–6.27 cm (amended 2026-10-20).
 2. Scale: `px_per_cm = detected_width_px / width_cm` (or, for cropped photos, from lane pitch).
-3. Shape: height = `(height_cm − trims) × px_per_cm`, anchored on `anchor` edge of the detected box (default bottom, because the top carries the wells).
-4. Cross-check and report: detected vs preset height and, when ≥ 2 lanes are later found, scale from lane pitch vs scale from width. Disagreement > 10 % → warning with both numbers. No silent correction beyond step 3.
+3. Shape: height = `(height_cm − trims) × px_per_cm`, anchored on `anchor` edge of the detected box (default bottom, the straightest and cleanest edge).
+4. Cross-check and report: detected vs preset height and, when ≥ 2 lanes are later found, scale from lane pitch vs scale from width. Height disagreement > 5 % → warning with both numbers. The detected top is now a physical edge, and the reference photo agrees within 1 %. Scale disagreement > 10 % → warning with both numbers. No silent correction beyond step 3.
 
 ## 5. Stage 2 — lanes (prior-driven, no band input)
 
@@ -39,7 +40,7 @@ Input: frozen `gel_box`, `lane_count`, `lane_pitch_cm × px_per_cm`. Output (fro
 
 1. Expected centres: `x_i = gel_left + (i − 0.5) × pitch_px` (after re-centering the lattice, see 2).
 2. Column darkness profile (loose threshold, as today) inside the box.
-3. Fit the lattice: choose offset (and a small pitch tolerance, ±5 %) maximising profile evidence at the expected centres. Per lane: refine within ±0.4 pitch to the local profile peak, else keep the lattice position and mark `estimated`.
+3. Fit the lattice: choose offset (and a small pitch tolerance, ±5 %) maximising profile evidence at the expected centres. Per lane: refine within ±0.4 pitch to the local profile peak, else keep the lattice position and mark `estimated`. A peak narrower than 0.25 pitch at half prominence is a speck, not a lane, and counts as no peak (amended 2026-10-20: on the reference photo, a 2 px speck pulled lane 10 by 6 px).
 4. Output exactly `lane_count` lanes. Counts never come from heuristics; faint or empty lanes are `estimated` lanes with their evidence value, not dropped.
 5. Removed from lane stage: pitch from densest band row, snap-to-anchors, band-evidence acceptance, `fill_gaps`, `split_wide`/`merge_near` (kept only if tests show they still help the refinement).
 
@@ -80,7 +81,7 @@ Not stored: anything needed to map back to the photo.
 
 - No preset → both commands exit non-zero with the message `gel preset required (--gel-size FILE)`.
 - Reference photo `IMG_1464 (1).jpeg` with the 15-lane preset: 15 lanes, none dropped, centres within 3 analysis px of today's measured ones; MW report unchanged within 1 kDa.
-- Synthetic gels in `selftest`: existing 5-lane case (faint lane 3, vertical streak) passes with a 5-lane preset; new cases: empty lane, off-centre photo, preset height 8 % larger than the detected box (area follows the preset, a warning is printed).
+- Synthetic gels in `selftest`: existing 5-lane case (faint lane 3, vertical streak) passes with a 5-lane preset; new cases: empty lane, off-centre photo, preset height 8 % larger than the detected box (area follows the preset, a warning is printed; 3 % stays silent); a slab with irregular teeth standing above it (the box top lands on the slab, not inside the teeth).
 - A stage never imports from a later stage (checked by a test that greps imports).
 - The record contains no key named like `rect`, `bbox`, `angle` or `scale` and no number needing the original photo; a test checks the key set.
 - Lane selection: `--keep-lanes 3-5` on the reference photo gives one strip with width `3 × pitch` within 1 %, no gap; `--keep-lanes 1,2,8-9` gives two strips, a gap of `splice_gap_cm`, original labels 1,2,8,9, and `crop.strips` matching; a selection without a marker lane and no policy exits non-zero with the message; the MW result for kept lanes equals the full-gel result for the same lanes.

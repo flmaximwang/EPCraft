@@ -64,11 +64,11 @@
 |---|---|---|
 | `name` | ✓ | 预设名。日志里会打出来，也是「这块胶用哪套数」的凭据 |
 | `width_cm` | ✓ | **定标**：成品里胶面横跨 `width_cm/2.54 × dpi` 个像素。照片裁过、只含部分泳道时改由 `lane_pitch_cm` 定标（见下） |
-| `height_cm` | ✓ | **定形**：胶面高度 = `(height_cm − trim_top_cm − trim_bottom_cm)` 按 `px_per_cm` 折算，按 `anchor` 贴到探测框的某条边上。不再是「只核对」——图按预设裁，探测框的高度只用来核对 |
+| `height_cm` | ✓ | **定形**：胶面高度 = `(height_cm − trim_top_cm − trim_bottom_cm)` 按 `px_per_cm` 折算，按 `anchor` 贴到探测框的某条边上。口径是**胶板高 = 孔底到下缘**，不含上样孔之间立着的那排齿（`mini-gel` = 6.25）。图按预设裁，探测框的高度只用来核对（偏差 >5% 警告） |
 | `lane_count` | ✓ | **整块胶**的泳道数。stage 2 恒输出这么多条（淡道、空道也不丢，只标 `estimated`）；裁过的照片用 `--gel-lanes N` 改成画面里可见的条数 |
 | `lane_pitch_cm` | ✓ | 相邻泳道中心的**物理**间距（cm）。stage 2 的格点用它落位；定标也拿它交叉核验（`mini-gel` 预设 0.565 = 15 条铺满 8.6 cm 宽实测） |
-| `trim_top_cm` / `trim_bottom_cm` | | 成品里从胶面**上/下缘再裁掉**的物理长度（cm），默认 0；`mini-gel` 的 `trim_top_cm: 0.3` 是上样孔/梳齿那一段。命令行 `--trim-top-cm` / `--trim-bottom-cm` 可覆盖 |
-| `anchor` | | `bottom`（默认）/ `top` / `center`：预设高度贴探测框的哪条边。默认 `bottom` —— 上缘带着上样孔和光晕，最不可信 |
+| `trim_top_cm` / `trim_bottom_cm` | | 成品里从胶面**上/下缘再裁掉**的物理长度（cm），默认 0。探测框上缘已经是孔底，孔和齿不在胶面里，一般不用再裁。命令行 `--trim-top-cm` / `--trim-bottom-cm` 可覆盖 |
+| `anchor` | | `bottom`（默认）/ `top` / `center`：预设高度贴探测框的哪条边。默认 `bottom` —— 下缘最直、最干净 |
 | `_source` / `_说明` | | 这组数字的来历；日志里会打出来，改预设时先读它 |
 
 **不变式**：加载时校验 `lane_count × lane_pitch_cm ≈ width_cm`（容差 10%），不成立直接报错、不出图。
@@ -133,19 +133,21 @@ gel_photo.py render crop.jpg --lanes 8lane.json --gel-size data/gel_size.json --
 
 预设怎么定形（`gel_area.py`）：
 
-1. 探测框与倾角（`detect_gel`；`--rect x0,y0,x1,y1` 仍可跳过自动找胶）。
+1. 探测框与倾角（`detect_gel`；`--rect x0,y0,x1,y1` 仍可跳过自动找胶）。框的上缘 = 第一条覆盖率 ≥90% 最宽行的行，
+   也就是胶板（孔底）；左/右/下缘仍按 50% 覆盖率。齿区每行覆盖率随齿形乱跳，50% 线落在齿中间、没有物理意义。
 2. 定标：`px_per_cm = 探测宽度_px / width_cm`；裁过的照片改用 `lane_pitch_cm` ↔ 实测泳道间距。
 3. 定形：高度 = `(height_cm − trim_top_cm − trim_bottom_cm) × px_per_cm`，按 `anchor` 贴住探测框的
-   底边（默认，因为上缘带上样孔和光晕）/ 顶边 / 中线。
+   底边（默认）/ 顶边 / 中线。
 4. 核对并报告：预设高度 vs 探测框推出的高度；找到 ≥2 条泳道后再核「宽度定标 vs 间距定标」。
-   差 >10% → 打 `[!]`，把那两个数一起打出来。除第 3 步的定形外不做任何静默修正。
+   高度差 >5%、尺度差 >10% → 打 `[!]`，把那两个数一起打出来。除第 3 步的定形外不做任何静默修正。
 
 ### b) stage 2：泳道格点（先验驱动，不看条带）
 
 - 期望中心 `x_i = 胶面左边界 + (i − 0.5) × pitch_px`（i = 1…`lane_count`）。
 - 冻结框内取**列暗度剖面**（宽松阈值，同旧版）。
 - 拟合格点：选 offset（以及 ±5% 以内的 pitch 微调），让期望中心处落到的剖面证据最大。
-- 每道在 **±0.4 pitch** 内细化到局部峰；细化不到就保留格点位置，标 `estimated`。
+- 每道在 **±0.4 pitch** 内细化到局部峰；细化不到、或峰（半显著度段）窄于 **1/4 pitch**（斑点、带边，不是泳道），
+  就保留格点位置，标 `estimated`。
 - 输出**恰好 `lane_count` 条**：条数不来自启发式。淡道/空道是带 `evidence` 的 `estimated` 泳道，不是被删掉。
 - 不读条带：没有「间距量自最密行」、没有 snap 锚点、没有按条带证据接受/拒绝、没有 `fill_gaps`；
   `split_wide` / `merge_near` 只在细化确实还需要时保留。
