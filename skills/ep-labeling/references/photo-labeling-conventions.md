@@ -264,6 +264,7 @@ python3 scripts/gel_photo.py selftest        # 跑一次看当前项数；全绿
 | `lane_detect.py` | **stage 2 泳道格点 + stage 3 条带**：期望中心 + offset/pitch(±5%) 拟合 + ±0.4 pitch 细化（estimated）、行剖面找带、`fat_rows` 并带检测 |
 | `lane_select.py` | **stage 4**：解析 `--keep-lanes`、按相邻中点切 strip、拼缝、marker 策略（见 §6b） |
 | `record.py` | 探测记录生成：stage 输出（照片 px）→ 裁切后胶面 cm 的 record JSON（见 §6） |
+| `scene.py` | 版式数据：出图前把胶面 + 每条文字冻结成 scene JSON（cm/pt、锚点、页面规则 `page_size_cm()`），PNG/SVG/编辑器都只读它 |
 | `geometry.py` | 旋转与裁切几何、位置口径（<1 比例 / ≥1 像素）、泳道带宽 |
 | `text_layout.py` | 字体、文字真实包围盒、写字命令 |
 | `config.py` | markers / lanes / 胶体预设的读取与校验（`load_markers` 支持预设库 + `--preset`；`load_gel_size` 校验必需键与泳道不变式） |

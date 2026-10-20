@@ -6,6 +6,7 @@ import contextlib
 import io
 import json
 import os
+import re
 
 from config import load_gel_size
 from gel_area import compute, estimate_pitch_px
@@ -19,6 +20,8 @@ from geometry import load_dims_after, rect_to_analysis, rotate_pt, rotated_rect_
 from mw_report import build_cal, estimate, marker_pairs, parse_mw, report as mw_report
 from record import (bands_from_rows, build as record_build, load as record_load,
                     write as record_write)
+from scene import (build as scene_build, item_box_cm, load as scene_load,
+                   page_size_cm, validate as scene_validate, write as scene_write)
 from text_layout import annotate_cmd, pick_font, text_extent
 
 
@@ -658,7 +661,122 @@ def selftest():
     assert nearest_marker({1}, [1, 2, 3], xs15) is None            # 没有被裁的 marker
     ok += 1
 
-    print("selftest %d/34 通过" % ok)
+    # 34) scene schema：合法 scene write→load 往返；非法 anchor、重复 id、rect/bbox/angle/scale
+    #     任一键都必须被 validate 拒绝（spec §4/§9，与 record 的禁键闸同一条）。
+    with tempfile.TemporaryDirectory() as td:
+        sc = _synth_scene()
+        p = os.path.join(td, "synth.scene.json")
+        scene_write(sc, p)
+        assert scene_load(p) == sc, "scene 往返不相等"
+        with open(p, "rb") as f:
+            assert f.read().endswith(b"\n"), "scene 文件末尾没有换行"
+
+        def rejected(mut):
+            bad = json.loads(json.dumps(sc))
+            mut(bad)
+            try:
+                scene_validate(bad)
+            except RuntimeError:
+                return True
+            return False
+
+        assert rejected(lambda x: x["items"][0].__setitem__("anchor", "right-middle")), \
+            "非法 anchor 没报错"
+        assert rejected(lambda x: x["items"][1].__setitem__("id", x["items"][0]["id"])), \
+            "重复 id 没报错"
+        for k in ("rect", "bbox", "angle", "scale"):
+            assert rejected(lambda x, k=k: x["items"][0]["bind"].__setitem__(k, 1)), \
+                "禁键 %s 没报错" % k
+    ok += 1
+
+    # 35) 页面规则：无越界 → 胶 + 每边 margin_min_cm；一条长标签只让它那一侧长
+    #     overhang + pad_cm，其余三边保持 margin_min_cm（spec §4）。
+    sc = _synth_scene()
+    ps = page_size_cm(sc)
+    assert abs(ps["width_cm"] - (8.6 + 2 * 0.43)) < 1e-9, ps
+    assert abs(ps["height_cm"] - (6.25 + 2 * 0.43)) < 1e-9, ps
+    long_sc = _synth_scene(long_label=True)
+    left, _top, _right, _bottom = item_box_cm(long_sc, long_sc["items"][0])
+    pad = long_sc["page"]["pad_cm"]
+    margin = long_sc["page"]["margin_min_cm"]
+    ps2 = page_size_cm(long_sc)
+    assert left < 0, ("长标签没有越到胶面左边", left)
+    assert abs(ps2["left_cm"] - (-left + pad)) < 1e-9, (ps2, left, pad)
+    assert abs(ps2["right_cm"] - margin) < 1e-9, ps2
+    assert abs(ps2["top_cm"] - margin) < 1e-9, ps2
+    assert abs(ps2["bottom_cm"] - margin) < 1e-9, ps2
+    assert abs(ps2["width_cm"] - (8.6 + ps2["left_cm"] + ps2["right_cm"])) < 1e-9, ps2
+    ok += 1
+
+    # 36/37) 合成胶真跑一次 render：scene 一项一标签（5 个泳道名 + 2 个 marker 标签），
+    #        id 唯一、角色就是 lane/marker；gel.png 与成品里同一块胶面逐像素一致（无字）。
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, "synth.png")
+        _synth_gel(src, (400, 300), (100, 60, 340, 260), [124, 172, 220, 268, 316])
+
+        def _cfg(name, obj):
+            path = os.path.join(td, name)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(obj, f, ensure_ascii=False)
+            return path
+
+        gel_cfg = _cfg("gel.json", {"name": "t", "width_cm": 5.0, "height_cm": 200 / 48.0,
+                                    "lane_count": 5, "lane_pitch_cm": 1.0})
+        lane_cfg = _cfg("lanes.json", {"size": 8, "color": "#000000", "gap": 4,
+                                        "align": "center",
+                                        "labels": ["1", "2", "3", "4", "5"],
+                                        "marker_lanes": [1]})
+        mk_cfg = _cfg("markers.json", {"marker_lane": 1, "size": 6, "gap": 4,
+                                        "color": "#000000",
+                                        "labels": [{"text": "250 kD"}, {"text": "10 kD"}]})
+        out = os.path.join(td, "fig.png")
+        from gel_photo import main as gp_main
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = gp_main(["render", src, "--out", out, "--markers", mk_cfg,
+                          "--lanes", lane_cfg, "--gel-size", gel_cfg, "--dpi", "96"])
+        msg = buf.getvalue()
+        assert rc == 0, msg[-1200:]
+        m = re.search(r"胶面 (\d+)×(\d+) \+ 白底留白 L(\d+) R(\d+) T(\d+) B(\d+)", msg)
+        nlog = re.search(r"；(\d+) 条文字", msg)
+        assert m and nlog, msg[-800:]
+        face_w_px, face_h_px = int(m.group(1)), int(m.group(2))
+        lm, tp = int(m.group(3)), int(m.group(5))
+
+        stem = os.path.splitext(out)[0]
+        gel_png = stem + ".gel.png"
+        scene = scene_load(stem + ".scene.json")
+        ids = [it["id"] for it in scene["items"]]
+        assert len(scene["items"]) == int(nlog.group(1)) == 7, (len(scene["items"]), nlog.group(1))
+        assert {it["role"] for it in scene["items"]} == {"lane", "marker"}, ids
+        assert len(ids) == len(set(ids)), ("id 不唯一", ids)
+        assert scene["gel"]["image"] == os.path.basename(gel_png)
+        assert os.path.isfile(gel_png), gel_png
+        ok += 1
+
+        # gel.png = 成品 PNG 里 (L,T) 起的胶面区域；逐像素相等 ⇒ 胶面上没有字。
+        crop = os.path.join(td, "gel-region.png")
+        _run([MAGICK, out, "-crop", "%dx%d+%d+%d" % (face_w_px, face_h_px, lm, tp),
+              "+repage", crop])
+        w1, h1, body1 = read_ppm(gel_png, None)
+        w2, h2, body2 = read_ppm(crop, None)
+        assert (w1, h1, bytes(body1)) == (w2, h2, bytes(body2)), \
+            ("gel.png 与成品胶面区域不一致", (w1, h1), (w2, h2))
+        ok += 1
+
+        # 38) scene 往返出图：export 只读 scene，应与 render 的成品逐像素相同
+        #     （坐标/页面/字号全部来自 scene；E1 仍用旧画字路径，两条路必须重合）。
+        exp = os.path.join(td, "export.png")
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = gp_main(["export", stem + ".scene.json", "--png", exp])
+        assert rc == 0, "export 失败"
+        w0, h0, body0 = read_ppm(out, None)
+        w3, h3, body3 = read_ppm(exp, None)
+        assert (w0, h0, bytes(body0)) == (w3, h3, bytes(body3)), \
+            ("export 与 render 不一致", (w0, h0), (w3, h3))
+        ok += 1
+
+    print("selftest %d/39 通过" % ok)
     return 0
 
 
@@ -762,6 +880,40 @@ def _synth_ga(gel_box, px_per_cm, lane_pitch_cm=1.0, canvas=None):
     """selftest 用的 stage 1 冻结输出（角度 0；px_per_cm 与 lane_pitch_cm 一起把先验钉死）。"""
     return {"gel_box": gel_box, "angle": 0.0, "px_per_cm": px_per_cm,
             "lane_pitch_cm": lane_pitch_cm, "canvas": canvas}
+
+
+def _synth_scene(long_label=False):
+    """selftest 用的合法 scene：8.6 × 6.25 cm 胶面、96 dpi、两个标签（或一条长标签）。
+
+    long_label=True 时只留一条靠左的长标签（锚点 middle-right、右边压在 x=0.3 cm），
+    用来验页面规则：越界只让左边长，另外三边仍是 margin_min_cm。
+    """
+    ppc, dpi = 50.0, 96
+    font = pick_font()
+    out_ppc = dpi / 2.54
+    scale = out_ppc / ppc
+    face = (100.0, 50.0, 100.0 + 8.6 * ppc, 50.0 + 6.25 * ppc)
+
+    def item(role, bind, text, size, x_cm, y_cm, anchor):
+        px = max(6, int(round(size / 72.0 * dpi)))
+        tw, th = text_extent(font, px, text)
+        bw, bh = tw / scale, th / scale                 # 墨迹框（画布 px）
+        axp, ayp = face[0] + x_cm * ppc, face[1] + y_cm * ppc
+        v, h = anchor.split("-")
+        ax = axp - (bw if h == "right" else bw / 2.0 if h == "center" else 0.0)
+        ay = ayp - (bh if v == "bottom" else bh / 2.0 if v == "middle" else 0.0)
+        return {"ax": ax, "ay": ay, "box_w": bw, "box_h": bh, "text": text,
+                "size_pt": size, "color": "#000000", "role": role,
+                "bind": bind, "anchor": anchor}
+
+    if long_label:
+        items = [item("free", {}, "A VERY LONG LABEL 250 kD", 8, 0.3, 3.0, "middle-right")]
+    else:
+        items = [item("lane", {"lane": 1}, "3", 8, 1.0, 3.0, "middle-center"),
+                 item("marker", {"marker_lane": 2, "label_index": 1, "band_y_cm": 3.0},
+                      "250 kD", 6, 7.0, 3.0, "middle-center")]
+    return scene_build(items, face, ppc, dpi=dpi, font=font, margin_frac=0.05,
+                       gel_image="synth.gel.png")
 
 
 def _t2_preset(width_cm, height_cm, trim_top=0.0, trim_bottom=0.0, anchor="bottom",
