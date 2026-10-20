@@ -1,12 +1,12 @@
 {
   "skill": "ep-labeling",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "test_cases": [
     {
       "id": "should-trigger-01",
       "type": "should_trigger",
       "prompt": "我手机拍了一张胶的照片，按雅酶 WJ103 那套分子量标上、泳道名也写上，出一张能放汇报里的图 —— 用实际尺寸（mini-gel），默认 dpi 就行。",
-      "expected_behavior": "走本 skill：先 probe（--debug 覆盖图核对），再 render。命令显式带 `--markers data/markers.json --preset <序号或关键词> --gel-size data/gel_size.json --dpi 96`（脚本不内置数据路径）。成品就是实际尺寸（胶面 8.6 cm 宽 → 96 dpi 下 325 px 宽），字号默认 8 pt（物理尺寸，换 dpi 只改像素数）。WJ103 有两套预设（Tris-Glycine / Tris-Tricine），关键词命中 2 个时脚本会列出来，要先问用户胶是哪个体系。条带数与预设不一致时脚本拒绝出图，走 y_px 手动标定；不要用 --pair-force。",
+      "expected_behavior": "走本 skill：第一步一次问齐三件事（marker 预设 / 胶体预设 / 这批保留哪几条泳道）。`--gel-size data/gel_size.json` 是**必给** —— 没有预设脚本直接以 `gel preset required (--gel-size FILE)` 退出；不能用 `--gel-cm` 代替（它只覆盖预设里的宽高）。先 `probe <图> --gel-size data/gel_size.json --debug debug.png` 核对，再 render，命令显式带 `--markers data/markers.json --preset <序号或关键词> --lanes <lanes.json> --gel-size data/gel_size.json --dpi 96`（脚本不内置数据路径）。成品就是实际尺寸（胶面 8.6 cm 宽 → 96 dpi 下 325 px 宽），字号默认 8 pt（物理尺寸，换 dpi 只改像素数）。WJ103 有两套预设（Tris-Glycine / Tris-Tricine），关键词命中 2 个时脚本会列出来，要先问用户胶是哪个体系。条带数与预设不一致时脚本拒绝出图，走 y_px 手动标定；不要用 --pair-force。",
       "notes": ""
     },
     {
@@ -20,15 +20,15 @@
       "id": "should-trigger-03",
       "type": "should_trigger",
       "prompt": "自动探测出来的泳道只有 9 条，我这张胶其实有 13 条（有几条只有一条很淡的带），怎么办？",
-      "expected_behavior": "两个办法：先 --longest 1000 重探（淡带需要更高的分析分辨率），或在 lanes.json 里给 x_frac 显式写 13 个泳道中心（0=胶左、1=胶右）。并说明 lanes.labels 多于探到的泳道时脚本会报错退出，那是判据不是 bug。",
+      "expected_behavior": "先分清两种情况再答，不要回到旧的探泳道启发式。① 这张是整块胶 → 预设的 `lane_count` 就该是 13（改 `data/gel_size.json` 里那条预设，或自己写一份；`lane_count × lane_pitch_cm` 要与 `width_cm` 一致，±10%）。stage 2 按格点恒输出 13 条，淡道不会被删，只会标 `estimated` + evidence。② 照片是裁过的 → 用 `--gel-lanes 13`，可见宽度与条数都按 `13 × lane_pitch_cm` 推。③ 预设已是 13 条而格点仍对不上 → 看 `[!]` 里预设间距与实测间距两个数，先 `--rect` 修探测框或核预设；不要再用「宽松阈值 + 补位 + 锚点校正」。",
       "notes": ""
     },
     {
       "id": "should-trigger-04b",
       "type": "should_trigger",
       "prompt": "你标出来的第 3 条和第 4 条泳道之间实际有 4 条泳道，第 5 和第 6 之间还有 2 条 —— 修一下。",
-      "expected_behavior": "属本 skill 的泳道探测 bug：只用一套（严格）条带阈值找泳道，会把只剩一条淡带的泳道整条漏掉（这张胶 15 条探成 9 条）。修法：泳道改宽松判据（中位数 − 1.5·MAD）＋宽 run 按间距劈开＋行结构验伪（真条带是峰、胶面竖纹是平的）＋两两实测之间按间距补位（补的标 interp、覆盖图橙色）。间距量自「条带最密的那一行」，不量整块胶列剖面。修后 15 条全实测、0 补位，用户核对的两处（4 条 / 2 条）对上。",
-      "notes": "回归测试在 selftest 第 10 项（合成胶 5 条 + 一道竖纹）。"
+      "expected_behavior": "先核预设：这块胶的 `lane_count` 必须是 15，且 `lane_count × lane_pitch_cm` 与 `width_cm` 一致（±10%，否则 `load_gel_size` 直接报错）。stage 2 是预设先验：恒输出 15 条，期望中心 `x_i = 胶面左边界 + (i−0.5) × pitch`，格点拟合 offset 与 ±5% pitch，再在 ±0.4 pitch 内细化到局部峰；只有一条淡带的泳道标 `estimated` 但不丢 —— 不会再有「15 条探成 9 条」。旧的宽松阈值 / 宽 run 劈开 / 行结构验伪 / 补位 / 锚点校正已从 lane 代码移除，别再按那些规则改。核对看 probe 每道的 evidence 与 estimated 标记。",
+      "notes": "回归测试在 selftest 的合成胶用例（5 条 + 淡道 + 竖纹），不写死项数。"
     },
     {
       "id": "should-trigger-04c",
@@ -104,7 +104,7 @@
       "id": "should-trigger-13",
       "type": "should_trigger",
       "prompt": "分子量标签整体错位，梯子 11 条带只标对了几条，怎么办？",
-      "expected_behavior": "先跑 probe --debug：覆盖图左侧有 y 标尺（分析尺度 y）、绿线=自动探到的条带行。把每条带的 y 抄进 markers.json 的 y_px（从上到下、与 labels 一一对应，默认不吸附；要吸附写 snap:true），再跑 render；render --debug 会把配置指定的行画成品红色，一眼核对。并解释为什么默认拒绝硬配：条带数与配置不等时按位置配会整体错位，宁可不出图。",
+      "expected_behavior": "先跑 `probe --gel-size data/gel_size.json --debug debug.png`：覆盖图左侧有 y 标尺（分析尺度 y）、绿线=自动探到的条带行。把每条带的 y 抄进 markers.json 的 y_px（从上到下、与 labels 一一对应，默认不吸附；要吸附写 snap:true），再跑 render；render --debug 会把配置指定的行画成品红线，一眼核对。并解释为什么默认拒绝硬配：条带数与配置不等时按位置配会整体错位，宁可不出图。",
       "notes": "手动标定是本 skill 对密梯子的推荐路径。"
     },
     {
@@ -112,6 +112,41 @@
       "type": "should_trigger",
       "prompt": "标完图后，顺便告诉我每条样品泳道里条带大概多少 kDa，最浓的那条是哪个。",
       "expected_behavior": "用 render 的分子量报告：lanes.json 里 marker_lanes 写清 marker 泳道、空白泳道 text 留 \"\"；读终端表与 <out>.mw.json，[主] 是每泳道最浓带；汇报时带上各 marker 泳道的 R² 与 * 外推提示；R² 偏低时建议 --mw-method interp 对照。不要把预染 marker 的表观分子量说成样品的真实分子量。"
+    },
+    {
+      "id": "should-trigger-15",
+      "type": "should_trigger",
+      "prompt": "我拍了张胶的照片，直接帮我出图吧，分子量标一下。",
+      "expected_behavior": "缺胶体预设就不能跑：先问用户这块胶用什么预设 —— `data/gel_size.json` 里的 `name`，或用户给的宽×高 / 泳道数（要能凑出 `lane_count × lane_pitch_cm ≈ width_cm`）。说明没有预设脚本会以 `gel preset required (--gel-size FILE)` 退出、probe 也一样；不要拿 `--gel-cm` 代替，它只是预设内的宽高覆盖。顺便把第 1 步另外两问一起问齐：marker 预设、这批要保留哪几条泳道（省略 = 全部）。",
+      "notes": "闸门由 T1 加；要点是「先问齐再跑」，不是先跑再补参数。"
+    },
+    {
+      "id": "should-trigger-16",
+      "type": "should_trigger",
+      "prompt": "脚本说探测到的胶框比预设高了 8%，要不要我把预设改大？",
+      "expected_behavior": "不用急着改预设：现在是**按预设定形** —— 胶面高度 = `(height_cm − 上下 trim)` 按 `px_per_cm` 折算，按 `anchor` 贴探测框的底边（默认），探测框只负责定位与核对。涉及差值的 `[!]` 会把「预设高度」和「探测框推出的高度」两个数一起打出来。问用户：按预设出图（默认，图按预设裁），还是探测框本身框错了、要先 `--rect x0,y0,x1,y1` 修框再跑。只有用户确认预设抄错时才改 `data/gel_size.json`；不要用 `--gel-cm` 当兜底。",
+      "notes": "spec §4 写 >10% 才告警，§8 的合成用例写 8% 会打警告 —— 阈值口径需要上游确认。"
+    },
+    {
+      "id": "edge-case-17",
+      "type": "edge_case",
+      "prompt": "这张照片拍的时候就裁过，只剩 8 条泳道，预设是 15 条的 mini-gel，还能按实际尺寸出图吗？",
+      "expected_behavior": "能，给 `--gel-lanes 8`（= 画面里看得见的泳道数）。stage 1 于是改用 `8 × lane_pitch_cm` 推可见宽度并据此定标（mini-gel 0.565 → 4.52 cm），stage 2 输出 8 条；不再假装画面是整块 8.6 cm 胶。核 probe 日志里「按泳道定标」那行与预设报告的 `lane_count`。别和 `--keep-lanes` 混用：`--gel-lanes` 说「画面里有几条」（改定标），`--keep-lanes` 说「这批要留几条」（只裁剪出图）。",
+      "notes": "裁过的照片两个数来源不同，混用会同时把定标和出图选错。"
+    },
+    {
+      "id": "should-trigger-18",
+      "type": "should_trigger",
+      "prompt": "这张 15 条泳道的胶，我只要第 1、2、8、9 这四条，出一张能放汇报里的图。",
+      "expected_behavior": "第 1 步就把泳道问齐并记下 `--keep-lanes 1,2,8-9`（1 起，逗号 + 区间，顺序永远按胶上从左到右）。出图时连续保留的泳道成一段：1-2 一段、8-9 一段，段边界取与相邻未保留泳道中心的中点（两端到胶边）；两段之间加 `--splice-gap-cm`（默认 0.15 cm）的白缝 + 缝中一条细竖线。提醒用户图注必须声明「非相邻泳道由同一块胶拼接」并保留原始泳道号（留下的仍写 1/2/8/9，不重编成 1-4）。先确认这两段里有没有 marker 泳道：没有就按 edge-case-19 问 `--marker-policy`。分子量报告只报保留的样品泳道，定标仍用全部 marker 泳道；`--record` 里的 `crop.strips` 是原号 ↔ 拼接版式的映射。",
+      "notes": "对应 spec §6b 与 §8 的 `--keep-lanes 1,2,8-9` 验收用例。"
+    },
+    {
+      "id": "edge-case-19",
+      "type": "edge_case",
+      "prompt": "我只留第 3、4、5 条泳道，结果脚本说 marker 泳道不在里面，停了。",
+      "expected_behavior": "这是设计好的闸门，不是 bug：脚本不替用户决定，停下并列出会被裁掉的 marker 泳道。问用户选哪个：`--marker-policy calibrate-only`（marker 泳道只用于定标/分子量，成品里不画 marker 标签、没有分子量刻度可读）还是 `--marker-policy keep`（把离保留泳道最近的 marker 泳道加进选择，多一段拼接、图注同样要披露拼接）。每次都问、不要默认；两个都不给就继续报错退出。",
+      "notes": "对应 spec §6b「脚本不替用户决定」与 §8 的缺 marker 失败用例。"
     }
   ]
 }
