@@ -14,7 +14,9 @@ from gel_detect import bg_plane, components, detect_gel, ink_mask
 from band_fit import clusters, fat_rows, group_rows
 from lane_fit import find_lanes
 from geometry import load_dims_after, rect_to_analysis, rotate_pt, rotated_rect_bbox
-from mw_report import build_cal, estimate, marker_pairs, parse_mw
+from mw_report import build_cal, estimate, marker_pairs, parse_mw, report as mw_report
+from record import (bands_from_rows, build as record_build, load as record_load,
+                    write as record_write)
 from text_layout import annotate_cmd, pick_font, text_extent
 
 
@@ -524,8 +526,134 @@ def selftest():
     assert not bad, "stage import 方向错了：" + "；".join(bad)
     ok += 1
 
-    print("selftest %d/25 通过" % ok)
+    # 26) record 键集 / 量级：递归收集键名，不许出现 rect / bbox / angle / scale；
+    #     所有数值都得是 cm 量级（<200；照片 px 会上千），gel 宽 ≈ 预设宽，lanes = lane_count。
+    preset, rec = _synth_record()
+    bad_keys = [k for k in _walk_keys(rec)
+                if any(t in k.lower() for t in ("rect", "bbox", "angle", "scale"))]
+    assert not bad_keys, ("record 里混进了照片坐标的键", bad_keys)
+    assert "crop" not in rec, ("本轮不该有 crop 键", list(rec))
+    nums = list(_walk_nums(rec))
+    assert nums and all(abs(v) < 200 for v in nums), ("record 里出现了 px 量级的数", max(nums))
+    assert abs(rec["gel"]["width_cm"] - preset["width_cm"]) < 1e-6, rec["gel"]
+    assert len(rec["lanes"]) == preset["lane_count"], (len(rec["lanes"]), preset["lane_count"])
+    ok += 1
+
+    # 27) record 往返：write → load 深度相等；坐标单调（x 递增、每条泳道的 y 递增）
+    with tempfile.TemporaryDirectory() as td:
+        p = os.path.join(td, "rec.json")
+        record_write(rec, p)
+        back = record_load(p)
+        assert back == rec, "record 往返不相等"
+        with open(p, "rb") as f:
+            assert f.read().endswith(b"\n"), "record 文件末尾没有换行"
+        xs = [ln["x_cm"] for ln in back["lanes"]]
+        assert all(b > a for a, b in zip(xs, xs[1:])), ("lanes.x_cm 不递增", xs)
+        for k, rows in back["bands"].items():
+            ys = [r["y_cm"] for r in rows]
+            assert all(b > a for a, b in zip(ys, ys[1:])), ("泳道 %s 的 y_cm 不递增" % k, ys)
+    ok += 1
+
+    # 28) MW 等价：同一组带分别走 record（cm）与旧式 lb（分析 px），标定只差仿射 ⇒ MW 应相同。
+    #     record 的第 2 条泳道标成 estimated：它不该被跳过，只该多一条 note。
+    mrec, mlb = _synth_mw_inputs()
+    labels = ["", "S", ""]
+    ents = [{"text": "100 kD"}, {"text": "10 kD"}, {"text": "1 kD"}]
+    span = [1, 1, 1]
+    as_entry = lambda e, d: dict(e)                       # noqa: E731
+    rep_rec = mw_report(mrec, labels, {0, 2}, 0, ents, span, as_entry)
+    rep_lb = mw_report(mlb, labels, {0, 2}, 0, ents, span, as_entry)
+    assert len(rep_rec["lanes"]) == 1 and len(rep_lb["lanes"]) == 1, (rep_rec["lanes"], rep_lb["lanes"])
+    a = [b["mw_kda"] for b in rep_rec["lanes"][0]["bands"]]
+    b = [b["mw_kda"] for b in rep_lb["lanes"][0]["bands"]]
+    assert len(a) == len(b) == 2, (a, b)
+    assert max(abs(x - y) for x, y in zip(a, b)) <= 0.1, ("record / lb 的 MW 不一致", a, b)
+    assert any("位置是估计值" in n for n in rep_rec["notes"]), rep_rec["notes"]
+    ok += 1
+
+    # 29) 手动标定（markers.y_px / y_frac）必须进 record：MW 只读 record，
+    #     覆盖没写进去的话，人对着 debug 图标的行会被悄悄换回自动行。
+    #     这里直接钉换算：分析 y=10/20、1 cm = 100 画布 px、分析:原图 = 1:2 ⇒ y_cm = 0.2 / 0.4。
+    ga = {"px_per_cm": 100.0, "gel_box": (0.0, 0.0, 100.0, 100.0), "angle": 0.0,
+          "canvas": (200, 200)}       # 角度 0 时画布 = 原图 200×200
+    info = {"image": (200, 200), "analysis": (100, 100)}
+    out = bands_from_rows(50.0, [10.0, 20.0], [(10.0, 4.0, 30.0)], ga, info)
+    assert abs(out[0]["y_cm"] - 0.2) < 1e-6 and abs(out[1]["y_cm"] - 0.4) < 1e-6, out
+    assert out[0]["depth"] == 30.0 and out[1]["width_cm"] > 0, out
+    ok += 1
+
+    print("selftest %d/29 通过" % ok)
     return 0
+
+
+def _walk_keys(o):
+    """递归收集 dict 的所有键名（record 键集测试用）。"""
+    if isinstance(o, dict):
+        for k, v in o.items():
+            yield k
+            yield from _walk_keys(v)
+    elif isinstance(o, (list, tuple)):
+        for v in o:
+            yield from _walk_keys(v)
+
+
+def _walk_nums(o):
+    """递归收集所有数值（bool 不算；record 的 cm 量级检查用）。"""
+    if isinstance(o, bool):
+        return
+    if isinstance(o, (int, float)):
+        yield o
+    elif isinstance(o, dict):
+        for v in o.values():
+            yield from _walk_nums(v)
+    elif isinstance(o, (list, tuple)):
+        for v in o:
+            yield from _walk_nums(v)
+
+
+def _synth_record():
+    """selftest 用的合成 record 输入：15 条泳道、每条 3 条带，角度 0（换算可手算）。"""
+    ppc = 50.0
+    preset = _t2_preset(8.6, 6.9, trim_top=0.3)          # 15 条 × 0.565 cm
+    gx0, gy0 = 100.0, 50.0
+    gel_box = (gx0, gy0, gx0 + 8.6 * ppc, gy0 + 6.6 * ppc)
+    info = {"image": (600, 400), "analysis": (300, 200)}   # a2x = a2y = 2
+    ga = {"gel_box": gel_box, "angle": 0.0, "px_per_cm": ppc,
+          "width_cm": 8.6, "height_cm": 6.6, "lane_pitch_cm": 0.565,
+          "canvas": (600, 400),
+          "checks": [{"name": "height", "ok": True, "detail": "6.70 vs 6.90 cm, 2.9%"}]}
+    lanes, bands = [], {}
+    for i in range(1, 16):
+        xc = gx0 + (i - 0.5) * 0.565 * ppc
+        lanes.append({"index": i, "x_analysis": xc / 2.0, "x_canvas": xc,
+                      "width": 5.0, "width_canvas": 10.0,
+                      "measured": i not in (4, 5), "evidence": 10.0 + i})
+        bands[str(i)] = [(150.0 + 20.0 * k, 5.0, 30.0 - k) for k in range(3)]
+    lf = {"lanes": lanes,
+          "checks": [{"name": "pitch", "ok": True, "detail": "17.66 vs 18.11 px, 2.5%"}]}
+    bb = {"bands": [bands[str(i)] for i in range(1, 16)]}
+    return preset, record_build(preset, ga, lf, bb, info)
+
+
+def _synth_mw_inputs():
+    """同一组带的两份输入：record（cm）与旧式 lb（分析 px）。第 2 条泳道标成 estimated。"""
+    ppc, gx0, gy0 = 50.0, 100.0, 50.0
+    preset = _t2_preset(1.8, 6.9, trim_top=0.3, lane_count=3, lane_pitch_cm=0.6)
+    info = {"image": (600, 400), "analysis": (300, 200)}
+    ga = {"gel_box": (gx0, gy0, gx0 + 1.8 * ppc, gy0 + 6.6 * ppc), "angle": 0.0,
+          "px_per_cm": ppc, "width_cm": 1.8, "height_cm": 6.6, "lane_pitch_cm": 0.6,
+          "canvas": (600, 400), "checks": []}
+    xs = [gx0 + (i - 0.5) * 0.6 * ppc for i in (1, 2, 3)]
+    y_an = {1: [120.0, 140.0, 160.0], 2: [130.0, 150.0], 3: [120.0, 140.0, 160.0]}
+    lanes, bands = [], []
+    for i, xc in enumerate(xs, 1):
+        lanes.append({"index": i, "x_analysis": xc / 2.0, "x_canvas": xc,
+                      "width": 5.0, "width_canvas": 10.0,
+                      "measured": i != 2, "evidence": 10.0})
+        bands.append([(y, 5.0, 30.0 - k) for k, y in enumerate(y_an[i])])
+    rec = record_build(preset, ga, {"lanes": lanes, "checks": []}, {"bands": bands}, info)
+    lb = {"lanes": [(xc, 10.0) for xc in xs], "interp": [False, False, False], "bands": bands}
+    return rec, lb
 
 
 def _synth_gel(path, size, gel_rect, lane_xs, faint=None, skip=None, streak=None,
