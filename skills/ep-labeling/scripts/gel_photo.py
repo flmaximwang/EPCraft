@@ -10,9 +10,10 @@
 
 依赖：系统 python3（纯 stdlib）+ ImageMagick 7（`magick`）。像素只在分析尺度上读，成图交给 magick。
 本文件只放 CLI 与 probe/render 编排；实现分在同目录模块：
-    magick_io    magick 外呼 / PPM        gel_detect   认胶面          lane_detect  泳道与条带行
-    geometry     旋转与位置口径           text_layout  字体与写字      config       配置读取
-    debug_overlay 覆盖图                  env_check    doctor          selftest     自检
+    magick_io    magick 外呼 / PPM        gel_detect   认胶面          gel_area     stage 1 胶面区域
+    lane_detect  泳道与条带行             geometry     旋转与位置口径  text_layout  字体与写字
+    config       配置读取                 debug_overlay 覆盖图        env_check    doctor
+    selftest     自检
 本文件不带任何数据路径：预设与胶体尺寸由调用方用 --markers / --gel-size 显式给出。
 
 坐标约定
@@ -30,9 +31,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import as_entry, load_cfg, load_gel_size, load_markers, parse_gel_cm      # noqa: E402
 from debug_overlay import draw_debug                                                 # noqa: E402
 from env_check import cmd_doctor                                                     # noqa: E402
+from gel_area import compute                                                         # noqa: E402
 from gel_detect import detect_gel                                                    # noqa: E402
-from geometry import (lane_pitch, load_dims_after, pos_or_frac, rotate_pt,           # noqa: E402
-                      rotated_rect_bbox)
+from geometry import lane_pitch, load_dims_after, pos_or_frac, rotate_pt             # noqa: E402
 from lane_detect import fat_rows, group_rows, lanes_and_bands                        # noqa: E402
 from magick_io import MAGICK, _run                                                   # noqa: E402
 from mw_report import format_report, marker_pairs, report as mw_report_build   # noqa: E402
@@ -117,7 +118,6 @@ def cmd_render(args):
     print("[i] 胶体预设 %s：宽 %.2f cm × 高 %.2f cm（%s）；输出 %d dpi" % (
         gel.get("name", "命令行"), gel["width_cm"], gel["height_cm"], gel.get("_source", ""), dpi))
 
-    gel_bb, _ = rotated_rect_bbox(info["rect_orig"], ang, (W0, H0), (W1, H1))
     a2o = info["image"][0] / float(info["analysis"][0])
     ymid = (info["bbox_analysis"][1] + info["bbox_analysis"][3]) / 2.0
 
@@ -135,44 +135,46 @@ def cmd_render(args):
         len(lane_x), lb["measured"], len(lane_x) - lb["measured"], lb["pitch"] or 0,
         font or "magick 默认字体"))
 
-    # 定标（cm / 旋转画布 px）：①默认「整块胶宽 = width_cm」；
-    # ②照片是**裁过**的、只含 N 条泳道时（用户说了就 --gel-lanes N），①的前提不成立
-    #   —— 改用**泳道间距**定标：实测每条占多少 px ↔ 预设的 lane_pitch_cm。
-    #   可见宽度于是按泳道数算出来（N × 间距），不再假装它是整块胶。
-    if args.gel_lanes and gel.get("lane_pitch_cm") and len(lane_x) >= 2:
-        if int(args.gel_lanes) != len(lane_x):
-            print("[!] 你说 %d 条泳道，探测到 %d 条 —— 先核一下泳道有没有并/漏；"
-                  "定标用的是探测到的间距" % (int(args.gel_lanes), len(lane_x)))
-        pitch_px = (lane_x[-1] - lane_x[0]) / (len(lane_x) - 1)
-        cm_px = float(gel["lane_pitch_cm"]) / pitch_px
-        print("[i] 按泳道定标：%d 条 × %.3f cm = 胶面宽 %.2f cm（裁过的照片；"
-              "整块预设 %.2f cm 不适用）" % (len(lane_x), gel["lane_pitch_cm"],
-                                        len(lane_x) * gel["lane_pitch_cm"], gel["width_cm"]))
-    else:
-        cm_px = gel["width_cm"] / (gel_bb[2] - gel_bb[0])
+    # ---- stage 1（T2）：胶面区域由预设决定。定标（宽 → px_per_cm）、定形（高 = 预设高 − trims，
+    #      按 anchor 取边）、交叉核对全在 gel_area；这里只负责把 CLI 的 trim 覆盖并进预设、
+    #      把现有的泳道间距估计当 scale 核对的交叉证据。
+    preset = dict(gel)
+    if args.trim_top_cm is not None:
+        preset["trim_top_cm"] = args.trim_top_cm
+    if args.trim_bottom_cm is not None:
+        preset["trim_bottom_cm"] = args.trim_bottom_cm
+    if args.gel_lanes and int(args.gel_lanes) != len(lane_x):
+        print("[!] 你说 %d 条泳道，探测到 %d 条 —— 先核一下泳道有没有并/漏；"
+              "定标按「你说的条数 × 预设间距」算，条数不对宽高都会跟着错"
+              % (int(args.gel_lanes), len(lane_x)))
+    ga = compute(info, preset, ang, gel_lanes=args.gel_lanes,
+                 pitch_px=(lb["pitch"] * a2o) if lb.get("pitch") else None)
+    gel_bb = ga["gel_box"]
     # 成品 PNG 就是**实际尺寸**：1 px = 1/dpi 英寸。
-    # 量纲：cm_px 是「cm / 画布 px」，所以 px_out/画布px = (px_out/cm) × (cm/画布px) —— **乘**。
-    scale = (dpi / 2.54) * cm_px
+    # 量纲：px_per_cm 是「画布 px / cm」，所以 px_out/画布px = (px_out/cm) / (画布px/cm) —— **除**。
+    cm_px = 1.0 / ga["px_per_cm"]
+    scale = (dpi / 2.54) / ga["px_per_cm"]
 
     if not (1e-4 < scale < 1e3):
-        raise RuntimeError("定标算出来不合理（scale=%.6g px/画布px）—— cm_px 量纲写反了？"
+        raise RuntimeError("定标算出来不合理（scale=%.6g px/画布px）—— px_per_cm 量纲写反了？"
                            "预设 %.2f cm / 探测宽 %d px / 泳道 %s"
-                           % (scale, gel["width_cm"], gel_bb[2] - gel_bb[0], args.gel_lanes or "—"))
-    # 上下缘再裁掉一段（探测框上缘含上样孔/梳齿；那一段常常不想入图）。
-    # 用同一个 cm_px 换算，裁上下不动宽度，所以定标不受影响。
-    tt = args.trim_top_cm if args.trim_top_cm is not None else float(gel.get("trim_top_cm", 0.0) or 0.0)
-    tb = args.trim_bottom_cm if args.trim_bottom_cm is not None else float(gel.get("trim_bottom_cm", 0.0) or 0.0)
-    if tt or tb:
-        h_before = (gel_bb[3] - gel_bb[1]) * cm_px
-        gel_bb = (gel_bb[0], gel_bb[1] + tt / cm_px, gel_bb[2], gel_bb[3] - tb / cm_px)
-        print("[i] 上/下缘各裁 %.2f / %.2f cm：胶面 %.2f cm → %.2f cm（探测框实测）" % (
-            tt, tb, h_before, (gel_bb[3] - gel_bb[1]) * cm_px))
-
-    implied_h = (gel_bb[3] - gel_bb[1]) * cm_px
-    if abs(implied_h - gel["height_cm"]) > 0.10 * gel["height_cm"]:
-        print("[!] 探测框的比例推出来高度 %.2f cm，预设写 %.2f cm（差 %.0f%%）—— "
-              "按宽度定标不受影响；要按你的数就用 --gel-cm，或调 --margin-frac / --rect。"
-              % (implied_h, gel["height_cm"], abs(implied_h - gel["height_cm"]) / gel["height_cm"] * 100))
+                           % (scale, ga["width_cm"], gel_bb[2] - gel_bb[0], args.gel_lanes or "—"))
+    tt = float(preset.get("trim_top_cm", 0.0) or 0.0)
+    tb = float(preset.get("trim_bottom_cm", 0.0) or 0.0)
+    if ga["source"]["px_per_cm"] == "lane_pitch":
+        cal = ("%d 条 × %.3f cm = %.2f cm（裁过的照片；整块预设 %.2f cm 不适用）"
+               % (int(args.gel_lanes), float(preset["lane_pitch_cm"]), ga["width_cm"],
+                  float(preset["width_cm"])))
+    else:
+        cal = "整块宽 %.2f cm" % ga["width_cm"]
+    print("[i] 胶面（stage 1）：定标 = %s → %.2f px/cm；高 %.2f cm = 预设 %.2f − trim 上/下 %.2f/%.2f，"
+          "anchor=%s（框来自 %s）" % (cal, ga["px_per_cm"], ga["height_cm"], float(preset["height_cm"]),
+                                      tt, tb, preset.get("anchor", "bottom"), ga["source"]["box"]))
+    # 失败项由 compute 已经打过 [!]（spec：只警告、不改图）；这里只汇总通过的那些。
+    ok_checks = [c for c in ga["checks"] if c["ok"]]
+    if ok_checks:
+        print("[i] checks: %s" % " · ".join("%s ok (%s)" % (c["name"], c["detail"])
+                                             for c in ok_checks))
 
     # ---- 泳道名（gap = 文字底边离胶面顶边，align 相对泳道中心）
     items = []
@@ -257,7 +259,7 @@ def cmd_render(args):
         print("[i] marker 用第 %d 条泳道（x=%.1f，细栅格扫到 %d 条带：%s）"
               % (idx + 1, lane_x[idx], len(rows), [round(r, 1) for r in rows]))
         if fat and not any(k >= 2 for k in span):      # 已用 rows:2 声明过并带就不再唠叨
-            mm_apx = gel["width_cm"] * 10.0 / max(1e-6, (gel_bb[2] - gel_bb[0]) / a2o)   # 分析 px → mm
+            mm_apx = ga["width_cm"] * 10.0 / max(1e-6, (gel_bb[2] - gel_bb[0]) / a2o)   # 分析 px → mm
             sep_mm = max(0.0, (max(b[1] for b in bs) - med_th)) * mm_apx
             print("[!] 其中 %s（行 y × 厚/中位数）明显偏厚 —— 很可能是**两条分子量接近的带并成了一条**"
                   "（Tris-Tricine 的 21/20 kD 就是这样）。\n"

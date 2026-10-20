@@ -215,7 +215,7 @@ def detect_gel(path, longest=700, cue="dark", rect=None, thr=None):
         cross[name + "_area_frac"] = round(cc[0][0] / float(w * h), 4) if cc else None
     if rect is not None:
         s = W0 / float(w)
-        return {"image": (W0, H0), "analysis": (w, h), "scale": s, "cross_cue": cross,
+        return {"path": path, "image": (W0, H0), "analysis": (w, h), "scale": s, "cross_cue": cross,
                 "bbox_analysis": tuple(int(round(v / s)) for v in rect), "rect_orig": rect,
                 "angle_vertical": 0.0, "edge_fits": {}, "override": True}
     m = morph(morph(ink_mask(w, h, gray, blue, plane, cue, thr), w, h, "erode"), w, h, "dilate")
@@ -239,6 +239,7 @@ def detect_gel(path, longest=700, cue="dark", rect=None, thr=None):
     s = W0 / float(w)
     rect = (bbox[0] * s, bbox[1] * s, (bbox[2] + 1) * s, (bbox[3] + 1) * s)
     return {
+        "path": path,
         "image": (W0, H0),
         "analysis": (w, h),
         "scale": s,

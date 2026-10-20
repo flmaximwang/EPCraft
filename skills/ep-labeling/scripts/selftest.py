@@ -7,6 +7,7 @@ import json
 import os
 
 from config import load_gel_size
+from gel_area import compute, estimate_pitch_px
 from magick_io import MAGICK, _run, read_ppm, to_gray
 from gel_detect import bg_plane, components, detect_gel, ink_mask
 from lane_detect import (clusters, fat_rows, fill_gaps, group_rows, lanes_and_bands,
@@ -349,8 +350,113 @@ def selftest():
             assert sg["lane_count"] == 15 and sg["anchor"] == "bottom", sg
     ok += 1
 
-    print("selftest %d/19 通过" % ok)
+    # 20) stage 1：预设高比探测框高 8% → 胶面按**预设**定高（不是照抄探测框）。
+    #     8% 在 spec §4.4 的 10% 容差内 ⇒ 不该有 warning（这是「只警告、不静默改图」的另一半）；
+    #     再补一档 +12% 验 height warning 真的会打（spec §8 的「+8% 且 warning」与 10% 容差互相矛盾，
+    #     两档一起测才能同时钉住「形状跟预设」和「>10% 才警告」）。
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, "stage1_gel.png")
+        _run([MAGICK, "-size", "400x300", "xc:white", "-fill", "gray(40)",
+              "-draw", "rectangle 120,90 320,240", src])
+        info = detect_gel(src, 400)
+        (W0, H0), (W1, H1) = load_dims_after(src, 0.0)
+        bb, _ = rotated_rect_bbox(info["rect_orig"], 0.0, (W0, H0), (W1, H1))
+        w_px, h_px = bb[2] - bb[0], bb[3] - bb[1]
+        ppc = w_px / 6.0                              # 整块宽 6 cm 的定标（画布 px / cm）
+        p8 = _t2_preset(6.0, h_px / ppc * 1.08)       # 预设高 = 探测框高 × 1.08
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ga8 = compute(info, p8, 0.0, pitch_px=ppc * p8["lane_pitch_cm"])
+        got_h = ga8["gel_box"][3] - ga8["gel_box"][1]
+        want_h = p8["height_cm"] * ppc
+        assert abs(got_h - want_h) <= 0.01 * want_h, (got_h, want_h)
+        assert abs(got_h / h_px - 1.08) <= 0.01, ("框高没跟着预设走", got_h, h_px)
+        assert ga8["source"] == {"px_per_cm": "width", "height_cm": "preset", "box": "detect"}, \
+            ga8["source"]
+        assert "[!]" not in out.getvalue(), ("8% 在 10% 容差内，不该警告", out.getvalue())
+        # +12%：超出 10% ⇒ 必须打 height warning（两个数都打出来），且形状仍跟预设
+        p12 = _t2_preset(6.0, h_px / ppc * 1.12)
+        out2 = io.StringIO()
+        with contextlib.redirect_stdout(out2):
+            ga12 = compute(info, p12, 0.0, pitch_px=ppc * p12["lane_pitch_cm"])
+        msg = out2.getvalue()
+        assert "[!]" in msg and "height" in msg and "%.2f" % p12["height_cm"] in msg, msg
+        assert abs((ga12["gel_box"][3] - ga12["gel_box"][1]) - p12["height_cm"] * ppc) <= 0.01 * ppc
+        ok += 1
+
+        # 21) anchor：同一条探测框，bottom 保下边 / top 保上边 / center 保中心（±1 px）
+        base = _t2_preset(6.0, h_px / ppc * 0.8)      # 比探测框矮 20%，三条边才分得开
+        boxes = {}
+        for anc in ("bottom", "top", "center"):
+            with contextlib.redirect_stdout(io.StringIO()):
+                boxes[anc] = compute(info, dict(base, anchor=anc), 0.0,
+                                     pitch_px=ppc * base["lane_pitch_cm"])["gel_box"]
+        face = base["height_cm"] * ppc
+        for b in boxes.values():
+            assert abs(b[0] - bb[0]) <= 1e-6 and abs(b[2] - bb[2]) <= 1e-6, (b, bb)   # x 不动
+            assert abs((b[3] - b[1]) - face) <= 0.01 * face, (b, face)
+        assert abs(boxes["bottom"][3] - bb[3]) <= 1, (boxes["bottom"], bb)
+        assert abs(boxes["top"][1] - bb[1]) <= 1, (boxes["top"], bb)
+        assert abs((boxes["center"][1] + boxes["center"][3]) / 2.0
+                   - (bb[1] + bb[3]) / 2.0) <= 1, (boxes["center"], bb)
+        ok += 1
+
+        # 22) trim：bottom anchor、trim_top=0.3 → 高 = (height_cm − 0.3) × px_per_cm；下边不动
+        p22 = _t2_preset(6.0, 6.0, trim_top=0.3)
+        with contextlib.redirect_stdout(io.StringIO()):
+            ga22 = compute(info, p22, 0.0, pitch_px=ppc * p22["lane_pitch_cm"])
+        got22 = ga22["gel_box"][3] - ga22["gel_box"][1]
+        want22 = (p22["height_cm"] - 0.3) * ppc
+        assert abs(got22 - want22) <= 0.01 * want22, (got22, want22)
+        assert abs(ga22["gel_box"][3] - bb[3]) <= 1, (ga22["gel_box"], bb)
+        assert abs(ga22["height_cm"] - 5.7) < 1e-6, ga22["height_cm"]
+        ok += 1
+
+    # 23) 裁过的照片：gel_lanes=8 → 定标用 8 × lane_pitch_cm（不用整块 width_cm）；
+    #     并验 estimate_pitch_px 的廉价估计（stage 1 的预估值，精度由 T3 的格点拟合复核）
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, "stage1_crop.png")
+        _run([MAGICK, "-size", "400x300", "xc:white", "-fill", "gray(40)",
+              "-draw", "rectangle 120,90 320,240", src])
+        info = detect_gel(src, 400)
+        (W0, H0), (W1, H1) = load_dims_after(src, 0.0)
+        bb, _ = rotated_rect_bbox(info["rect_orig"], 0.0, (W0, H0), (W1, H1))
+        w_px, h_px = bb[2] - bb[0], bb[3] - bb[1]
+        vis_cm = 8 * 0.6
+        ppc_lane = w_px / vis_cm
+        # 高按「探测框高在泳道定标下对应的 cm」给，免得 height 核对先报一个假的偏差
+        p23 = _t2_preset(8.6, h_px / ppc_lane, lane_count=8, lane_pitch_cm=0.6)
+        with contextlib.redirect_stdout(io.StringIO()):
+            ga23 = compute(info, p23, 0.0, gel_lanes=8, pitch_px=ppc_lane * 0.6)
+        assert abs(ga23["px_per_cm"] - ppc_lane) <= 0.01 * ppc_lane, (ga23["px_per_cm"], ppc_lane)
+        assert abs(ga23["px_per_cm"] - w_px / 8.6) > 0.5, ("用了整块 width_cm 定标？", ga23["px_per_cm"])
+        assert ga23["source"]["px_per_cm"] == "lane_pitch", ga23["source"]
+        assert abs(ga23["width_cm"] - vis_cm) < 1e-9, ga23["width_cm"]
+        assert abs((ga23["gel_box"][3] - ga23["gel_box"][1]) - p23["height_cm"] * ppc_lane) <= 0.03 * ppc_lane
+        assert all(c["ok"] for c in ga23["checks"]), ga23["checks"]
+
+        # 竖向暗条纹（间距 30 px，分析尺度 = 原图）→ estimate_pitch_px ≈ 30
+        src2 = os.path.join(td, "stage1_stripes.png")
+        cmd = [MAGICK, "-size", "400x300", "xc:white", "-fill", "gray(180)",
+               "-draw", "rectangle 100,80 340,260"]
+        for x in (120, 150, 180, 210, 240):
+            cmd += ["-fill", "gray(120)", "-draw", "rectangle %d,80 %d,260" % (x - 1, x + 1)]
+        cmd += [src2]
+        _run(cmd)
+        est = estimate_pitch_px(detect_gel(src2, 400), 0.0)
+        assert 27.0 <= est <= 33.0, est
+        ok += 1
+
+    print("selftest %d/23 通过" % ok)
     return 0
+
+
+def _t2_preset(width_cm, height_cm, trim_top=0.0, trim_bottom=0.0, anchor="bottom",
+               lane_count=15, lane_pitch_cm=0.565):
+    """selftest 用的胶体预设 dict（不落盘：stage 1 只读字段，schema 校验在 config 那边测）。"""
+    return {"name": "selftest", "width_cm": width_cm, "height_cm": height_cm,
+            "lane_count": lane_count, "lane_pitch_cm": lane_pitch_cm,
+            "trim_top_cm": trim_top, "trim_bottom_cm": trim_bottom, "anchor": anchor}
 
 
 def _parse_ppm_for_test(d):
