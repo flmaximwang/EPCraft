@@ -5,6 +5,7 @@
 子命令
     probe   <图>                          只探测：报胶框/角度/泳道 x/条带行；--debug 出一张覆盖图
     render  <图> --out 出.png [配置...]    出成品：裁切+正畸（+缩放+dpi）→ 写字 → PNG
+    export  <scene.json> --png 出.png      只读 scene 出图（不跑检测）
     doctor                                环境自检
     selftest                              不读用户文件的算法自检
 
@@ -13,7 +14,7 @@
     magick_io    magick 外呼 / PPM        gel_detect   认胶面          gel_area     stage 1 胶面区域
     lane_fit     stage 2 泳道格点         band_fit     stage 3 条带     geometry    旋转与位置口径
     text_layout  字体与写字               config       配置读取        debug_overlay 覆盖图
-    env_check    doctor                   selftest     自检
+    scene        版式数据（cm/pt）        env_check    doctor          selftest     自检
 本文件不带任何数据路径：预设与胶体尺寸由调用方用 --markers / --gel-size 显式给出。
 
 坐标约定
@@ -27,6 +28,7 @@ import os
 import re
 import sys
 import tempfile
+from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -44,6 +46,8 @@ from magick_io import MAGICK, _run                                              
 from mw_report import format_report, report as mw_report_build                       # noqa: E402
 from record import (bands_from_rows as record_bands_from_rows,                   # noqa: E402
                     build as record_build, write as record_write)
+from scene import (build as scene_build, load as scene_load,                   # noqa: E402
+                   page_size_cm, write as scene_write)
 from selftest import selftest                                                        # noqa: E402
 from text_layout import annotate_cmd, ink_height, pick_font, text_extent             # noqa: E402
 
@@ -391,7 +395,12 @@ def cmd_render(args):
             # 口径：box **底边**落在胶顶之上 gap（
             # 而 -annotate 的 y 是 box **顶边**，所以这里减掉整个 box 高）。
             ay = gel_bb[1] - gap / scale - th
-            items.append((ax, ay, t, s, en.get("color", color)))
+            items.append({"ax": ax, "ay": ay, "box_w": tw, "box_h": th,
+                          "text": t, "size_px": s, "size_pt": float(en.get("size", size)),
+                          "color": en.get("color", color), "role": "lane",
+                          "bind": {"lane": i},
+                          "anchor": {"center": "bottom-center", "left": "bottom-left",
+                                     "right": "bottom-right"}[align]})
 
     # ---- marker 分子量（marker_lane / marker_lane_x / lane_width /
     #      lane_edge=inner / gap = 文字与泳道**带边**的间距；左右按泳道区中线判）
@@ -541,7 +550,7 @@ def cmd_render(args):
                       % (ink, gap_out, dpi, gap_out * 72.0 / dpi))
                 print("    更省事：把那一对写成一条标签，并给它加 \"rows\": 2（吃 2 条带、落在两者中间）。")
         _, my = rot_pt(info["bbox_analysis"][0] * a2o, rows[0] * a2o) if rows else (0, 0)
-        for row, e in (zip(eff, mk_labels) if draw_marker else []):
+        for j, (row, e) in enumerate(zip(eff, mk_labels) if draw_marker else [], 1):
             en = as_entry(e, mk)
             t = en.get("text", "")
             if not t:
@@ -554,16 +563,21 @@ def cmd_render(args):
             # 口径：box **竖直中心**对齐条带行（
             # -annotate 的 y 是 box 顶边，所以上移半个 box 高）。
             ay = yy - th / 2.0
-            items.append((ax, ay, t, s, en.get("color", mk.get("color", "#000000"))))
+            items.append({"ax": ax, "ay": ay, "box_w": tw, "box_h": th,
+                          "text": t, "size_px": s, "size_pt": float(en.get("size", size)),
+                          "color": en.get("color", mk.get("color", "#000000")),
+                          "role": "marker",
+                          "bind": {"marker_lane": idx + 1, "label_index": j,
+                                   "band_y_cm": round((yy - gel_bb[1]) / ppc, 4)},
+                          "anchor": "middle-right" if left_side else "middle-left"})
 
     # ---- 外扩留白（按文字真实包围盒）→ 裁切 → 写字
     fb = face_bb if strips4 is not None else gel_bb
     base_m = args.margin_frac * max(fb[2] - fb[0], fb[3] - fb[1])
     pad = max(6.0, base_m * 0.4)
     need = {"l": 0.0, "r": 0.0, "t": 0.0, "b": 0.0}
-    for ax, ay, t, s, _c in items:
-        tw, th = text_extent(font, round(s), t)
-        tw, th = tw / scale, th / scale
+    for it in items:
+        ax, ay, tw, th = it["ax"], it["ay"], it["box_w"], it["box_h"]
         need["l"] = max(need["l"], fb[0] - ax)
         need["r"] = max(need["r"], ax + tw - fb[2])
         need["t"] = max(need["t"], gel_bb[1] - ay)          # ay = box 顶边
@@ -581,6 +595,7 @@ def cmd_render(args):
     sx, sy = gw / float(gx1 - gx0), gh / float(gy1 - gy0)     # 裁切→成品的真实比例（免得有亚像素漂）
     out_ppc = dpi / 2.54
 
+    tmp_face = None
     if strips4 is None:
         # 全保留：与 T5 逐像素一致（不建临时文件、不加白缝）
         # 注意单位：L/R/T/B 是在 gel_bb（胶面坐标）里算的，要乘比例才是成品像素
@@ -596,11 +611,8 @@ def cmd_render(args):
                  "-resize", "%dx%d!" % (gw, gh),                    # 严格贴合胶面
                  "+profile", "*", ")"]   # 注意别用 -strip：IM7 里它会把后面设的 dpi 一起丢掉（实测）
         base += ["-gravity", "northwest", "-geometry", "+%d+%d" % (L, T), "-composite"]
-        out_items = [(L + (ax - gx0) * sx, T + (ay - gy0) * sy, t, s, c)
-                     for ax, ay, t, s, c in items]
-        cmd = annotate_cmd(base, out_items, font, None if args.no_outline else args.outline)
-        cmd += ["-units", "PixelsPerInch", "-density", str(dpi), args.out]
-        _run(cmd)
+        out_items = [(L + (it["ax"] - gx0) * sx, T + (it["ay"] - gy0) * sy,
+                      it["text"], it["size_px"], it["color"]) for it in items]
         face_w_px, face_h_px = gw, gh
     else:
         # ---- stage 4：先落一张**整块胶面**（crop → resize，与全保留同一条命令），再按段水平裁切拼接。
@@ -640,11 +652,8 @@ def cmd_render(args):
                     draws.append("line %d,%d %d,%d" % (xm, T, xm, T + gh - 1))
                 base += ["-fill", "black", "-stroke", "none",
                          "-draw", " ".join(draws)]
-            out_items = [(L + (ax - gx0) * sx, T + (ay - gy0) * sy, t, s, c)
-                         for ax, ay, t, s, c in items]
-            cmd = annotate_cmd(base, out_items, font, None if args.no_outline else args.outline)
-            cmd += ["-units", "PixelsPerInch", "-density", str(dpi), args.out]
-            _run(cmd)
+            out_items = [(L + (it["ax"] - gx0) * sx, T + (it["ay"] - gy0) * sy,
+                          it["text"], it["size_px"], it["color"]) for it in items]
             # 验收用：每段在成品里的实际像素宽（cm = px / (dpi/2.54)）
             print("[i] 拼接版式：%d 段，成品胶面 %d×%d px（%.3f×%.3f cm）" % (
                 len(placed), face_w_px, face_h_px, face_w_px / out_ppc, face_h_px / out_ppc))
@@ -653,11 +662,44 @@ def cmd_render(args):
                 ", ".join(str(w) for _x, w in placed),
                 "/".join(str(g) for g in gaps) if gaps else "0",
                 "（缝心 1 px 黑线）" if len(placed) >= 2 else "（无白缝）"))
-        finally:
+        except Exception:
             try:
                 os.unlink(tmp_face)
             except OSError:
                 pass
+            raise
+
+    # ---- 胶面 PNG（无字）+ scene（spec §3/§4）
+    #      胶面图直接取成品画布的 gel 区域：同一批 magick 操作（裁切/正畸/拼接/缝线），
+    #      只是不加字 —— 所以它必然与成品里的胶面区域逐像素一致。
+    stem = os.path.splitext(args.out)[0]
+    gel_path = stem + ".gel.png"
+    scene_path = stem + ".scene.json"
+    gel_cmd = list(base) + ["-crop", "%dx%d+%d+%d" % (face_w_px, face_h_px, L, T), "+repage",
+                           "-units", "PixelsPerInch", "-density", str(dpi), gel_path]
+    _run(gel_cmd)
+
+    # ---- 旧画字路径保留：render 的成品 PNG 仍由原命令画（不改一张像素）
+    cmd = annotate_cmd(base, out_items, font, None if args.no_outline else args.outline)
+    cmd += ["-units", "PixelsPerInch", "-density", str(dpi), args.out]
+    _run(cmd)
+
+    # 版式冻结成数据：锚点 cm + 字号 pt，从此 writer 不需要 layout 代码。
+    scene = scene_build(items, face_bb, ppc, dpi=dpi, font=font,
+                        outline=None if args.no_outline else args.outline,
+                        margin_frac=args.margin_frac,
+                        gel_image=os.path.basename(gel_path),
+                        record=args.record, written=date.today().isoformat(),
+                        face_px=(face_w_px, face_h_px), out_items=out_items,
+                        out_origin=(L, T))
+    scene_write(scene, scene_path)
+    print("[i] scene 已写 %s；胶面图 %s" % (scene_path, gel_path))
+    if tmp_face:
+        try:
+            os.unlink(tmp_face)
+        except OSError:
+            pass
+
     if args.debug:
         for ox, oy, t, s, c in out_items:
             print("    [item] %-8s x0=%7.1f y0=%7.1f (pt=%.1f)" % (t, ox, oy, s))
@@ -704,6 +746,56 @@ def cmd_render(args):
     print("[i] 实际尺寸：胶面 %.2f×%.2f cm（%d×%d px）· 成品 %.2f×%.2f cm（含白底留白）" % (
         face_w_px / dpi * 2.54, face_h_px / dpi * 2.54, face_w_px, face_h_px,
         W / dpi * 2.54, H / dpi * 2.54))
+    return 0
+
+
+def cmd_export(args):
+    """scene JSON → PNG（只读 scene，不跑检测；spec §7 的 E1 子集）。
+
+    E1 自身仍用 render 的旧画字路径；这里让 scene 成为可独立复现的版式数据：
+    页面按 scene.page_size_cm() 推、胶面按 gel.width/height_cm 放、文字按 anchor + size_pt 摆。
+    """
+    sc = scene_load(args.scene)
+    if not args.png:
+        raise RuntimeError("export 目前只支持 --png <输出.png>")
+    dpi = int(args.dpi or sc["output"]["dpi"])
+    gel_path = sc["gel"]["image"]
+    if not os.path.isabs(gel_path):
+        gel_path = os.path.join(os.path.dirname(os.path.abspath(args.scene)), gel_path)
+    if not os.path.isfile(gel_path):
+        raise RuntimeError("scene 指向的胶面图不存在：%s" % gel_path)
+
+    out_ppc = dpi / 2.54
+    ps = page_size_cm(sc)
+    face_w_px = int(round(float(sc["gel"]["width_cm"]) * out_ppc))
+    face_h_px = int(round(float(sc["gel"]["height_cm"]) * out_ppc))
+    L = int(round(ps["left_cm"] * out_ppc))
+    R = int(round(ps["right_cm"] * out_ppc))
+    T = int(round(ps["top_cm"] * out_ppc))
+    B = int(round(ps["bottom_cm"] * out_ppc))
+    W, H = face_w_px + L + R, face_h_px + T + B
+    bg = (sc.get("page") or {}).get("background") or "#ffffff"
+
+    out_items = []
+    for it in sc["items"]:
+        px = max(6, int(round(float(it["size_pt"]) / 72.0 * dpi)))
+        tw, th = text_extent(sc["font"].get("file"), px, it["text"])
+        v, h = it["anchor"].split("-")
+        xa = L + float(it["x_cm"]) * out_ppc
+        ya = T + float(it["y_cm"]) * out_ppc
+        ax = xa - (tw if h == "right" else tw / 2.0 if h == "center" else 0.0)
+        ay = ya - (th if v == "bottom" else th / 2.0 if v == "middle" else 0.0)
+        out_items.append((ax, ay, it["text"], px, it["color"]))
+
+    base = [MAGICK, "-size", "%dx%d" % (W, H), "xc:" + bg,
+            "(", gel_path, "-repage", "+0+0", ")",
+            "-gravity", "northwest", "-geometry", "+%d+%d" % (L, T), "-composite"]
+    cmd = annotate_cmd(base, out_items, sc["font"].get("file"),
+                       (sc.get("outline") or {}).get("color"))
+    cmd += ["-units", "PixelsPerInch", "-density", str(dpi), args.png]
+    _run(cmd)
+    print("输出 %s（%d×%d px, %d dpi；%d 条文字）= 胶面 %d×%d + 白底留白 L%d R%d T%d B%d" % (
+        args.png, W, H, dpi, len(out_items), face_w_px, face_h_px, L, R, T, B))
     return 0
 
 
@@ -770,6 +862,12 @@ def main(argv=None):
 
     s = sub.add_parser("selftest")
     s.set_defaults(func=lambda a: selftest())
+
+    e = sub.add_parser("export", help="从 scene JSON 出 PNG（只读 scene，不跑检测）")
+    e.add_argument("scene", help="render 写出的 <out>.scene.json")
+    e.add_argument("--png", help="输出 PNG 路径")
+    e.add_argument("--dpi", type=int, default=None, help="覆盖 scene 里的 output.dpi")
+    e.set_defaults(func=cmd_export)
 
     d = sub.add_parser("doctor", help="环境自检：python / magick / 字体 / 数据文件")
     d.set_defaults(func=cmd_doctor)
