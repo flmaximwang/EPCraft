@@ -7,6 +7,7 @@ import io
 import json
 import os
 import re
+import subprocess
 
 from config import load_gel_size
 from gel_area import compute, estimate_pitch_px
@@ -23,6 +24,7 @@ from record import (bands_from_rows, build as record_build, load as record_load,
 from scene import (build as scene_build, item_box_cm, load as scene_load,
                    norm_anchor, page_size_cm, validate as scene_validate,
                    write as scene_write)
+from scene_png import page_px, write_png as scene_png_write
 from text_layout import annotate_cmd, pick_font, text_extent
 
 
@@ -782,8 +784,153 @@ def selftest():
             ("export 与 render 不一致", (w0, h0), (w3, h3))
         ok += 1
 
-    print("selftest %d/39 通过" % ok)
+        # 39) export 复现 render：magick compare -metric AE 必须为 0（逐像素；不只比同一份字节）
+        assert _ae(out, exp).split()[0] == "0", ("export 与 render 的 AE 不为 0", _ae(out, exp))
+        ok += 1
+
+        # 40) writer 页面：page_px = page_size_cm × dpi（每边只取整一次）；默认 dpi 取 scene。
+        #     一条更长的标签只让页面长在**左边**（右边/上边/下边仍是 margin_min_cm）。
+        sc_short = _scene_one_label("250 kD")
+        sc_long = _scene_one_label("A VERY LONG LABEL 250 kD")
+        assert page_px(sc_short) == page_px(sc_short, sc_short["output"]["dpi"]), \
+            "page_px 的默认 dpi 不是 scene.output.dpi"
+        for dpi in (96, 300):
+            ppc = dpi / 2.54
+            ps = page_size_cm(sc_short)
+            Wp, Hp, Lp, Tp, fw, fh = page_px(sc_short, dpi)
+            assert fw == int(round(sc_short["gel"]["width_cm"] * ppc)), (fw, dpi)
+            assert fh == int(round(sc_short["gel"]["height_cm"] * ppc)), (fh, dpi)
+            assert Lp == int(round(ps["left_cm"] * ppc)), (Lp, dpi)
+            assert Tp == int(round(ps["top_cm"] * ppc)), (Tp, dpi)
+            assert Wp == fw + Lp + int(round(ps["right_cm"] * ppc)), (Wp, dpi)
+            assert Hp == fh + Tp + int(round(ps["bottom_cm"] * ppc)), (Hp, dpi)
+            # 每边各取整一次：总宽与「页面 cm × ppc」相差不超过各边的取整误差（≤2 px）
+            assert abs(Wp - ps["width_cm"] * ppc) <= 2.0, (Wp, ps, dpi)
+            assert abs(Hp - ps["height_cm"] * ppc) <= 2.0, (Hp, ps, dpi)
+        ps_s, ps_l = page_size_cm(sc_short), page_size_cm(sc_long)
+        Ws, _Hs = page_px(sc_short, 96)[:2]
+        Wl, Hl = page_px(sc_long, 96)[:2]
+        assert Wl > Ws + 1, ("长标签没有让页面变宽", Ws, Wl)
+        assert Hl == _Hs, ("长标签不该改变页面高度", _Hs, Hl)
+        assert abs(ps_l["right_cm"] - ps_s["right_cm"]) < 1e-9, (ps_s, ps_l)
+        assert abs(ps_l["top_cm"] - ps_s["top_cm"]) < 1e-9, (ps_s, ps_l)
+        assert abs(ps_l["bottom_cm"] - ps_s["bottom_cm"]) < 1e-9, (ps_s, ps_l)
+        assert ps_l["left_cm"] > ps_s["left_cm"] + 0.5, ("页面没长在左边", ps_s, ps_l)
+        ok += 1
+
+        # 41) scene → PNG（writer 独立跑）：手写 3 条标签 + 一张 _synth_gel 的胶面。
+        #     页面像素必须等于 page_px；每条标签的**墨迹框中心**必须落在锚点算出的位置（±1 px）。
+        gel_png = os.path.join(td, "writer-gel.png")
+        _synth_gel(gel_png, (189, 151), (20, 15, 169, 136), [50, 95, 140])
+        font = pick_font()
+        wsc = {
+            "version": 1,
+            "gel": {"image": os.path.basename(gel_png), "width_cm": 5.0, "height_cm": 4.0},
+            "page": {"margin_min_cm": 0.5, "pad_cm": 0.2, "background": "#ffffff"},
+            "output": {"dpi": 96},
+            "font": {"family": "Arial", "file": font},
+            "outline": {"color": None, "width_frac": 0.07},
+            "items": [
+                {"id": "lane-1", "role": "lane", "bind": {"lane": 1}, "text": "1",
+                 "x_cm": 1.5, "y_cm": -0.2, "anchor": "bottom-center",
+                 "size_pt": 8, "color": "#000000"},
+                {"id": "marker-1-1", "role": "marker",
+                 "bind": {"marker_lane": 1, "label_index": 1, "band_y_cm": 2.0},
+                 "text": "250 kD", "x_cm": 0.2, "y_cm": 2.0, "anchor": "middle-right",
+                 "size_pt": 8, "color": "#000000"},
+                {"id": "free-1", "role": "free", "bind": {}, "text": "WT",
+                 "x_cm": 4.5, "y_cm": 4.2, "anchor": "top-left",
+                 "size_pt": 8, "color": "#000000"},
+            ],
+            "source": {"skill": "ep-labeling"},
+        }
+        wpath = os.path.join(td, "writer.scene.json")
+        scene_write(wsc, wpath)                              # 先过 schema 再出图
+        wpng = os.path.join(td, "writer.png")
+        res = scene_png_write(wsc, wpng)
+        assert (res["width_px"], res["height_px"]) == page_px(wsc)[:2], res
+        assert res["items"] == 3 and len(res["out_items"]) == 3, res
+        wimg, himg, rgb = read_ppm(wpng, None)
+        assert (wimg, himg) == page_px(wsc)[:2], \
+            ("writer 落盘尺寸与 page_px 不一致", (wimg, himg), page_px(wsc)[:2])
+        gray = to_gray(wimg, himg, rgb)
+        ppc = 96 / 2.54
+        for it in wsc["items"]:
+            px = max(6, int(round(float(it["size_pt"]) / 72.0 * 96)))
+            _l, _t, _r, _b = item_box_cm(wsc, it)
+            bx, by = res["left_px"] + _l * ppc, res["top_px"] + _t * ppc
+            # 同一串字在同一套 annotate 下的墨迹相对 text box 左上角的偏移（控制图）
+            ctrl = os.path.join(td, "ctrl-%s.png" % it["id"])
+            _run(annotate_cmd([MAGICK, "-size", "200x80", "xc:white"],
+                               [(100, 20, it["text"], px, it["color"])], font, None) + [ctrl])
+            cw, ch, crgb = read_ppm(ctrl, None)
+            cbb = _ink_bbox(to_gray(cw, ch, crgb), cw, ch, 0, 0, cw, ch)
+            assert cbb, ("控制图没有墨迹", it["id"])
+            want = [int(round(bx)) + cbb[0] - 100, int(round(by)) + cbb[1] - 20,
+                    int(round(bx)) + cbb[2] - 100, int(round(by)) + cbb[3] - 20]
+            got = _ink_bbox(gray, wimg, himg, want[0] - 3, want[1] - 3,
+                            want[2] + 4, want[3] + 4)
+            assert got, ("成品里找不到标签墨迹", it["id"], want)
+            dcx = abs((got[0] + got[2]) / 2.0 - (want[0] + want[2]) / 2.0)
+            dcy = abs((got[1] + got[3]) / 2.0 - (want[1] + want[3]) / 2.0)
+            assert dcx <= 1 and dcy <= 1, ("墨迹中心偏了", it["id"], got, want, dcx, dcy)
+        ok += 1
+
+        # 42) writer 的 dpi 真进 PNG：identify 的 %x 与 pHYs 都必须是本次 dpi（--dpi 300 覆盖）。
+        w300 = os.path.join(td, "writer-300.png")
+        res300 = scene_png_write(wsc, w300, dpi=300)
+        assert (res300["width_px"], res300["height_px"]) == page_px(wsc, 300)[:2], res300
+        assert (res300["width_px"], res300["height_px"]) > (res["width_px"], res["height_px"])
+        res_x = _run([MAGICK, "identify", "-units", "PixelsPerInch", "-format", "%x", w300], False)
+        assert res_x.split() and abs(float(res_x.split()[0]) - 300) <= 1, res_x
+        raw = open(w300, "rb").read()
+        i = raw.find(b"pHYs")
+        assert i > 0, "writer 的 PNG 没有 pHYs"
+        ppm_x = int.from_bytes(raw[i + 4 : i + 8], "big")
+        assert abs(ppm_x - round(300 / 0.0254)) <= 1, ("pHYs 不是 300 dpi", ppm_x)
+        ok += 1
+
+    print("selftest %d/43 通过" % ok)
     return 0
+
+
+def _ae(a, b):
+    """magick compare -metric AE：两张 PNG 的差异像素数（字符串，期望 "0"）。"""
+    p = subprocess.run([MAGICK, "compare", "-metric", "AE", a, b, "null:"],
+                       capture_output=True, text=True)
+    return p.stderr.strip()
+
+
+def _ink_bbox(gray, w, h, x0, y0, x1, y1):
+    """在 (x0,y0)-(x1,y1) 窗口里找墨迹（灰度 <128）的包围盒；没有返回 None。"""
+    xs, ys = [], []
+    for y in range(max(0, int(y0)), min(h, int(y1))):
+        row = y * w
+        for x in range(max(0, int(x0)), min(w, int(x1))):
+            if gray[row + x] < 128:
+                xs.append(x)
+                ys.append(y)
+    if not xs:
+        return None
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _scene_one_label(text, x_cm=1.0, y_cm=3.0, size=8.0, dpi=96):
+    """selftest 用的单标签 scene（middle-right，右边压在 x_cm）：验页面规则与左越界。"""
+    ppc, font = 50.0, pick_font()
+    out_ppc = dpi / 2.54
+    scale = out_ppc / ppc
+    face = (100.0, 50.0, 100.0 + 8.6 * ppc, 50.0 + 6.25 * ppc)
+    px = max(6, int(round(size / 72.0 * dpi)))
+    tw, th = text_extent(font, px, text)
+    bw, bh = tw / scale, th / scale
+    ax = face[0] + x_cm * ppc - bw
+    ay = face[1] + y_cm * ppc - bh / 2.0
+    item = {"ax": ax, "ay": ay, "box_w": bw, "box_h": bh, "text": text,
+            "size_pt": size, "color": "#000000", "role": "free", "bind": {},
+            "anchor": "middle-right"}
+    return scene_build([item], face, ppc, dpi=dpi, font=font, margin_frac=0.05,
+                       gel_image="gel.png")
 
 
 def _walk_keys(o):
