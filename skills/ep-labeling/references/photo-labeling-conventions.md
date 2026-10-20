@@ -199,6 +199,15 @@ python3 scripts/gel_photo.py render photo.jpeg --out out.png \
         --lanes templates/mini-gel-15lanes.lanes.json \
         --gel-size data/gel_size.json --dpi 96
 # → 胶面 8.60 cm 宽；换 --dpi 300 物理尺寸一模一样，只多像素（这就是 pt 字号的意义）
+# → 同时写 out.gel.png（胶面、无字）、out.scene.json（版式数据）、out.html（离线编辑器）；
+#   --svg 再加 out.svg，--no-editor 批量跑时不写 out.html
+
+# 2b) 只改文字（泳道改名 / 删标签 / 挪 marker 列 / 改字号或颜色）：
+#     编辑 out.scene.json 后从 scene 出图，不重跑 render、不重新探测（约 1 秒）
+python3 scripts/gel_photo.py export out.scene.json --png out.png --dpi 300 --svg out.svg
+
+# 2c) 用户用 out.html 改完并「Save」：直接从存下来的 HTML 读 scene 出图
+python3 scripts/gel_photo.py export out.edited.html --png out.png
 
 # 3) 从预设库选 marker：序号或 _preset 描述里的关键词（命中不是恰好 1 个就报错并列出全部）
 python3 scripts/gel_photo.py render photo.jpeg --out out.png \
@@ -210,7 +219,7 @@ python3 scripts/gel_photo.py selftest        # 跑一次看当前项数；全绿
 
 常用开关：`--cue chroma|union`、`--ink-thr`（改泳道判据阈值）、`--longest`（分析缩略图长边，默认 700）、
 `--rect x0,y0,x1,y1`（跳过自动找胶）、`--angle` / `--no-rotate`、`--margin-frac`、
-`--no-outline`、`--font <ttf>`、`--debug`。
+`--no-outline`、`--font <ttf>`、`--svg`、`--no-editor`、`--debug`。
 
 ## 3b. 分子量报告（`mw_report.py`）
 
@@ -254,7 +263,7 @@ python3 scripts/gel_photo.py selftest        # 跑一次看当前项数；全绿
 
 ## 5. 脚本模块
 
-`scripts/gel_photo.py` 只放 CLI 与 probe/render 编排；其余按职责分文件（同目录，纯 stdlib）：
+`scripts/gel_photo.py` 只放 CLI 与 probe/render/export 编排；其余按职责分文件（同目录，纯 stdlib）：
 
 | 模块 | 承担 |
 |---|---|
@@ -334,3 +343,124 @@ python3 scripts/gel_photo.py render photo.jpeg --out out.png \
         --gel-size data/gel_size.json --keep-lanes 1,2,8-9 \
         --marker-policy keep --record out.record.json
 ```
+
+## 7. 版式场景（scene JSON）与 `export`
+
+`render` 在画字之前把**版式**冻结成一份 scene：页面多大、胶面在哪、每条文字写在哪。PNG / SVG / 浏览器编辑器
+都只读 scene 出图（spec §2 决策 1/3），所以「改一个字的写法」不再等于「重跑整条检测流水线」。
+
+**坐标口径与 record 相同**：原点 = 裁切/拼接后胶面的**左上角**，x 向右、y 向下；长度一律 **cm**，字号一律 **pt**
+（与 dpi 无关）。胶面左边/上边的标签因此是**负坐标**（如 `x_cm = -0.31`）。scene 里**永远没有**照片坐标、角度、
+分析尺度或像素框 —— `validate()` 直接拒绝任何名字里带 `rect` / `bbox` / `angle` / `scale` 的键，与 record 同一条闸。
+
+### 7a. `render --out fig.png` 写哪些文件
+
+| 文件 | 何时写 | 内容 |
+|---|---|---|
+| `fig.png` | 总是 | 成品：胶面 + 文字，`--dpi` 像素，dpi 写进 pHYs |
+| `fig.gel.png` | 总是 | **只有胶面**（裁切/正畸/拼接，拼缝线在内），无文字；scene 的 `gel.image` 指向它 |
+| `fig.scene.json` | 总是 | scene（本节）；PNG/SVG/编辑器都从它出图 |
+| `fig.html` | 总是，`--no-editor` 跳过 | 单文件离线编辑器，内嵌胶面图与 scene（spec §6） |
+| `fig.svg` | `--svg` | 矢量版（spec §5），胶面以 data URI 内嵌 |
+| `fig.mw.json` | 同今天（`--no-mw` 关闭） | 分子量报告，未变 |
+| `--record PATH` 的输出 | 同今天 | 探测记录，未变 |
+
+胶面单独成图是硬约束：文字层怎么改都动不了胶面像素、泳道位置和分子量数字（spec §2 决策 2）。
+
+### 7b. scene 的结构
+
+```json
+{
+  "version": 1,
+  "gel": {"image": "fig.gel.png", "width_cm": 8.60, "height_cm": 6.24},
+  "page": {"margin_min_cm": 0.43, "pad_cm": 0.17, "background": "#ffffff"},
+  "output": {"dpi": 300},
+  "font": {"family": "Arial", "file": "/System/Library/Fonts/Supplemental/Arial.ttf"},
+  "outline": {"color": "#ffffff", "width_frac": 0.07},
+  "items": [
+    {"id": "lane-3", "role": "lane", "bind": {"lane": 3},
+     "text": "3", "x_cm": 1.53, "y_cm": -0.14, "anchor": "bottom-center",
+     "size_pt": 8, "color": "#000000"},
+    {"id": "marker-2-1", "role": "marker",
+     "bind": {"marker_lane": 2, "label_index": 1, "band_y_cm": 0.98},
+     "text": "250 kDa", "x_cm": 0.31, "y_cm": 0.98, "anchor": "middle-right",
+     "size_pt": 8, "color": "#000000"}
+  ],
+  "source": {"record": "fig.record.json", "written": "2026-10-20", "skill": "ep-labeling"}
+}
+```
+
+**顶层键**
+
+| 键 | 含义 |
+|---|---|
+| `version` | schema 版本，当前恒为 `1` |
+| `gel` | `image` = 胶面 PNG 文件名（相对 scene 或绝对）；`width_cm` / `height_cm` = 胶面物理尺寸 |
+| `page` | `margin_min_cm` = 每边最小留白；`pad_cm` = 文字越界之外再加的余量；`background` = 画布底色 |
+| `output` | `dpi` = 默认出图 dpi；`export --dpi` 可覆盖，改 dpi 不改物理尺寸 |
+| `font` | `family` 给 SVG/浏览器；`file` 给 Python writer（`file` 为 `null` 时用 magick 默认字体） |
+| `outline` | 文字白边：`color`（`null` = 不描边）+ `width_frac`（相对字号） |
+| `items[]` | 一条标签一项，见下 |
+| `source` | `record`（只有 `render --record` 时出现）、`written`、`skill`；只作凭据，writer 忽略 |
+
+**`items[]` 字段**
+
+| 键 | 含义 |
+|---|---|
+| `id` | 同一 scene 内唯一且稳定：`lane-3`、`marker-2-1`、用户新增的 `item-N` |
+| `role` | `lane` / `marker` / `free`（用户自己加的标签） |
+| `bind` | 这个标签指向什么：`lane`、`marker_lane` + `label_index` + `band_y_cm`。**writer 忽略它**；留给以后把用户改字带回重跑（spec §10） |
+| `text` | 显示的文字，字符串 |
+| `x_cm` / `y_cm` | 锚点在胶面坐标系里的位置（cm），可为负 |
+| `anchor` | 文字框的哪个点落在 `(x_cm, y_cm)`：`{top\|middle\|bottom}-{left\|center\|right}` |
+| `size_pt` | 字号（pt），与 dpi 无关 |
+| `color` | 文字颜色，`#rrggbb` |
+
+**锚点**：`bottom-center` 是泳道名的默认口径（框底边在胶顶之上 `gap`）；marker 用 `middle-right` 或
+`middle-left`（框竖向中心落在条带行上）。锚点是**存下来**的，writer 不再推导版式。spec 例句里的横-竖写法
+`right-middle` 也接受，读入时归一成 `middle-right`（`scene.norm_anchor`）。文字框指字体的**墨迹框**，
+与 `text_layout.text_extent` 同一口径；SVG/浏览器量不到墨迹时按锚点加标准基线偏移，允许差见 spec §8。
+
+### 7c. 页面规则：推导，不存尺寸
+
+每边留白 = `max(margin_min_cm, 文字越界 + pad_cm)`，页面 = 胶面 + 四边：
+
+```
+left   = max(margin_min_cm, -min(0, 所有标签左边) + pad_cm)
+right  = max(margin_min_cm, max(0, 标签右边 - gel.width_cm) + pad_cm)
+top    = max(margin_min_cm, -min(0, 所有标签上边) + pad_cm)
+bottom = max(margin_min_cm, max(0, 标签下边 - gel.height_cm) + pad_cm)
+page   = (gel.width_cm + left + right) × (gel.height_cm + top + bottom)
+```
+
+所以 scene 里**不存**页面宽高，只存 `margin_min_cm` / `pad_cm` 和标签位置；每个 writer 与编辑器都调
+`scene.page_size_cm()` 现算（`scene.py`）。这样标签改长时页面跟着长，而不是把字裁掉；改短时白边收回。
+胶面在页面里的偏移就是 `left` / `top`，PNG 像素 = `cm / 2.54 × dpi`。
+
+### 7d. `export`：只读 scene，不重新探测
+
+```bash
+python3 scripts/gel_photo.py export fig.scene.json --png out.png [--dpi 300] [--svg out.svg] [--html out.html]
+python3 scripts/gel_photo.py export fig.html --png out.png
+```
+
+- 输入是 **scene JSON** 或**用户存下来的 `fig.html`**（从 `#scene` 块读 scene，从内嵌 data URI 读胶面）。
+- 输出 PNG / SVG / HTML，全部由 scene 现画；**不跑检测、不读原照片、不动泳道与分子量**，约 1 秒。
+- `--dpi` 覆盖 scene 的 `output.dpi`；物理尺寸不变，只改像素数与 pHYs。
+- 文字类请求（改名、删标签、挪 marker 列、改字号/颜色、加自由标签）一律走这条路，**不要**重跑 `render`。
+
+### 7e. 编辑器能改什么、不能改什么
+
+`fig.html` 是单文件：无网络、无外部脚本/字体，双击即可打开。胶面图、scene 和一小段 JS 全在里面。
+
+| 能改（只文字层） | 不能改（回 `render`） |
+|---|---|
+| 改文字、字号（pt）、颜色、锚点 | 胶面图本身、亮度/对比度 |
+| 拖动位置、方向键微调（0.01 cm，Shift 0.1 cm） | 拼缝线（属于胶面，披露是强制的） |
+| 删除标签、加 `free` 标签、Shift 多选整列一起挪 | 泳道位置、保留哪几条泳道（`--keep-lanes`） |
+| 按 role 批量改泳道名 / marker 标签的字号或颜色 | 裁剪、胶体预设、marker 预设、`y_px` 标定、条带配对 |
+| 撤销/重做；下载 PNG（带 pHYs dpi）、SVG、scene JSON | 分子量数字与报告 |
+
+编辑器会按 §7c 的页面规则实时放大/缩小页面。**Save** 下载一份新的 `fig.html`（浏览器不能覆盖原文件），
+标题与文件名会标明是编辑版；之后用 `export fig.html --png` 出图。重跑 `render` 会生成全新 scene，
+**不**把用户的文字改动带过去（`bind` 是为以后做这件事留的）。
