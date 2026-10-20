@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """marker / 泳道 / 胶体尺寸配置的读取与校验。"""
-import argparse
 import json
 import os
 
@@ -25,11 +24,19 @@ def as_entry(e, defaults):
     return dict(e)
 
 
-def parse_gel_cm(s):
+def parse_gel_cm(s, gel):
+    """--gel-cm 宽x高：只覆盖**已加载预设**的 width_cm / height_cm。
+
+    它不是预设的替代品（T1）：没有 --gel-size 时调用方必须先用 spec 那一行报错。
+    """
     v = [float(t) for t in s.lower().replace("x", " x ").replace("*", " x ").split() if t != "x"]
     if len(v) != 2:
-        raise argparse.ArgumentTypeError("--gel-cm 要写成 宽x高，如 8.6x7.2（cm）")
-    return {"width_cm": v[0], "height_cm": v[1], "_source": "--gel-cm 命令行给定"}
+        raise RuntimeError("--gel-cm 要写成 宽x高，如 8.6x7.2（cm）")
+    out = dict(gel)
+    out["width_cm"], out["height_cm"] = v[0], v[1]
+    old = str(gel.get("_source", "") or "")
+    out["_source"] = ("%s；" % old if old else "") + "宽高由 --gel-cm %s 覆盖" % s
+    return out
 
 
 def load_markers(path, preset=None):
@@ -64,12 +71,45 @@ def load_markers(path, preset=None):
     return cfg, labels, note
 
 
+GEL_REQUIRED = ("name", "width_cm", "height_cm", "lane_count", "lane_pitch_cm")
+GEL_ANCHORS = ("bottom", "top", "center")
+
+
 def load_gel_size(path):
-    """胶体物理尺寸 JSON（width_cm 定标，height_cm 只核对；可选 trim_*_cm / lane_pitch_cm）。"""
+    """胶体物理尺寸预设 JSON（字段见 specs/ep-labeling-gel-prior.md §3）。
+
+    必需：name / width_cm / height_cm / lane_count / lane_pitch_cm。
+    加载时校验不变式 lane_count × lane_pitch_cm ≈ width_cm（容差 10%）。
+    可选：trim_top_cm / trim_bottom_cm / anchor（bottom|top|center，默认 bottom）/
+          _source / _说明。
+    """
     if not os.path.isfile(path):
-        raise RuntimeError("找不到胶体尺寸文件：%s（用 --gel-size 指到 data/gel_size.json，或用 --gel-cm 宽x高）" % path)
+        raise RuntimeError("找不到胶体尺寸文件：%s（用 --gel-size 指到 data/gel_size.json）" % path)
     with open(path, encoding="utf-8") as f:
         cfg = json.load(f)
-    if not cfg.get("width_cm") or not cfg.get("height_cm"):
-        raise RuntimeError("%s 里没有 width_cm / height_cm" % path)
+    missing = [k for k in GEL_REQUIRED
+               if k not in cfg or cfg[k] is None or cfg[k] == ""]
+    if missing:
+        raise RuntimeError("%s 缺必需键：%s（必需 %s）"
+                           % (path, " / ".join(missing), " / ".join(GEL_REQUIRED)))
+    try:
+        width = float(cfg["width_cm"])
+        lane_count = int(cfg["lane_count"])
+        pitch = float(cfg["lane_pitch_cm"])
+    except (TypeError, ValueError):
+        raise RuntimeError("%s 的 width_cm / lane_count / lane_pitch_cm 必须是数字" % path)
+    if width <= 0 or lane_count <= 0 or pitch <= 0:
+        raise RuntimeError("%s 的 width_cm / lane_count / lane_pitch_cm 必须是正数" % path)
+    implied = lane_count * pitch
+    dev = abs(implied - width) / width
+    if dev > 0.10:
+        raise RuntimeError(
+            "%s 的泳道不变式不成立：lane_count × lane_pitch_cm = %d × %.3f = %.3f cm，"
+            "但 width_cm = %.3f cm（偏差 %.1f%%，容差 10%%）"
+            % (path, lane_count, pitch, implied, width, dev * 100.0))
+    anchor = cfg.get("anchor") or "bottom"
+    if anchor not in GEL_ANCHORS:
+        raise RuntimeError("%s 的 anchor=%r 非法（只接受 %s）"
+                           % (path, anchor, " / ".join(GEL_ANCHORS)))
+    cfg["anchor"] = anchor
     return cfg

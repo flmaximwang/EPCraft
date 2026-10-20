@@ -50,6 +50,14 @@ def _rect_arg(s):
 
 
 def cmd_probe(args):
+    # T1：预设是强制先验。没有 --gel-size 时在检测之前就退出。
+    if not args.gel_size:
+        raise RuntimeError("gel preset required (--gel-size FILE)")
+    gel = load_gel_size(args.gel_size)
+    print("[i] 胶体预设 %s：%d 条泳道 × %.3f cm = %.2f cm；宽 %.2f × 高 %.2f cm（%s）" % (
+        gel.get("name", "—"), int(gel["lane_count"]), float(gel["lane_pitch_cm"]),
+        int(gel["lane_count"]) * float(gel["lane_pitch_cm"]), float(gel["width_cm"]),
+        float(gel["height_cm"]), gel.get("_source", "")))
     info = detect_gel(args.image, args.longest, args.cue, _rect_arg(args.rect), args.ink_thr)
     print(json.dumps(info, ensure_ascii=False, indent=2))
     if info.get("cross_cue"):
@@ -80,6 +88,12 @@ def cmd_probe(args):
 
 
 def cmd_render(args):
+    # T1：预设是强制先验。--gel-cm 只是预设里的宽高覆盖，不能单独替代 --gel-size。
+    if not args.gel_size:
+        raise RuntimeError("gel preset required (--gel-size FILE)")
+    gel = load_gel_size(args.gel_size)
+    if args.gel_cm:
+        gel = parse_gel_cm(args.gel_cm, gel)
     info = detect_gel(args.image, args.longest, args.cue, _rect_arg(args.rect), args.ink_thr)
     ang = args.angle if args.angle is not None else round(info["angle_vertical"], 3)
     if args.no_rotate:
@@ -96,12 +110,6 @@ def cmd_render(args):
         ln, ln_labels = load_cfg(args.lanes, "泳道配置")
     font = args.font or pick_font(mk.get("font") or (ln or {}).get("font"))
     dpi = args.dpi
-    if args.gel_cm:
-        gel = parse_gel_cm(args.gel_cm)
-    elif args.gel_size:
-        gel = load_gel_size(args.gel_size)
-    else:
-        raise RuntimeError("要 --gel-size <json>（如 data/gel_size.json）或 --gel-cm 宽x高")
 
     def pt2px(v):
         """pt（物理尺寸，dpi 无关）→ 成品像素。字号/间距用 pt，才不会「改 dpi 就改字与胶的相对大小」。"""
@@ -409,6 +417,7 @@ def main(argv=None):
     p.add_argument("image")
     p.add_argument("--angle", type=float, default=None, help="强制用这个角度（度，正=顺时针）")
     p.add_argument("--debug", help="出一张带检测结果的覆盖图")
+    p.add_argument("--gel-size", help="胶体尺寸 JSON（必须给；如 data/gel_size.json）")
     add_detect(p)
     p.set_defaults(func=cmd_probe)
 
@@ -421,8 +430,8 @@ def main(argv=None):
     r.add_argument("--dpi", type=int, default=96, help="成品 PNG 的 dpi（默认 96；像素数 = 胶面 cm/2.54×dpi）")
     r.add_argument("--pair-force", action="store_true",
                    help="条带数与配置对不上时仍按位置硬配（可能整体错位；默认拒绝出图）")
-    r.add_argument("--gel-size", help="胶体尺寸 JSON（如 data/gel_size.json）")
-    r.add_argument("--gel-cm", help="直接给胶体尺寸 宽x高（cm），如 8.6x6.9，压过 --gel-size")
+    r.add_argument("--gel-size", help="胶体尺寸 JSON（必须给；如 data/gel_size.json）")
+    r.add_argument("--gel-cm", help="覆盖 --gel-size 预设里的宽x高（cm），如 8.6x6.9；不能单独使用")
     r.add_argument("--gel-lanes", type=int, default=None,
                    help="照片是裁过的、只含 N 条泳道时给 N：改按--gel-size 里的 lane_pitch_cm 的泳道间距定标")
     r.add_argument("--trim-top-cm", type=float, default=None,
@@ -450,7 +459,12 @@ def main(argv=None):
     d.set_defaults(func=cmd_doctor)
 
     args = ap.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except RuntimeError as e:
+        # 一行错误、非 0 退出，不吐 traceback（spec §8：缺预设时的消息走这里）
+        print("[!] %s" % e, file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

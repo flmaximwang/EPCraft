@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """selftest：不读用户文件的算法自检。"""
+import contextlib
+import io
+import json
 import os
 
+from config import load_gel_size
 from magick_io import MAGICK, _run, read_ppm, to_gray
 from gel_detect import bg_plane, components, detect_gel, ink_mask
 from lane_detect import (clusters, fat_rows, fill_gaps, group_rows, lanes_and_bands,
@@ -277,7 +281,75 @@ def selftest():
     assert ex and abs(mw - 10 ** (2.0 - 2.0)) < 1e-6, (mw, ex)
     ok += 1
 
-    print("selftest %d/16 通过" % ok)
+    # 17) 强制预设闸门：probe 没给 --gel-size 必须在**跑检测之前**就失败。
+    #     用一张不存在的图：真跑到 detect_gel 会报别的错，只有先过闸门才会是 spec 那一行。
+    from gel_photo import main as gp_main
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        rc = gp_main(["probe", "/nonexistent/t1-gate-no-preset.png"])
+    msg = err.getvalue()
+    assert rc != 0 and "gel preset required (--gel-size FILE)" in msg, (rc, msg)
+    ok += 1
+
+    # 18) --gel-cm 不再是 --gel-size 的替代：只给 --gel-cm 同样被闸门挡下
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        rc = gp_main(["render", "/nonexistent/t1-gate-gel-cm.png", "--out", "/tmp/t1-gate.png",
+                      "--gel-cm", "8x7"])
+    msg = err.getvalue()
+    assert rc != 0 and "gel preset required (--gel-size FILE)" in msg, (rc, msg)
+    ok += 1
+
+    # 19) 预设 schema：缺 lane_count 报错、不变式破坏报偏差、合法预设返回 dict 且 anchor 默认 bottom
+    with tempfile.TemporaryDirectory() as td:
+        good = {"name": "t", "width_cm": 8.6, "height_cm": 6.9,
+                "lane_count": 15, "lane_pitch_cm": 0.565}
+        p_good = os.path.join(td, "good.json")
+        with open(p_good, "w", encoding="utf-8") as f:
+            json.dump(good, f)
+        gel = load_gel_size(p_good)
+        assert isinstance(gel, dict) and gel["lane_count"] == 15 and gel["anchor"] == "bottom", gel
+
+        bad = {k: v for k, v in good.items() if k != "lane_count"}
+        p_bad = os.path.join(td, "no_lane_count.json")
+        with open(p_bad, "w", encoding="utf-8") as f:
+            json.dump(bad, f)
+        try:
+            load_gel_size(p_bad)
+            raise AssertionError("缺 lane_count 没报错")
+        except RuntimeError as e:
+            assert "lane_count" in str(e), str(e)
+
+        bad2 = dict(good, lane_pitch_cm=0.3)
+        p_bad2 = os.path.join(td, "bad_pitch.json")
+        with open(p_bad2, "w", encoding="utf-8") as f:
+            json.dump(bad2, f)
+        try:
+            load_gel_size(p_bad2)
+            raise AssertionError("不变式破坏没报错")
+        except RuntimeError as e:
+            s = str(e)
+            assert "偏差" in s and "15" in s and "0.300" in s and "8.600" in s, s
+
+        bad3 = dict(good, anchor="middle")
+        p_bad3 = os.path.join(td, "bad_anchor.json")
+        with open(p_bad3, "w", encoding="utf-8") as f:
+            json.dump(bad3, f)
+        try:
+            load_gel_size(p_bad3)
+            raise AssertionError("非法 anchor 没报错")
+        except RuntimeError as e:
+            assert "anchor" in str(e), str(e)
+
+        # 随包预设自身必须过 schema/不变式（lane_count=15）
+        shipped = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "data", "gel_size.json")
+        if os.path.isfile(shipped):
+            sg = load_gel_size(shipped)
+            assert sg["lane_count"] == 15 and sg["anchor"] == "bottom", sg
+    ok += 1
+
+    print("selftest %d/19 通过" % ok)
     return 0
 
 
