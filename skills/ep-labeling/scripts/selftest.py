@@ -13,6 +13,8 @@ from magick_io import MAGICK, _run, read_ppm, to_gray
 from gel_detect import bg_plane, components, detect_gel, ink_mask
 from band_fit import clusters, fat_rows, group_rows
 from lane_fit import find_lanes
+from lane_select import (cropped_out_markers, layout as lane_layout, nearest_marker,
+                         parse_keep, strips as lane_strips)
 from geometry import load_dims_after, rect_to_analysis, rotate_pt, rotated_rect_bbox
 from mw_report import build_cal, estimate, marker_pairs, parse_mw, report as mw_report
 from record import (bands_from_rows, build as record_build, load as record_load,
@@ -582,7 +584,60 @@ def selftest():
     assert out[0]["depth"] == 30.0 and out[1]["width_cm"] > 0, out
     ok += 1
 
-    print("selftest %d/29 通过" % ok)
+    # 30) stage 4 段边界：15 条、pitch 1.0 cm、胶 15 cm 的合成中心（1..15）。
+    #     边界必须是**相邻中心的中点**（不是带边、不是固定半间距）；两端到胶缘。
+    xs15 = [float(i) for i in range(1, 16)]
+    seg = lane_strips([3, 4, 5], xs15, 15.0)
+    assert len(seg) == 1 and seg[0]["lanes"] == [3, 4, 5], seg
+    assert abs(seg[0]["src_x0_cm"] - 2.5) < 1e-9, seg      # (2+3)/2
+    assert abs(seg[0]["src_x1_cm"] - 5.5) < 1e-9, seg      # (5+6)/2
+    assert abs((seg[0]["src_x1_cm"] - seg[0]["src_x0_cm"]) - 3.0) < 1e-9, seg
+    s12 = lane_strips([1, 2], xs15, 15.0)[0]
+    assert abs(s12["src_x0_cm"] - 0.0) < 1e-9 and abs(s12["src_x1_cm"] - 2.5) < 1e-9, s12
+    s1415 = lane_strips([14, 15], xs15, 15.0)[0]
+    assert abs(s1415["src_x0_cm"] - 13.5) < 1e-9 and abs(s1415["src_x1_cm"] - 15.0) < 1e-9, s1415
+    s15 = lane_strips([15], xs15, 15.0)[0]
+    assert abs(s15["src_x1_cm"] - 15.0) < 1e-9, s15         # 最后一条 → 胶宽
+    assert lane_strips([5, 3, 4, 4], xs15, 15.0)[0]["lanes"] == [3, 4, 5]
+    ok += 1
+
+    # 31) stage 4 两段版式：keep=[1,2,8,9] → 两段，第二段 dst = 第一段宽 + gap；总宽 = Σ段宽 + gap
+    st2 = lane_strips([1, 2, 8, 9], xs15, 15.0)
+    assert len(st2) == 2, st2
+    assert abs((st2[0]["src_x1_cm"] - st2[0]["src_x0_cm"]) - 2.5) < 1e-9, st2
+    assert abs((st2[1]["src_x1_cm"] - st2[1]["src_x0_cm"]) - 2.0) < 1e-9, st2
+    st2, total2 = lane_layout(st2, 0.15)
+    assert abs(st2[0]["dst_x0_cm"] - 0.0) < 1e-9, st2
+    assert abs(st2[1]["dst_x0_cm"] - (2.5 + 0.15)) < 1e-9, st2
+    assert abs(total2 - (2.5 + 2.0 + 0.15)) < 1e-9, total2
+    # 单段：没有 gap
+    st1, total1 = lane_layout(lane_strips([3, 4, 5], xs15, 15.0), 0.15)
+    assert len(st1) == 1 and abs(st1[0]["dst_x0_cm"]) < 1e-9 and abs(total1 - 3.0) < 1e-9, (st1, total1)
+    ok += 1
+
+    # 32) --keep-lanes 语法：逗号/区间、去重升序；越界/空/反向区间/乱写都报错
+    assert parse_keep("1,2,8-10", 15) == [1, 2, 8, 9, 10]
+    assert parse_keep("3", 15) == [3]
+    assert parse_keep(" 8 - 10 , 2 ", 15) == [2, 8, 9, 10]
+    assert parse_keep("5,5,1", 15) == [1, 5]
+    for bad in ("0", "16", "5-3", "", ",", "1,,2", "a", "1-"):
+        try:
+            parse_keep(bad, 15)
+            raise AssertionError("--keep-lanes 非法却没报错：%r" % bad)
+        except RuntimeError:
+            pass
+    ok += 1
+
+    # 33) marker 策略：列出被裁的 marker；keep 时加与保留段边界最近的一条
+    assert cropped_out_markers([3, 4, 5], {1, 2, 8}) == [1, 2, 8]
+    assert cropped_out_markers([1, 2, 8], {1, 2, 8}) == []
+    assert nearest_marker({1, 2, 8}, [3, 4, 5], xs15) == 2        # 2 离 2.5 最近
+    assert nearest_marker({1, 2, 8}, [6, 7], xs15) == 8           # 8 离 7.5 最近
+    assert nearest_marker({1, 2, 8}, [1, 2, 3], xs15) == 8
+    assert nearest_marker({1}, [1, 2, 3], xs15) is None            # 没有被裁的 marker
+    ok += 1
+
+    print("selftest %d/33 通过" % ok)
     return 0
 
 

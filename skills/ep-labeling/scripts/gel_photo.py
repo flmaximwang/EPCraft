@@ -24,7 +24,9 @@
 import argparse
 import json
 import os
+import re
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -36,6 +38,8 @@ from gel_area import compute, cross_check_scale                                 
 from gel_detect import detect_gel                                                    # noqa: E402
 from geometry import lane_pitch, load_dims_after, pos_or_frac, rotate_pt             # noqa: E402
 from lane_fit import find_lanes                                                      # noqa: E402
+from lane_select import (cropped_out_markers, layout as lane_layout,                # noqa: E402
+                         nearest_marker, parse_keep, strips as lane_strips)
 from magick_io import MAGICK, _run                                                   # noqa: E402
 from mw_report import format_report, report as mw_report_build                       # noqa: E402
 from record import (bands_from_rows as record_bands_from_rows,                   # noqa: E402
@@ -76,6 +80,34 @@ def _print_checks(checks):
         return
     print("[i] checks: %s" % " · ".join(
         "%s %s (%s)" % (c["name"], "ok" if c["ok"] else "WARN", c["detail"]) for c in checks))
+
+
+def _crop_record(rec_full, keep, crop, strips4, total_w_cm):
+    """整块胶的 record → 只含保留泳道的 record（x_cm 映射到拼接版式）。
+
+    rec_full 仍是 MW 定标的输入（marker 泳道可能已被裁掉）；本函数只改**写盘/打印**的那份。
+    """
+    by_lane = {}
+    for s in strips4:
+        for k in s["lanes"]:
+            by_lane[int(k)] = s
+    kept = set(int(k) for k in keep)
+    lanes = []
+    for ln in rec_full["lanes"]:
+        k = int(ln["index"])
+        if k not in kept:
+            continue
+        s = by_lane[k]
+        d = dict(ln)
+        d["x_cm"] = round(s["dst_x0_cm"] + (float(ln["x_cm"]) - s["src_x0_cm"]), 4)
+        lanes.append(d)
+    rec = dict(rec_full)
+    rec["gel"] = {"width_cm": round(float(total_w_cm), 4),
+                  "height_cm": rec_full["gel"]["height_cm"]}
+    rec["lanes"] = lanes
+    rec["bands"] = {k: v for k, v in rec_full["bands"].items() if int(k) in kept}
+    rec["crop"] = crop
+    return rec
 
 
 def run_stages(image, preset, args, gel_lanes=None):
@@ -131,6 +163,10 @@ def cmd_probe(args):
         int(gel["lane_count"]) * float(gel["lane_pitch_cm"]), float(gel["width_cm"]),
         float(gel["height_cm"]), gel.get("_source", "")))
     preset = dict(gel)
+    # T6：probe 不裁切（record 仍是整块胶），但 --keep-lanes 的语法与范围照旧校验。
+    if getattr(args, "keep_lanes", None):
+        keep_chk = parse_keep(args.keep_lanes, int(args.gel_lanes or preset["lane_count"]))
+        print("[i] --keep-lanes 校验通过：%s（probe 不裁切）" % ",".join(map(str, keep_chk)))
     info, ang, ga, lf, bb = run_stages(args.image, preset, args, gel_lanes=args.gel_lanes)
     print("角度: 竖边拟合 %.3f°；本次用 %.3f°" % (info["angle_vertical"], ang))
 
@@ -204,7 +240,8 @@ def cmd_render(args):
     gel_bb = ga["gel_box"]
     _print_stage1(ga, preset, args.gel_lanes)
     # ---- 探测记录：stage 1–3 的冻结输出一次换算成裁切后胶面的 cm（MW 报告也读它）
-    rec = record_build(preset, ga, lf, bb, info)
+    #      rec_full = **整块胶**（所有泳道、未裁切坐标）；stage 4 之后另建 rec（只含保留泳道）。
+    rec_full = record_build(preset, ga, lf, bb, info)
     # 真正的写盘放在 MW 之后 —— 手动标定（y_px / y_frac）会覆盖主标定泳道的条带行，
     # 那份覆盖必须也进 record，否则磁盘上的 record 与报告用的数不一致。
 
@@ -240,6 +277,84 @@ def cmd_render(args):
                            "预设 %.2f cm / 探测宽 %d px / 泳道 %s"
                            % (scale, ga["width_cm"], gel_bb[2] - gel_bb[0], args.gel_lanes or "—"))
 
+    # ---- stage 4：泳道选择（只影响出图；探测、定标、MW 标定仍用整块胶）
+    ppc = float(ga["px_per_cm"])
+    lane_x_cm = [(x - gel_bb[0]) / ppc for x in lane_x]
+    keep = parse_keep(args.keep_lanes, len(lane_x)) if args.keep_lanes else None
+    marker_set = {int(v) for v in ((ln or {}).get("marker_lanes") or [])}
+    if mk.get("marker_lane") is not None:
+        marker_set.add(int(mk["marker_lane"]))
+    marker_set = {m for m in marker_set if 1 <= m <= len(lane_x)}
+    strips4 = crop = None
+    total_w_cm = float(ga["width_cm"])
+    if keep is not None:
+        if keep == list(range(1, len(lane_x) + 1)):
+            print("[i] --keep-lanes 选了全部 %d 条 = 不裁（与全保留逐像素一致）" % len(lane_x))
+            keep = None
+        else:
+            # marker 泳道全被裁掉：脚本不替用户决定，列出来 + 两个选项（spec §6b）
+            if not (set(keep) & marker_set):
+                if args.marker_policy is None:
+                    cut = cropped_out_markers(keep, marker_set)
+                    raise RuntimeError(
+                        "--keep-lanes %s 会把 marker 泳道 %s 全部裁掉 —— 脚本不替你决定。二选一重跑：\n"
+                        "  --marker-policy calibrate-only   marker 只用于定标/分子量，不画 marker 标签\n"
+                        "  --marker-policy keep            把离保留泳道最近的 marker 泳道加进选择"
+                        % (",".join(map(str, keep)), ", ".join(map(str, cut)) or "（无）"))
+                if args.marker_policy == "keep":
+                    nm = nearest_marker(marker_set, keep, lane_x_cm)
+                    if nm is None:
+                        raise RuntimeError("--marker-policy keep：没有可加的 marker 泳道（marker_lanes=%s）"
+                                           % sorted(marker_set))
+                    keep = sorted(set(keep) | {nm})
+                    print("[i] marker-policy keep：加回最近的 marker 泳道 %d → keep=%s"
+                          % (nm, ",".join(map(str, keep))))
+            strips4 = lane_strips(keep, lane_x_cm, ga["width_cm"])
+            strips4, total_w_cm = lane_layout(strips4, args.splice_gap_cm)
+            crop = {"keep_lanes": keep,
+                    "marker_policy": args.marker_policy,
+                    "splice_gap_cm": float(args.splice_gap_cm) if len(strips4) >= 2 else 0.0,
+                    "strips": strips4}
+            print("[i] 泳道选择（stage 4）：保留 %s → %d 段；成品胶面宽 %.3f cm（gap %.2f cm）" % (
+                ",".join(map(str, keep)), len(strips4), total_w_cm, crop["splice_gap_cm"]))
+            for s in strips4:
+                print("    段 %s：src %.3f–%.3f cm（宽 %.3f）→ dst %.3f cm" % (
+                    ",".join(map(str, s["lanes"])), s["src_x0_cm"], s["src_x1_cm"],
+                    s["src_x1_cm"] - s["src_x0_cm"], s["dst_x0_cm"]))
+            if len(strips4) >= 2:
+                print("[!] 拼接：非相邻泳道由同一块胶拼接而成 —— 图注必须声明（保留原始泳道号）")
+
+    strip_of = {}
+    for s in (strips4 or []):
+        for k in s["lanes"]:
+            strip_of[int(k)] = s
+
+    def lane_out_cm(k, x_canvas):
+        """某条（原始泳道号, 画布 x）→ 成品版式 cm；该道被裁掉返回 None。"""
+        s = strip_of.get(int(k))
+        if s is None:
+            return None
+        cm = (x_canvas - gel_bb[0]) / ppc
+        return s["dst_x0_cm"] + (cm - s["src_x0_cm"])
+
+    def x_out_cm(x_canvas):
+        """任意画布 x → 成品版式 cm；落在所有保留段之外返回 None（marker 列可能被裁掉）。"""
+        if strips4 is None:
+            return (x_canvas - gel_bb[0]) / ppc
+        cm = (x_canvas - gel_bb[0]) / ppc
+        for s in strips4:
+            if s["src_x0_cm"] - 1e-9 <= cm <= s["src_x1_cm"] + 1e-9:
+                return s["dst_x0_cm"] + (cm - s["src_x0_cm"])
+        return None
+
+    def to_face_x(cm):
+        """成品版式 cm → 画布坐标口径（后段仍按原来的 L+(ax-gx0)·sx 换算）。"""
+        return gel_bb[0] + float(cm) * ppc
+
+    face_bb = (gel_bb[0], gel_bb[1], gel_bb[0] + total_w_cm * ppc, gel_bb[3]) \
+        if strips4 else gel_bb
+    rec = _crop_record(rec_full, keep, crop, strips4, total_w_cm) if strips4 else rec_full
+
     # ---- 泳道名（gap = 文字底边离胶面顶边，align 相对泳道中心）
     items = []
     if ln_labels:
@@ -257,11 +372,18 @@ def cmd_render(args):
                 raise RuntimeError("lanes.labels 有 %d 条，只探到 %d 条泳道（缺的用 lanes.x_frac 显式给位置）"
                                    % (len(ln_labels), len(lane_x)))
             xs = lane_x[: len(ln_labels)]
-        for e, x in zip(ln_labels, xs):
+        for i, (e, x) in enumerate(zip(ln_labels, xs), 1):
             en = as_entry(e, ln)
             t = en.get("text", "")
             if not t:
                 continue
+            if strips4 is not None:
+                if i not in set(keep or ()):
+                    continue                  # 被裁掉的泳道不画名字
+                cm = lane_out_cm(i, x)
+                if cm is None:
+                    continue
+                x = to_face_x(cm)             # x 映射到拼接版式（原始号 → 原标签）
             s = pt2px(en.get("size", size))
             tw, th = text_extent(font, round(s), t)
             tw, th = tw / scale, th / scale
@@ -278,6 +400,7 @@ def cmd_render(args):
         lw = float(mk["lane_width"]) if mk.get("lane_width") else lane_pitch(lane_x)
         if mk.get("marker_lane_x") is not None:
             mx = pos_or_frac(mk["marker_lane_x"], gel_bb[0], gel_bb[2])
+            m_lane = int(mk["marker_lane"]) if mk.get("marker_lane") is not None else None
         else:
             idx = int(mk.get("marker_lane", 1))
             if idx == 0:
@@ -286,19 +409,49 @@ def cmd_render(args):
                 mx = lane_x[idx - 1]
             else:
                 raise RuntimeError("markers 的 marker_lane 超出泳道数量（探到 %d 条）" % len(lane_x))
-        mid = (min(lane_x) + max(lane_x)) / 2.0
-        left_side = mx < mid
-        edge = mx if mk.get("lane_edge") == "inner" else (mx - lw / 2.0 if left_side else mx + lw / 2.0)
+            m_lane = idx if idx >= 1 else None
+        # stage 4：marker 标签的 x 也要映射；calibrate-only 或 marker 泳道被裁掉时不画。
+        left_side, edge = True, gel_bb[0]
+        draw_marker = True
+        if strips4 is not None:
+            if args.marker_policy == "calibrate-only":
+                draw_marker = False
+                print("[i] marker-policy calibrate-only：不画 marker 标签（MW 标定仍用全部 marker 泳道）")
+            else:
+                mo = lane_out_cm(m_lane, mx) if m_lane is not None else x_out_cm(mx)
+                if mo is None:
+                    draw_marker = False
+                    print("[i] marker 泳道不在保留段里：不画 marker 标签（标定/MW 不受影响）")
+                else:
+                    mx = to_face_x(mo)
+                    mid = to_face_x(total_w_cm / 2.0)
+                    left_side = mo < total_w_cm / 2.0
+                    edge = mx if mk.get("lane_edge") == "inner" else (
+                        mx - lw / 2.0 if left_side else mx + lw / 2.0)
+                    edge = min(edge, to_face_x(0.0)) if left_side else max(edge, to_face_x(total_w_cm))
+        if strips4 is None:
+            mid = (min(lane_x) + max(lane_x)) / 2.0
+            left_side = mx < mid
+            edge = mx if mk.get("lane_edge") == "inner" else (
+                mx - lw / 2.0 if left_side else mx + lw / 2.0)
         # 整列**不压在胶上**：按泳道带边算出的锚点若还在胶面内，就推到胶面之外（gap 从胶边起算）。
         # 左/右按（泳道区中线），只是把这一列挪进白底留白里。
-        edge = min(edge, gel_bb[0]) if left_side else max(edge, gel_bb[2])
+        if strips4 is None:
+            edge = min(edge, gel_bb[0]) if left_side else max(edge, gel_bb[2])
         gap = pt2px(mk.get("gap", 4))
         size = float(mk.get("size", 8))                # pt
-        print("[i] 泳道带宽 ≈%.1f px(分析)（%s）；marker 泳道 x=%.1f（泳道区中线 %.1f 的%s边）"
-              "→ 带边 %.1f → %s对齐，锚点离带边 %g px（成品像素）" % (
-                  lw / a2o, "来自 markers.lane_width" if mk.get("lane_width") else
-                  "相邻泳道中心距的中位数", mx, mid, "左" if left_side else "右", edge,
-                  "右" if left_side else "左", float(mk.get("gap", 4))))
+        if strips4 is None:
+            print("[i] 泳道带宽 ≈%.1f px(分析)（%s）；marker 泳道 x=%.1f（泳道区中线 %.1f 的%s边）"
+                  "→ 带边 %.1f → %s对齐，锚点离带边 %g px（成品像素）" % (
+                      lw / a2o, "来自 markers.lane_width" if mk.get("lane_width") else
+                      "相邻泳道中心距的中位数", mx, mid, "左" if left_side else "右", edge,
+                      "右" if left_side else "左", float(mk.get("gap", 4))))
+        else:
+            if draw_marker:
+                print("[i] marker 列：成品版式带边 %.3f cm（胶面宽 %.3f cm）→ %s对齐" % (
+                    (edge - gel_bb[0]) / ppc, total_w_cm, "右" if left_side else "左"))
+            else:
+                print("[i] marker 列：本轮不画（成品胶面宽 %.3f cm）" % total_w_cm)
         idx = 0
         if mk.get("marker_lane_x") is None:
             idx = int(mk.get("marker_lane", 1)) - 1
@@ -388,7 +541,7 @@ def cmd_render(args):
                       % (ink, gap_out, dpi, gap_out * 72.0 / dpi))
                 print("    更省事：把那一对写成一条标签，并给它加 \"rows\": 2（吃 2 条带、落在两者中间）。")
         _, my = rot_pt(info["bbox_analysis"][0] * a2o, rows[0] * a2o) if rows else (0, 0)
-        for row, e in zip(eff, mk_labels):
+        for row, e in (zip(eff, mk_labels) if draw_marker else []):
             en = as_entry(e, mk)
             t = en.get("text", "")
             if not t:
@@ -404,14 +557,15 @@ def cmd_render(args):
             items.append((ax, ay, t, s, en.get("color", mk.get("color", "#000000"))))
 
     # ---- 外扩留白（按文字真实包围盒）→ 裁切 → 写字
-    base_m = args.margin_frac * max(gel_bb[2] - gel_bb[0], gel_bb[3] - gel_bb[1])
+    fb = face_bb if strips4 is not None else gel_bb
+    base_m = args.margin_frac * max(fb[2] - fb[0], fb[3] - fb[1])
     pad = max(6.0, base_m * 0.4)
     need = {"l": 0.0, "r": 0.0, "t": 0.0, "b": 0.0}
     for ax, ay, t, s, _c in items:
         tw, th = text_extent(font, round(s), t)
         tw, th = tw / scale, th / scale
-        need["l"] = max(need["l"], gel_bb[0] - ax)
-        need["r"] = max(need["r"], ax + tw - gel_bb[2])
+        need["l"] = max(need["l"], fb[0] - ax)
+        need["r"] = max(need["r"], ax + tw - fb[2])
         need["t"] = max(need["t"], gel_bb[1] - ay)          # ay = box 顶边
         need["b"] = max(need["b"], (ay + th) - gel_bb[3])   # box 底边 = ay + th
     L = base_m + max(0.0, need["l"] - base_m + pad)
@@ -425,37 +579,112 @@ def cmd_render(args):
     gx1, gy1 = min(W1, int(round(gel_bb[2]))), min(H1, int(round(gel_bb[3])))
     gw, gh = int(round((gx1 - gx0) * scale)), int(round((gy1 - gy0) * scale))
     sx, sy = gw / float(gx1 - gx0), gh / float(gy1 - gy0)     # 裁切→成品的真实比例（免得有亚像素漂）
-    # 注意单位：L/R/T/B 是在 gel_bb（胶面坐标）里算的，要乘比例才是成品像素
-    L, R = int(round(L * sx)), int(round(R * sx))
-    T, B = int(round(T * sy)), int(round(B * sy))
-    W, H = gw + L + R, gh + T + B
-    # 白底用**新建画布 + composite**（不是 -extent：实测 IM7 的 -extent 带 gravity 时偏移量被忽略，
-    # 图会贴在左上角、只往右下补白 —— 边距全错）。
-    base = [MAGICK, "-size", "%dx%d" % (W, H), "xc:white", "(", args.image, "-auto-orient"]
-    if abs(ang) > 1e-6:
-        base += ["-rotate", "%.4f" % ang]
-    base += ["-crop", "%dx%d+%d+%d" % (gx1 - gx0, gy1 - gy0, gx0, gy0), "+repage",
-             "-resize", "%dx%d!" % (gw, gh),                    # 严格贴合胶面
-             "+profile", "*", ")"]   # 注意别用 -strip：IM7 里它会把后面设的 dpi 一起丢掉（实测）
-    base += ["-gravity", "northwest", "-geometry", "+%d+%d" % (L, T), "-composite"]
-    out_items = [(L + (ax - gx0) * sx, T + (ay - gy0) * sy, t, s, c) for ax, ay, t, s, c in items]
+    out_ppc = dpi / 2.54
+
+    if strips4 is None:
+        # 全保留：与 T5 逐像素一致（不建临时文件、不加白缝）
+        # 注意单位：L/R/T/B 是在 gel_bb（胶面坐标）里算的，要乘比例才是成品像素
+        L, R = int(round(L * sx)), int(round(R * sx))
+        T, B = int(round(T * sy)), int(round(B * sy))
+        W, H = gw + L + R, gh + T + B
+        # 白底用**新建画布 + composite**（不是 -extent：实测 IM7 的 -extent 带 gravity 时偏移量被忽略，
+        # 图会贴在左上角、只往右下补白 —— 边距全错）。
+        base = [MAGICK, "-size", "%dx%d" % (W, H), "xc:white", "(", args.image, "-auto-orient"]
+        if abs(ang) > 1e-6:
+            base += ["-rotate", "%.4f" % ang]
+        base += ["-crop", "%dx%d+%d+%d" % (gx1 - gx0, gy1 - gy0, gx0, gy0), "+repage",
+                 "-resize", "%dx%d!" % (gw, gh),                    # 严格贴合胶面
+                 "+profile", "*", ")"]   # 注意别用 -strip：IM7 里它会把后面设的 dpi 一起丢掉（实测）
+        base += ["-gravity", "northwest", "-geometry", "+%d+%d" % (L, T), "-composite"]
+        out_items = [(L + (ax - gx0) * sx, T + (ay - gy0) * sy, t, s, c)
+                     for ax, ay, t, s, c in items]
+        cmd = annotate_cmd(base, out_items, font, None if args.no_outline else args.outline)
+        cmd += ["-units", "PixelsPerInch", "-density", str(dpi), args.out]
+        _run(cmd)
+        face_w_px, face_h_px = gw, gh
+    else:
+        # ---- stage 4：先落一张**整块胶面**（crop → resize，与全保留同一条命令），再按段水平裁切拼接。
+        #      每段只做 -crop + composite：不拉伸、不上下位移、不调色。
+        sx = out_ppc / ppc                          # 画布 px → 成品 px（版式 cm 用物理换算）
+        L, R = int(round(L * sx)), int(round(R * sx))
+        T, B = int(round(T * sy)), int(round(B * sy))
+        face_w_px = int(round(total_w_cm * out_ppc))
+        face_h_px = gh
+        W, H = L + face_w_px + R, gh + T + B
+        fd, tmp_face = tempfile.mkstemp(prefix="gel-face-", suffix=".png")
+        os.close(fd)
+        try:
+            face = [MAGICK, args.image, "-auto-orient"]
+            if abs(ang) > 1e-6:
+                face += ["-rotate", "%.4f" % ang]
+            face += ["-crop", "%dx%d+%d+%d" % (gx1 - gx0, gy1 - gy0, gx0, gy0), "+repage",
+                     "-resize", "%dx%d!" % (gw, gh), "+profile", "*", tmp_face]
+            _run(face)
+
+            src_ppc = gw / float(ga["width_cm"])     # 整块胶面临时图的 px/cm
+            base = [MAGICK, "-size", "%dx%d" % (W, H), "xc:white"]
+            placed = []
+            for s in strips4:
+                w = int(round((s["src_x1_cm"] - s["src_x0_cm"]) * out_ppc))
+                xo = L + int(round(s["dst_x0_cm"] * out_ppc))
+                xs = int(round(s["src_x0_cm"] * src_ppc))
+                xs = max(0, min(xs, gw - w))         # 亚像素取整的兜底：只挪 ≤1 px，不缩放
+                base += ["(", tmp_face, "-crop", "%dx%d+%d+0" % (w, gh, xs), "+repage", ")",
+                         "-gravity", "northwest", "-geometry", "+%d+%d" % (xo, T), "-composite"]
+                placed.append((xo, w))
+            if len(placed) >= 2:
+                # 缝正中一条 1 px 黑线（只在胶面高度内）；只有一段时没有缝、没有线。
+                draws = []
+                for (x0, w0), (x1, _w1) in zip(placed, placed[1:]):
+                    xm = (x0 + w0 + x1) // 2
+                    draws.append("line %d,%d %d,%d" % (xm, T, xm, T + gh - 1))
+                base += ["-fill", "black", "-stroke", "none",
+                         "-draw", " ".join(draws)]
+            out_items = [(L + (ax - gx0) * sx, T + (ay - gy0) * sy, t, s, c)
+                         for ax, ay, t, s, c in items]
+            cmd = annotate_cmd(base, out_items, font, None if args.no_outline else args.outline)
+            cmd += ["-units", "PixelsPerInch", "-density", str(dpi), args.out]
+            _run(cmd)
+            # 验收用：每段在成品里的实际像素宽（cm = px / (dpi/2.54)）
+            print("[i] 拼接版式：%d 段，成品胶面 %d×%d px（%.3f×%.3f cm）" % (
+                len(placed), face_w_px, face_h_px, face_w_px / out_ppc, face_h_px / out_ppc))
+            gaps = [b[0] - (a[0] + a[1]) for a, b in zip(placed, placed[1:])]
+            print("    段宽 px：%s；缝 %s px%s" % (
+                ", ".join(str(w) for _x, w in placed),
+                "/".join(str(g) for g in gaps) if gaps else "0",
+                "（缝心 1 px 黑线）" if len(placed) >= 2 else "（无白缝）"))
+        finally:
+            try:
+                os.unlink(tmp_face)
+            except OSError:
+                pass
     if args.debug:
         for ox, oy, t, s, c in out_items:
             print("    [item] %-8s x0=%7.1f y0=%7.1f (pt=%.1f)" % (t, ox, oy, s))
-    cmd = annotate_cmd(base, out_items, font, None if args.no_outline else args.outline)
-    cmd += ["-units", "PixelsPerInch", "-density", str(dpi), args.out]
-    _run(cmd)
     # 手动标定（y_px / y_frac）的行必须进 record：MW 只读 record，
     # 否则人会以为标定生效了、报告其实用的自动行。--no-mw 时也要写对。
     if mk_labels and (mk.get("y_px") or mk.get("y_frac")) and rows:
-        rec["bands"][str(idx + 1)] = record_bands_from_rows(
-            lf["lanes"][idx]["x_analysis"], rows, bb["bands"][idx], ga, info)
+        new_rows = record_bands_from_rows(lf["lanes"][idx]["x_analysis"], rows,
+                                          bb["bands"][idx], ga, info)
+        rec_full["bands"][str(idx + 1)] = new_rows
+        if strips4 is not None and str(idx + 1) in rec["bands"]:
+            rec["bands"][str(idx + 1)] = new_rows
     if ln_labels and mk_labels and not args.no_mw and len(rows) == sum(span):
         mset = {int(k) - 1 for k in (ln or {}).get("marker_lanes", [])} | {idx}
-        rep = mw_report_build(rec, [as_entry(e, ln).get("text", "") for e in ln_labels], mset, idx,
-                              mk_labels, span, as_entry, args.mw_method)
+        # 标定用**整块胶**的 record（marker 泳道可能已被裁掉）；报样品只报保留泳道。
+        rep = mw_report_build(rec_full, [as_entry(e, ln).get("text", "") for e in ln_labels],
+                              mset, idx, mk_labels, span, as_entry, args.mw_method)
         if "marker_lanes" not in (ln or {}):
             rep["notes"].append("lanes.json 没有 marker_lanes：其余 marker 泳道会被当成样品报出来")
+        if strips4 is not None:
+            kept = set(keep or ())
+            rep["lanes"] = [l for l in rep["lanes"] if int(l["lane"]) in kept]
+
+            def _note_lane(n):
+                m = re.match(r"泳道 (\d+)（", n)
+                return int(m.group(1)) if m else None
+            rep["notes"] = [n for n in rep["notes"]
+                            if _note_lane(n) is None or _note_lane(n) in kept]
         print(format_report(rep))
         mw_path = os.path.splitext(args.out)[0] + ".mw.json"
         with open(mw_path, "w", encoding="utf-8") as f:
@@ -470,11 +699,11 @@ def cmd_render(args):
         draw_debug(args.image, info, lb_dbg, args.debug, cfg_rows=rows if mk_labels else None,
                    box_analysis=lf["box_analysis"])
         print("debug 覆盖图:", args.debug, "（红框=按预设定形的胶面，红/绿线=泳道/条带行，品红=配置指定的 marker 行）")
-    gel_w_px, gel_h_px = (gel_bb[2] - gel_bb[0]) * scale, (gel_bb[3] - gel_bb[1]) * scale
     print("输出 %s（%d×%d px, %d dpi；%d 条文字）= 胶面 %d×%d + 白底留白 L%d R%d T%d B%d" % (
-        args.out, W, H, dpi, len(out_items), gw, gh, L, R, T, B))
+        args.out, W, H, dpi, len(out_items), face_w_px, face_h_px, L, R, T, B))
     print("[i] 实际尺寸：胶面 %.2f×%.2f cm（%d×%d px）· 成品 %.2f×%.2f cm（含白底留白）" % (
-        gw / dpi * 2.54, gh / dpi * 2.54, gw, gh, W / dpi * 2.54, H / dpi * 2.54))
+        face_w_px / dpi * 2.54, face_h_px / dpi * 2.54, face_w_px, face_h_px,
+        W / dpi * 2.54, H / dpi * 2.54))
     return 0
 
 
@@ -498,6 +727,7 @@ def main(argv=None):
     p.add_argument("--gel-lanes", type=int, default=None,
                    help="照片是裁过的、只含 N 条泳道时给 N：改按--gel-size 里的 lane_pitch_cm 的泳道间距定标")
     p.add_argument("--record", help="把探测记录（裁切后胶面的 cm 坐标 JSON）写到这个路径")
+    p.add_argument("--keep-lanes", help="校验泳道选择语法（如 1,2,8-10）；probe 不裁切，record 仍是整块胶")
     add_detect(p)
     p.set_defaults(func=cmd_probe)
 
@@ -515,6 +745,11 @@ def main(argv=None):
     r.add_argument("--gel-lanes", type=int, default=None,
                    help="照片是裁过的、只含 N 条泳道时给 N：改按--gel-size 里的 lane_pitch_cm 的泳道间距定标")
     r.add_argument("--record", help="把探测记录（裁切后胶面的 cm 坐标 JSON）写到这个路径")
+    r.add_argument("--keep-lanes", help="只保留这些原始泳道号（1 起，逗号/区间：1,2,8-10）；省略 = 全保留")
+    r.add_argument("--marker-policy", choices=("calibrate-only", "keep"),
+                   help="keep 的泳道里没有 marker 泳道时怎么办：calibrate-only=只用它定标不画标签 / keep=把最近的 marker 泳道加进来")
+    r.add_argument("--splice-gap-cm", type=float, default=0.15,
+                   help="拼接时段与段之间的白缝宽度（cm，默认 0.15；只有一段时没有缝）")
     r.add_argument("--trim-top-cm", type=float, default=None,
                    help="从胶面上缘再裁掉多少 cm（探测框含上样孔/梳齿那一段；默认读--gel-size 里的 trim_top_cm）")
     r.add_argument("--trim-bottom-cm", type=float, default=None,
