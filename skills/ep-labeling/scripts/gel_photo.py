@@ -5,7 +5,7 @@
 子命令
     probe   <图>                          只探测：报胶框/角度/泳道 x/条带行；--debug 出一张覆盖图
     render  <图> --out 出.png [配置...]    出成品：裁切+正畸（+缩放+dpi）→ 写字 → PNG
-    export  <scene.json> --png 出.png      只读 scene 出图（不跑检测）
+    export  <scene.json|fig.html> --png 出.png  只读 scene 出图（不跑检测）
     doctor                                环境自检
     selftest                              不读用户文件的算法自检
 
@@ -35,6 +35,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import as_entry, load_cfg, load_gel_size, load_markers, parse_gel_cm      # noqa: E402
 from band_fit import find_bands, fat_rows, group_rows                                # noqa: E402
 from debug_overlay import draw_debug                                                 # noqa: E402
+from editor import DEFAULT_TEMPLATE as EDITOR_TEMPLATE                     # noqa: E402
+from editor import extract as editor_extract, write_html as editor_write_html  # noqa: E402
 from env_check import cmd_doctor                                                     # noqa: E402
 from gel_area import compute, cross_check_scale                                      # noqa: E402
 from gel_detect import detect_gel                                                    # noqa: E402
@@ -694,6 +696,11 @@ def cmd_render(args):
                         out_origin=(L, T))
     scene_write(scene, scene_path)
     print("[i] scene 已写 %s；胶面图 %s" % (scene_path, gel_path))
+    # 编辑器（spec §3/§6）：自包含 HTML，胶面 base64 + scene JSON。批量跑可 --no-editor 关掉。
+    if not args.no_editor:
+        html_path = stem + ".html"
+        editor_write_html(EDITOR_TEMPLATE, scene, gel_path, html_path)
+        print("[i] 编辑器已写 %s（离线可编辑；--no-editor 可关）" % html_path)
     if tmp_face:
         try:
             os.unlink(tmp_face)
@@ -750,50 +757,71 @@ def cmd_render(args):
 
 
 def cmd_export(args):
-    """scene JSON → PNG（只读 scene，不跑检测；spec §7 的 E1 子集）。
+    """scene JSON 或编辑器 HTML → PNG（只读 scene，不跑检测；spec §7）。
 
     E1 自身仍用 render 的旧画字路径；这里让 scene 成为可独立复现的版式数据：
     页面按 scene.page_size_cm() 推、胶面按 gel.width/height_cm 放、文字按 anchor + size_pt 摆。
+    HTML 输入（E4）从 #scene 读版式、从 #gel 的 data URI 取胶面字节，写临时 PNG 给 writer。
     """
-    sc = scene_load(args.scene)
     if not args.png:
         raise RuntimeError("export 目前只支持 --png <输出.png>")
-    dpi = int(args.dpi or sc["output"]["dpi"])
-    gel_path = sc["gel"]["image"]
-    if not os.path.isabs(gel_path):
-        gel_path = os.path.join(os.path.dirname(os.path.abspath(args.scene)), gel_path)
-    if not os.path.isfile(gel_path):
-        raise RuntimeError("scene 指向的胶面图不存在：%s" % gel_path)
+    tmpdir = None
+    if re.search(r"\.html?$", args.scene, re.I):
+        sc, gel_bytes = editor_extract(args.scene)
+        tmpdir = tempfile.mkdtemp(prefix="ep-export-")
+        # 保持 scene 里的文件名：既方便报错，也不让 writer 看到别的路径。
+        name = os.path.basename(sc["gel"].get("image") or "gel.png")
+        gel_path = os.path.join(tmpdir, name)
+        with open(gel_path, "wb") as f:
+            f.write(gel_bytes)
+        sc["gel"]["image"] = gel_path
+    else:
+        sc = scene_load(args.scene)
+        gel_path = sc["gel"]["image"]
+        if not os.path.isabs(gel_path):
+            gel_path = os.path.join(os.path.dirname(os.path.abspath(args.scene)), gel_path)
+        if not os.path.isfile(gel_path):
+            raise RuntimeError("scene 指向的胶面图不存在：%s" % gel_path)
 
-    out_ppc = dpi / 2.54
-    ps = page_size_cm(sc)
-    face_w_px = int(round(float(sc["gel"]["width_cm"]) * out_ppc))
-    face_h_px = int(round(float(sc["gel"]["height_cm"]) * out_ppc))
-    L = int(round(ps["left_cm"] * out_ppc))
-    R = int(round(ps["right_cm"] * out_ppc))
-    T = int(round(ps["top_cm"] * out_ppc))
-    B = int(round(ps["bottom_cm"] * out_ppc))
-    W, H = face_w_px + L + R, face_h_px + T + B
-    bg = (sc.get("page") or {}).get("background") or "#ffffff"
+    try:
+        dpi = int(args.dpi or sc["output"]["dpi"])
+        out_ppc = dpi / 2.54
+        ps = page_size_cm(sc)
+        face_w_px = int(round(float(sc["gel"]["width_cm"]) * out_ppc))
+        face_h_px = int(round(float(sc["gel"]["height_cm"]) * out_ppc))
+        L = int(round(ps["left_cm"] * out_ppc))
+        R = int(round(ps["right_cm"] * out_ppc))
+        T = int(round(ps["top_cm"] * out_ppc))
+        B = int(round(ps["bottom_cm"] * out_ppc))
+        W, H = face_w_px + L + R, face_h_px + T + B
+        bg = (sc.get("page") or {}).get("background") or "#ffffff"
 
-    out_items = []
-    for it in sc["items"]:
-        px = max(6, int(round(float(it["size_pt"]) / 72.0 * dpi)))
-        tw, th = text_extent(sc["font"].get("file"), px, it["text"])
-        v, h = it["anchor"].split("-")
-        xa = L + float(it["x_cm"]) * out_ppc
-        ya = T + float(it["y_cm"]) * out_ppc
-        ax = xa - (tw if h == "right" else tw / 2.0 if h == "center" else 0.0)
-        ay = ya - (th if v == "bottom" else th / 2.0 if v == "middle" else 0.0)
-        out_items.append((ax, ay, it["text"], px, it["color"]))
+        out_items = []
+        for it in sc["items"]:
+            px = max(6, int(round(float(it["size_pt"]) / 72.0 * dpi)))
+            tw, th = text_extent(sc["font"].get("file"), px, it["text"])
+            v, h = it["anchor"].split("-")
+            xa = L + float(it["x_cm"]) * out_ppc
+            ya = T + float(it["y_cm"]) * out_ppc
+            ax = xa - (tw if h == "right" else tw / 2.0 if h == "center" else 0.0)
+            ay = ya - (th if v == "bottom" else th / 2.0 if v == "middle" else 0.0)
+            out_items.append((ax, ay, it["text"], px, it["color"]))
 
-    base = [MAGICK, "-size", "%dx%d" % (W, H), "xc:" + bg,
-            "(", gel_path, "-repage", "+0+0", ")",
-            "-gravity", "northwest", "-geometry", "+%d+%d" % (L, T), "-composite"]
-    cmd = annotate_cmd(base, out_items, sc["font"].get("file"),
-                       (sc.get("outline") or {}).get("color"))
-    cmd += ["-units", "PixelsPerInch", "-density", str(dpi), args.png]
-    _run(cmd)
+        base = [MAGICK, "-size", "%dx%d" % (W, H), "xc:" + bg,
+                "(", gel_path, "-repage", "+0+0", ")",
+                "-gravity", "northwest", "-geometry", "+%d+%d" % (L, T), "-composite"]
+        cmd = annotate_cmd(base, out_items, sc["font"].get("file"),
+                           (sc.get("outline") or {}).get("color"))
+        cmd += ["-units", "PixelsPerInch", "-density", str(dpi), args.png]
+        _run(cmd)
+    finally:
+        if tmpdir:
+            try:
+                for n in os.listdir(tmpdir):
+                    os.unlink(os.path.join(tmpdir, n))
+                os.rmdir(tmpdir)
+            except OSError:
+                pass
     print("输出 %s（%d×%d px, %d dpi；%d 条文字）= 胶面 %d×%d + 白底留白 L%d R%d T%d B%d" % (
         args.png, W, H, dpi, len(out_items), face_w_px, face_h_px, L, R, T, B))
     return 0
@@ -853,6 +881,8 @@ def main(argv=None):
     r.add_argument("--outline", default=None,
                    help="文字白边颜色（默认不描边：成品是白底；要压在胶上时才给 white）")
     r.add_argument("--no-outline", action="store_true", help="不要白边")
+    r.add_argument("--no-editor", action="store_true",
+                   help="不写 <out>.html 编辑器（批量出图时用；spec §3）")
     r.add_argument("--mw-method", choices=("logfit", "interp"), default="logfit",
                    help="样品带分子量的标定方法：logfit=log10(MW)~y 直线（会外推）/ interp=marker 带之间内插（不外推）")
     r.add_argument("--no-mw", action="store_true", help="不输出分子量报告")
@@ -863,8 +893,8 @@ def main(argv=None):
     s = sub.add_parser("selftest")
     s.set_defaults(func=lambda a: selftest())
 
-    e = sub.add_parser("export", help="从 scene JSON 出 PNG（只读 scene，不跑检测）")
-    e.add_argument("scene", help="render 写出的 <out>.scene.json")
+    e = sub.add_parser("export", help="从 scene JSON 或编辑器 HTML 出 PNG（只读 scene，不跑检测）")
+    e.add_argument("scene", help="render 写出的 <out>.scene.json，或 <out>.html")
     e.add_argument("--png", help="输出 PNG 路径")
     e.add_argument("--dpi", type=int, default=None, help="覆盖 scene 里的 output.dpi")
     e.set_defaults(func=cmd_export)
