@@ -8,6 +8,7 @@ from gel_detect import bg_plane, components, detect_gel, ink_mask
 from lane_detect import (clusters, fat_rows, fill_gaps, group_rows, lanes_and_bands,
                          pitch_from_row, snap_to_anchors)
 from geometry import load_dims_after, rotate_pt, rotated_rect_bbox
+from mw_report import build_cal, estimate, marker_pairs, parse_mw
 from text_layout import annotate_cmd, pick_font, text_extent
 
 
@@ -260,7 +261,23 @@ def selftest():
         assert 14 <= h_small <= 20 and 30 <= h_big <= 40, (h_small, h_big)
     ok += 1
 
-    print("selftest %d/15 通过" % ok)
+    # 16) 分子量标定：完美的 log 线性 marker → 两种方法都应还原；interp 不外推、logfit 外推并标记
+    assert parse_mw("21/20 kD") == [21.0, 20.0] and parse_mw("250 kD") == [250.0] and parse_mw("M") == []
+    ents = [{"text": "100 kD"}, {"text": "21/20 kD", "rows": 2}, {"text": "10 kD"}]
+    pr = marker_pairs(ents, [1, 2, 1], [10, 20, 24, 30], lambda e, d: dict(e))
+    assert pr == [(10, 100.0), (20, 21.0), (24, 20.0), (30, 10.0)], pr
+    cal = build_cal([(y, 10 ** (2.0 - 0.05 * (y - 10))) for y in (10, 20, 30, 40)])
+    assert abs(cal["fit"][2] - 1.0) < 1e-9
+    mw, ex = estimate(25, 100.0, [(100.0, cal)], "logfit")
+    assert abs(mw - 10 ** (2.0 - 0.75)) < 1e-6 and not ex, (mw, ex)
+    mw, ex = estimate(25, 100.0, [(100.0, cal)], "interp")
+    assert abs(mw - 10 ** (2.0 - 0.75)) < 1e-6 and not ex, (mw, ex)
+    assert estimate(50, 100.0, [(100.0, cal)], "interp")[0] is None
+    mw, ex = estimate(50, 100.0, [(100.0, cal)], "logfit")
+    assert ex and abs(mw - 10 ** (2.0 - 2.0)) < 1e-6, (mw, ex)
+    ok += 1
+
+    print("selftest %d/16 通过" % ok)
     return 0
 
 

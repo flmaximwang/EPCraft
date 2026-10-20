@@ -21,5 +21,10 @@
     "14",
     "15"
   ],
-  "_备注": "mini-gel 15 泳道那张胶（IMG_1464）的示例配置，2026-10-13 定稿。用法：gel_photo.py render <图> --lanes 本文件 --markers 本文件 --dpi 96 （marker_lane=2 是最外侧那管 marker，标签因此落在左边距；两套 marker 是同一管）"
+  "_备注": "marker_lanes：同一管 marker 所在的泳道（1 起）。它们参与分子量标定，不当样品报告；labels 写 \"\" 的泳道视为空白，也不报告。",
+  "marker_lanes": [
+    1,
+    2,
+    8
+  ]
 }

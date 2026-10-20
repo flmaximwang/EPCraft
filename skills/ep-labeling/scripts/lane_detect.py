@@ -138,7 +138,8 @@ def peaks_in_profile(prof, lo, base_win, min_prom, min_sep):
     """平均剖面上找条带峰（先减宽窗基线 = top-hat，再取局部极大）。
 
     lo = 剖面第一行对应的 y；min_prom = 显著度下限（灰度级）；min_sep = 两峰最小间隔（格单位）。
-    返回 [(行 y, 半高宽)]；半高宽就是条带粗细，两条并成一条时它明显更宽（见 fat_rows）。
+    返回 [(行 y, 半高宽, 深度)]；半高宽就是条带粗细，两条并成一条时它明显更宽（见 fat_rows）；
+    深度 = 平滑后的 top-hat 峰高（灰度级），越大带越浓（mw_report 用它挑最浓的带）。
     """
     n = len(prof)
     if n < 5:
@@ -172,7 +173,7 @@ def peaks_in_profile(prof, lo, base_win, min_prom, min_sep):
             a -= 1
         while b + 1 < n and sm[b + 1] > sm[i] / 2.0:
             b += 1
-        out.append((lo + i, max(1.0, b - a + 1.0)))
+        out.append((lo + i, max(1.0, b - a + 1.0), sm[i]))
     return out
 
 
@@ -205,11 +206,11 @@ def fat_rows(bands, k=1.6):
     返回 [(行 y, 厚/中位数)]。宽的行本来也可能只是条带粗，所以阈值给得松（1.6×），
     只当提示用，不拿来拒绝出图。
     """
-    th = sorted(w for _, w in bands)
+    th = sorted(t[1] for t in bands)
     med = th[len(th) // 2] if th else 0.0
     if not med:
         return []
-    return [(round(c, 1), round(w / med, 1)) for c, w in bands if w >= k * med]
+    return [(round(t[0], 1), round(t[1] / med, 1)) for t in bands if t[1] >= k * med]
 
 
 def snap_to_anchors(cx, anchors, pitch):
@@ -347,7 +348,7 @@ def lanes_and_bands(path, rect, angle, longest=700, ignore_top=0.12, ignore_bott
                                                 min(h_hi, int(y1 * rows_scale) + 1), rows_scale))
     cx_s = [c for c, _, _ in marks]
     if bands_hi:                       # 细栅格扫出来的行是唯一真相，换算回分析尺度对外给
-        bands = [[(r[0] / rows_scale, r[1] / rows_scale) for r in b] for b in bands_hi]
+        bands = [[(r[0] / rows_scale, r[1] / rows_scale, r[2]) for r in b] for b in bands_hi]
     row_spacing = None
     for b in bands:
         if len(b) >= 3:

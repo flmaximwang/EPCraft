@@ -11,8 +11,8 @@ Turn a phone photo of a gel (gel in the middle, background around it) into a lab
 ## Scope
 
 - In: one gel photo, marker type, gel type, a name for each lane.
-- Out: one PNG (white canvas, labels outside the gel, dpi written into the file).
-- Not covered: perspective correction (shoot straight, or pass `--angle`), band quantification.
+- Out: one PNG (white canvas, labels outside the gel, dpi written into the file), plus a molecular-weight report for the sample lanes (terminal table and `<out>.mw.json`).
+- Not covered: perspective correction (shoot straight, or pass `--angle`), band intensity quantification, identifying what a band is.
 
 ## Files
 
@@ -30,7 +30,7 @@ Turn a phone photo of a gel (gel in the middle, background around it) into a lab
 1. **Ask** the user: which marker, which gel type, what sample is in each lane (left to right). Offer the presets in `data/markers.json` as options.
 2. **Check the environment**: `python3 scripts/gel_photo.py doctor`. If `magick` is missing, stop and install ImageMagick 7 (`brew install imagemagick`, `winget install ImageMagick.ImageMagick`, `apt install imagemagick`).
 3. **Probe first**: `python3 scripts/gel_photo.py probe <photo> --debug debug.png`. Check that the red box frames the gel, the lane lines sit on lanes, and the band lines match the marker. Fix the cause before rendering (`--cue chroma`, `--rect x0,y0,x1,y1`, `--ink-thr`, `--longest`, `--angle`).
-4. **Write two configs**: `markers.json` (labels top to bottom; or use `--markers data/markers.json --preset N`) and `lanes.json` (labels left to right), starting from a template.
+4. **Write two configs**: `markers.json` (labels top to bottom; or use `--markers data/markers.json --preset N`) and `lanes.json` (labels left to right; `""` = blank lane; `marker_lanes` = 1-based lanes holding the marker), starting from a template.
 5. **Render**:
    ```bash
    python3 scripts/gel_photo.py render <photo> --out out.png \
@@ -38,7 +38,8 @@ Turn a phone photo of a gel (gel in the middle, background around it) into a lab
        --gel-size data/gel_size.json --dpi 300 --debug debug.png
    ```
    Sizes (`size`, `gap`) are in pt; dpi changes pixel count only, not physical size.
-6. **Read the PNG back** (do not trust the log alone): each marker label sits on one band; lane labels are on white margin, with the right count and positions; `magick identify -format "%x" out.png` shows the dpi.
+6. **Check the MW report** printed after rendering: calibration R² per marker lane, `[主]` marks each lane's strongest band, `*` marks values extrapolated beyond the marker range (indicative only). Marker lanes and blank lanes are skipped. `--mw-method logfit` (default, straight line of log10 MW vs position) or `interp` (between marker bands, no extrapolation); `--no-mw` turns it off.
+7. **Read the PNG back** (do not trust the log alone): each marker label sits on one band; lane labels are on white margin, with the right count and positions; `magick identify -format "%x" out.png` shows the dpi.
 
 ## Checkpoints
 
@@ -51,9 +52,11 @@ Turn a phone photo of a gel (gel in the middle, background around it) into a lab
 | Orange lanes on the overlay | They are estimated, not seen. Give `x_frac` if exact positions matter. |
 | Dark and chroma gel boxes disagree | Look at the overlay; use `--cue chroma` or `--rect`. |
 | Dense ladder cannot be fully labeled | Not a bug: raise dpi, shrink `size`, or label only key bands. |
+| MW report says lane not in `marker_lanes` / extra marker lanes reported as samples | Add `marker_lanes` to `lanes.json`. Without it only the lane named in `markers.json` is treated as marker. |
+| Calibration R² low (< ~0.98) or a band shows "out of range" | Report it; try `--mw-method interp`; do not hide extrapolated values. |
 | Output file already exists | The script overwrites silently; name outputs deliberately. |
 
 ## Done when
 
 - `out.png` exists, passes the read-back in step 6, and has the intended dpi.
-- The reply states: the config files used, any warnings from the script, and anything not verified (e.g. estimated lanes).
+- The reply includes the MW table (strongest band per lane, any extrapolation) and states: the config files used, any warnings from the script, and anything not verified (e.g. estimated lanes).

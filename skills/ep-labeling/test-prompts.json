@@ -55,7 +55,7 @@
       "id": "should-not-trigger-06",
       "type": "should_not_trigger",
       "prompt": "这张胶上这些条带分别是什么蛋白、多少 kD，你看着判一下。",
-      "expected_behavior": "越界：本 skill 只按配置（或 1D 剖面位置）把已有文字放到图上，不判读条带身份/分子量。应说明这属于图像分析或人的判断，本 skill 给不了。",
+      "expected_behavior": "越界：本 skill 只能报**位置上的分子量估计**（由 marker 标定），不判读条带是什么蛋白。应说明这点；若用户要的是分子量数，走 render 的分子量报告，并如实带上 R² 与外推标记。",
       "notes": "诱饵：题面里全是本 skill 的关键词（胶 / 条带 / 多少 kD），但要素是判读。"
     },
     {
@@ -106,6 +106,12 @@
       "prompt": "分子量标签整体错位，梯子 11 条带只标对了几条，怎么办？",
       "expected_behavior": "先跑 probe --debug：覆盖图左侧有 y 标尺（分析尺度 y）、绿线=自动探到的条带行。把每条带的 y 抄进 markers.json 的 y_px（从上到下、与 labels 一一对应，默认不吸附；要吸附写 snap:true），再跑 render；render --debug 会把配置指定的行画成品红色，一眼核对。并解释为什么默认拒绝硬配：条带数与配置不等时按位置配会整体错位，宁可不出图。",
       "notes": "手动标定是本 skill 对密梯子的推荐路径。"
+    },
+    {
+      "id": "should-trigger-14",
+      "type": "should_trigger",
+      "prompt": "标完图后，顺便告诉我每条样品泳道里条带大概多少 kDa，最浓的那条是哪个。",
+      "expected_behavior": "用 render 的分子量报告：lanes.json 里 marker_lanes 写清 marker 泳道、空白泳道 text 留 \"\"；读终端表与 <out>.mw.json，[主] 是每泳道最浓带；汇报时带上各 marker 泳道的 R² 与 * 外推提示；R² 偏低时建议 --mw-method interp 对照。不要把预染 marker 的表观分子量说成样品的真实分子量。"
     }
   ]
 }

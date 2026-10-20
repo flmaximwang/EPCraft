@@ -19,7 +19,7 @@ def draw_debug(image, info, lb, out, cfg_rows=None):
                 "-draw", "line %d,%d %d,%d" % ((c + wid / 2) * a, y0 * a, (c + wid / 2) * a, y1 * a)]
     cmd += ["-stroke", "lime", "-strokewidth", "4"]
     for bands in lb["bands"]:
-        for by, _ in bands:
+        for by, *_ in bands:
             cmd += ["-draw", "line %d,%d %d,%d" % (x0 * a, by * a, x1 * a, by * a)]
     fnt = pick_font()
     for y in range(int(y0 * a), int(y1 * a) + 1, int(50 * a)):      # y 标尺，手动标定时照读

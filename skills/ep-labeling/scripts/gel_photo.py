@@ -35,6 +35,7 @@ from geometry import (lane_pitch, load_dims_after, pos_or_frac, rotate_pt,      
                       rotated_rect_bbox)
 from lane_detect import fat_rows, group_rows, lanes_and_bands                        # noqa: E402
 from magick_io import MAGICK, _run                                                   # noqa: E402
+from mw_report import format_report, marker_pairs, report as mw_report_build   # noqa: E402
 from selftest import selftest                                                        # noqa: E402
 from text_layout import annotate_cmd, ink_height, pick_font, text_extent             # noqa: E402
 
@@ -369,6 +370,18 @@ def cmd_render(args):
     cmd = annotate_cmd(base, out_items, font, None if args.no_outline else args.outline)
     cmd += ["-units", "PixelsPerInch", "-density", str(dpi), args.out]
     _run(cmd)
+    if ln_labels and not args.no_mw and len(rows) == sum(span):
+        mset = {int(k) - 1 for k in (ln or {}).get("marker_lanes", [])} | {idx}
+        rep = mw_report_build(lb, [as_entry(e, ln).get("text", "") for e in ln_labels], mset, idx,
+                              marker_pairs(mk_labels, span, rows, as_entry), mk_labels, span, as_entry,
+                              args.mw_method)
+        if "marker_lanes" not in (ln or {}):
+            rep["notes"].append("lanes.json 没有 marker_lanes：其余 marker 泳道会被当成样品报出来")
+        print(format_report(rep))
+        mw_path = os.path.splitext(args.out)[0] + ".mw.json"
+        with open(mw_path, "w", encoding="utf-8") as f:
+            json.dump(rep, f, ensure_ascii=False, indent=2)
+        print("[MW] 已写 %s" % mw_path)
     if args.debug:
         draw_debug(args.image, info, lb, args.debug, cfg_rows=rows if mk_labels else None)
         print("debug 覆盖图:", args.debug, "（红框=胶面，红/绿线=泳道/条带行，品红=配置指定的 marker 行）")
@@ -423,6 +436,9 @@ def main(argv=None):
     r.add_argument("--outline", default=None,
                    help="文字白边颜色（默认不描边：成品是白底；要压在胶上时才给 white）")
     r.add_argument("--no-outline", action="store_true", help="不要白边")
+    r.add_argument("--mw-method", choices=("logfit", "interp"), default="logfit",
+                   help="样品带分子量的标定方法：logfit=log10(MW)~y 直线（会外推）/ interp=marker 带之间内插（不外推）")
+    r.add_argument("--no-mw", action="store_true", help="不输出分子量报告")
     r.add_argument("--debug", help="再出一张检测覆盖图")
     add_detect(r)
     r.set_defaults(func=cmd_render)

@@ -29,7 +29,8 @@
 | `size` / `color` | 同上（px） | 16 / `#000000` |
 | `gap` | 文字**底边**离胶面顶边的距离 (px) | 0 |
 | `align` | `center` / `left` / `right`，相对该泳道中心 | `center` |
-| `labels` | **从左到右**，每条泳道一项（字符串或对象）；`text` 留 `""` 就不写 | — |
+| `labels` | **从左到右**，每条泳道一项（字符串或对象）；`text` 留 `""` 就不写，也视为**空白泳道**（分子量报告跳过） | — |
+| `marker_lanes` | 同一管 marker 所在泳道（1 起，如 `[1,2,8]`）：参与分子量标定、不当样品报告。不给就只有 `markers.json` 里 `marker_lane` 指的那一条算 marker | 无 |
 | `x_frac` | **照片路额外字段**：每条泳道的显式中心，0=胶面左、1=胶面右 | 无 |
 
 **分子量标签列摆在胶面之外**：定左/右（泳道区中线），但整列一定落在白底留白里
@@ -176,12 +177,23 @@ python3 scripts/gel_photo.py render photo.jpeg --out out.png \
         --markers data/markers.json --preset 3 --lanes lanes.json --gel-size data/gel_size.json
 
 # 自检（不读用户文件）
-python3 scripts/gel_photo.py selftest        # 15/15
+python3 scripts/gel_photo.py selftest        # 16/16
 ```
 
 常用开关：`--cue chroma|union`、`--ink-thr`（改泳道判据阈值）、`--longest`（分析缩略图长边，默认 700）、
 `--rect x0,y0,x1,y1`（跳过自动找胶）、`--angle` / `--no-rotate`、`--margin-frac`、
 `--no-outline`、`--font <ttf>`、`--debug`。
+
+## 3b. 分子量报告（`mw_report.py`）
+
+对每条非 marker、非空白的泳道，列出自动探到的**每一条带**的分子量，最浓的一条标 `[主]`（浓度 = top-hat 峰高，不是积分量）。
+
+- 标定点：marker 泳道的条带行 y ↔ labels 里解析出的数字（kDa）。`markers` 里用 `y_px` / `y_frac` 手动标定过的行直接沿用；`"21/20 kD"` 配 `rows: 2` 时两条带各配各的数字。
+- 多管 marker（`marker_lanes`）：每管各拟一条，样品泳道取左右最近的两管按距离反比加权，抵消胶面 smile；条带数与标签不符的那管不参与，并在报告 `notes` 里说明。
+- 方法：`logfit` = log10(MW) ~ y 直线（Rf 与 y 仿射，R² 相同）；超出 marker 范围外推并标 `*`。`interp` = 相邻 marker 带之间线性内插，范围外不外推（给 None）。
+- 补位（橙色）泳道没有像素证据，不报告。
+- 输出：终端表 + `<out>.mw.json`（`calibration` / `lanes` / `notes`）。`--no-mw` 关闭。
+- 局限：线性 log 拟合在 10–250 kDa 这种宽范围上会弯（本机实测 R² 0.957–0.960），低分子量端误差较大；要更准用 `interp`，或缩到关心的范围。预染 marker 的表观分子量本身就与样品有系统偏差。
 
 ## 4. 坑的来龙去脉（都实测过）
 
@@ -222,4 +234,5 @@ python3 scripts/gel_photo.py selftest        # 15/15
 | `config.py` | markers / lanes / 胶体尺寸的读取（`load_markers` 支持预设库 + `--preset`） |
 | `debug_overlay.py` | `--debug` 覆盖图 |
 | `env_check.py` | `doctor` |
-| `selftest.py` | `selftest`（15 项） |
+| `selftest.py` | `selftest`（16 项） |
+| `mw_report.py` | 分子量标定与报告（见 §3b） |
