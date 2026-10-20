@@ -11,9 +11,9 @@
 依赖：系统 python3（纯 stdlib）+ ImageMagick 7（`magick`）。像素只在分析尺度上读，成图交给 magick。
 本文件只放 CLI 与 probe/render 编排；实现分在同目录模块：
     magick_io    magick 外呼 / PPM        gel_detect   认胶面          gel_area     stage 1 胶面区域
-    lane_detect  泳道与条带行             geometry     旋转与位置口径  text_layout  字体与写字
-    config       配置读取                 debug_overlay 覆盖图        env_check    doctor
-    selftest     自检
+    lane_fit     stage 2 泳道格点         lane_detect  stage 3 条带（桥） geometry    旋转与位置口径
+    text_layout  字体与写字               config       配置读取        debug_overlay 覆盖图
+    env_check    doctor                   selftest     自检
 本文件不带任何数据路径：预设与胶体尺寸由调用方用 --markers / --gel-size 显式给出。
 
 坐标约定
@@ -34,7 +34,8 @@ from env_check import cmd_doctor                                                
 from gel_area import compute                                                         # noqa: E402
 from gel_detect import detect_gel                                                    # noqa: E402
 from geometry import lane_pitch, load_dims_after, pos_or_frac, rotate_pt             # noqa: E402
-from lane_detect import fat_rows, group_rows, lanes_and_bands                        # noqa: E402
+from lane_detect import bands_for_lanes, fat_rows, group_rows                 # noqa: E402
+from lane_fit import find_lanes                                                      # noqa: E402
 from magick_io import MAGICK, _run                                                   # noqa: E402
 from mw_report import format_report, marker_pairs, report as mw_report_build   # noqa: E402
 from selftest import selftest                                                        # noqa: E402
@@ -48,6 +49,34 @@ def _rect_arg(s):
     if len(v) != 4:
         raise argparse.ArgumentTypeError("--rect 要 4 个数：x0,y0,x1,y1（原图像素）")
     return tuple(v)
+
+
+def _print_stage1(ga, preset, gel_lanes=None):
+    """stage 1 的一行汇报（定标 / 定形 / 交叉核对）。失败项 compute 已经打过 [!]，这里只汇总通过项。"""
+    tt = float(preset.get("trim_top_cm", 0.0) or 0.0)
+    tb = float(preset.get("trim_bottom_cm", 0.0) or 0.0)
+    if ga["source"]["px_per_cm"] == "lane_pitch":
+        cal = ("%d 条 × %.3f cm = %.2f cm（裁过的照片；整块预设 %.2f cm 不适用）"
+               % (int(gel_lanes), float(preset["lane_pitch_cm"]), ga["width_cm"],
+                  float(preset["width_cm"])))
+    else:
+        cal = "整块宽 %.2f cm" % ga["width_cm"]
+    print("[i] 胶面（stage 1）：定标 = %s → %.2f px/cm；高 %.2f cm = 预设 %.2f − trim 上/下 %.2f/%.2f，"
+          "anchor=%s（框来自 %s）" % (cal, ga["px_per_cm"], ga["height_cm"], float(preset["height_cm"]),
+                                      tt, tb, preset.get("anchor", "bottom"), ga["source"]["box"]))
+    ok_checks = [c for c in ga["checks"] if c["ok"]]
+    if ok_checks:
+        print("[i] checks: %s" % " · ".join("%s ok (%s)" % (c["name"], c["detail"])
+                                             for c in ok_checks))
+
+
+def _lane_count(args, preset):
+    """本次要输出的泳道数：--gel-lanes N（裁过的照片）优先，否则整块预设的 lane_count。"""
+    n = args.gel_lanes or int(preset["lane_count"])
+    if args.gel_lanes and int(args.gel_lanes) != int(preset["lane_count"]):
+        print("[i] 裁过的照片：按可见 %d 条泳道（整块预设 %d 条）"
+              % (int(args.gel_lanes), int(preset["lane_count"])))
+    return int(n)
 
 
 def cmd_probe(args):
@@ -65,25 +94,42 @@ def cmd_probe(args):
         print("两条判据的胶框（分析尺度）: dark=%s / chroma=%s" % (
             info["cross_cue"].get("dark"), info["cross_cue"].get("chroma")))
     ang = args.angle if args.angle is not None else info["angle_vertical"]
-    lb = lanes_and_bands(args.image, info["bbox_analysis"], ang, args.longest,
-                         cue=args.cue, thr=args.ink_thr)
     print("角度: 竖边拟合 %.3f°；本次用 %.3f°" % (info["angle_vertical"], ang))
-    print("判据：胶内中位数 %s；条带行阈值 %.1f（严格）· 泳道阈值 %.1f（宽松，淡带也算）" % (
-        lb["gel_median"], lb["band_thr"], lb["lane_thr"]))
-    print("间距估计 %.1f px（量自第 %s 行：条带最密的一行）；噪声候选丢掉 %d 条；差值对不上整数格未补 %s" % (
-        lb["pitch"] or 0, lb.get("pitch_row"), lb["dropped"], lb["skipped"] or "无"))
-    print("泳道数 %d（实测 %d + 补位 %d），中心 x（分析尺度）: %s" % (
-        len(lb["lanes"]), lb["measured"], len(lb["lanes"]) - lb["measured"],
-        [c for c, _ in lb["lanes"]]))
-    if len(lb["lanes"]) > lb["measured"]:
-        print("  补位（无像素证据，按相邻间距均分）: %s" % (
-            [c for (c, _), it in zip(lb["lanes"], lb["interp"]) if it]))
-    for i, ((c, wid), bands) in enumerate(zip(lb["lanes"], lb["bands"]), 1):
-        print("  泳道 %2d x=%7.1f 宽=%3d 条带 %2d 行: %s" % (
-            i, c, wid, len(bands), [int(b[0]) for b in bands]))
+
+    # ---- stage 1：胶面冻结（形状由预设决定；不再用条带/泳道反推）
+    preset = dict(gel)
+    ga = compute(info, preset, ang, gel_lanes=args.gel_lanes)
+    _print_stage1(ga, preset, args.gel_lanes)
+
+    # ---- stage 2：先验驱动的泳道格点（只读 stage 1 的冻结输出）
+    lane_count = _lane_count(args, preset)
+    lf = find_lanes(args.image, ga, lane_count, longest=args.longest)
+    print("[i] 泳道格点（stage 2）：%d 条，拟合间距 %.2f px（先验 %.2f px），总证据 %.0f" % (
+        len(lf["lanes"]), lf["pitch"], lf["pitch_prior"], lf["evidence"]))
+    for c in lf["checks"]:
+        if c["ok"]:
+            print("[i] checks: pitch ok (%s)" % c["detail"])
+    for ln in lf["lanes"]:
+        print("  %2d x=%7.2f %-9s evidence=%6.2f 宽=%5.2f" % (
+            ln["index"], ln["x_analysis"], "measured" if ln["measured"] else "estimated",
+            ln["evidence"], ln["width"]))
+
+    # ---- stage 3 的桥：给定冻结的泳道求条带（本轮先做成桥）
+    bb = bands_for_lanes(args.image, lf["box_analysis"],
+                         [ln["x_analysis"] for ln in lf["lanes"]],
+                         longest=args.longest, cue=args.cue, thr=args.ink_thr)
+    print("[i] 条带（stage 3 桥）：胶内中位数 %s；条带行阈值 %.1f（严格）· 泳道阈值 %.1f（仅记录）"
+          % (bb["gel_median"], bb["band_thr"], bb["lane_thr"]))
+    for i, bands in enumerate(bb["bands"], 1):
+        print("  泳道 %2d 条带 %2d 行: %s" % (i, len(bands), [int(b[0]) for b in bands]))
+
     if args.debug:
-        draw_debug(args.image, info, lb, args.debug)
-        print("debug 覆盖图:", args.debug, "（红框=胶面，红/橙线=泳道，绿=细栅格探到的条带行，"
+        # 覆盖图要的是分析尺度坐标（draw_debug 会乘回原图），所以另拷一份
+        lb_dbg = {"lanes": [(ln["x_analysis"], ln["width"]) for ln in lf["lanes"]],
+                  "interp": [not ln["measured"] for ln in lf["lanes"]],
+                  "bands": bb["bands"]}
+        draw_debug(args.image, info, lb_dbg, args.debug)
+        print("debug 覆盖图:", args.debug, "（红框=胶面，红/橙线=实测/估计泳道，绿=细栅格探到的条带行，"
               "左侧数字=分析尺度 y 标尺；手动标定照这个 y 写 markers.y_px）")
     return 0
 
@@ -119,37 +165,49 @@ def cmd_render(args):
         gel.get("name", "命令行"), gel["width_cm"], gel["height_cm"], gel.get("_source", ""), dpi))
 
     a2o = info["image"][0] / float(info["analysis"][0])
-    ymid = (info["bbox_analysis"][1] + info["bbox_analysis"][3]) / 2.0
 
     def rot_pt(x, y):
         """原图坐标 → 旋转后画布坐标（与 magick -rotate 同一套矩阵）。"""
         rx, ry = rotate_pt(x, y, W0 / 2.0, H0 / 2.0, ang)
         return rx + (W1 - W0) / 2.0, ry + (H1 - H0) / 2.0
 
-    lb = lanes_and_bands(args.image, info["bbox_analysis"], ang, args.longest,
-                         cue=args.cue, thr=args.ink_thr,
-                         want=len(ln_labels) if ln_labels else None)
-    lane_x = [rot_pt(c * a2o, ymid * a2o)[0] for c, _ in lb["lanes"]]
-    lane_w = [wd * a2o for _, wd in lb["lanes"]]
-    print("[i] 泳道 %d 条（实测 %d + 补位 %d），间距 %.1f px(分析) ; %s" % (
-        len(lane_x), lb["measured"], len(lane_x) - lb["measured"], lb["pitch"] or 0,
-        font or "magick 默认字体"))
-
     # ---- stage 1（T2）：胶面区域由预设决定。定标（宽 → px_per_cm）、定形（高 = 预设高 − trims，
-    #      按 anchor 取边）、交叉核对全在 gel_area；这里只负责把 CLI 的 trim 覆盖并进预设、
-    #      把现有的泳道间距估计当 scale 核对的交叉证据。
+    #      按 anchor 取边）、交叉核对全在 gel_area；这里只负责把 CLI 的 trim 覆盖并进预设。
     preset = dict(gel)
     if args.trim_top_cm is not None:
         preset["trim_top_cm"] = args.trim_top_cm
     if args.trim_bottom_cm is not None:
         preset["trim_bottom_cm"] = args.trim_bottom_cm
-    if args.gel_lanes and int(args.gel_lanes) != len(lane_x):
-        print("[!] 你说 %d 条泳道，探测到 %d 条 —— 先核一下泳道有没有并/漏；"
-              "定标按「你说的条数 × 预设间距」算，条数不对宽高都会跟着错"
-              % (int(args.gel_lanes), len(lane_x)))
-    ga = compute(info, preset, ang, gel_lanes=args.gel_lanes,
-                 pitch_px=(lb["pitch"] * a2o) if lb.get("pitch") else None)
+    ga = compute(info, preset, ang, gel_lanes=args.gel_lanes)
     gel_bb = ga["gel_box"]
+    _print_stage1(ga, preset, args.gel_lanes)
+
+    # ---- stage 2：先验驱动的泳道格点（只读 stage 1 的冻结输出）
+    lane_count = _lane_count(args, preset)
+    lf = find_lanes(args.image, ga, lane_count, longest=args.longest)
+    lane_x = [ln["x_canvas"] for ln in lf["lanes"]]
+    lane_w = [ln["width_canvas"] for ln in lf["lanes"]]
+    print("[i] 泳道 %d 条（实测 %d + 估计 %d），间距 %.2f px(分析) ; %s" % (
+        len(lane_x), sum(1 for ln in lf["lanes"] if ln["measured"]),
+        sum(1 for ln in lf["lanes"] if not ln["measured"]), lf["pitch"],
+        font or "magick 默认字体"))
+
+    # ---- stage 3 的桥：给定冻结的泳道求条带（条带永不回流到泳道）
+    bb = bands_for_lanes(args.image, lf["box_analysis"],
+                         [ln["x_analysis"] for ln in lf["lanes"]],
+                         longest=args.longest, cue=args.cue, thr=args.ink_thr)
+    # 过渡 dict：mw_report / debug_overlay 本轮仍按旧签名吃 lb（T4/T5 会换成正式 stage 输出）。
+    lb = {"lanes": [(ln["x_canvas"], ln["width_canvas"]) for ln in lf["lanes"]],
+          "interp": [not ln["measured"] for ln in lf["lanes"]],
+          "bands": bb["bands"],
+          "pitch": lf["pitch"],
+          "row_spacing": bb["row_spacing"],
+          "measured": sum(1 for ln in lf["lanes"] if ln["measured"])}
+    # mw_report 的旧语义里 interp=True = 「这条泳道是补出来的，没有报告」。stage 2 的
+    # estimated 只是「x 停在格点上」，条带仍然是实测的 —— 这里给 MW 的过渡 dict 用
+    # interp=False，免得淡道/空道被静默跳过（T4/T5 会把 mw_report 换成正式 stage 输出）。
+    # debug_overlay 仍用 lb 的 estimated 标志画橙线。
+    lb_mw = dict(lb, interp=[False] * len(lb["lanes"]))
     # 成品 PNG 就是**实际尺寸**：1 px = 1/dpi 英寸。
     # 量纲：px_per_cm 是「画布 px / cm」，所以 px_out/画布px = (px_out/cm) / (画布px/cm) —— **除**。
     cm_px = 1.0 / ga["px_per_cm"]
@@ -159,22 +217,6 @@ def cmd_render(args):
         raise RuntimeError("定标算出来不合理（scale=%.6g px/画布px）—— px_per_cm 量纲写反了？"
                            "预设 %.2f cm / 探测宽 %d px / 泳道 %s"
                            % (scale, ga["width_cm"], gel_bb[2] - gel_bb[0], args.gel_lanes or "—"))
-    tt = float(preset.get("trim_top_cm", 0.0) or 0.0)
-    tb = float(preset.get("trim_bottom_cm", 0.0) or 0.0)
-    if ga["source"]["px_per_cm"] == "lane_pitch":
-        cal = ("%d 条 × %.3f cm = %.2f cm（裁过的照片；整块预设 %.2f cm 不适用）"
-               % (int(args.gel_lanes), float(preset["lane_pitch_cm"]), ga["width_cm"],
-                  float(preset["width_cm"])))
-    else:
-        cal = "整块宽 %.2f cm" % ga["width_cm"]
-    print("[i] 胶面（stage 1）：定标 = %s → %.2f px/cm；高 %.2f cm = 预设 %.2f − trim 上/下 %.2f/%.2f，"
-          "anchor=%s（框来自 %s）" % (cal, ga["px_per_cm"], ga["height_cm"], float(preset["height_cm"]),
-                                      tt, tb, preset.get("anchor", "bottom"), ga["source"]["box"]))
-    # 失败项由 compute 已经打过 [!]（spec：只警告、不改图）；这里只汇总通过的那些。
-    ok_checks = [c for c in ga["checks"] if c["ok"]]
-    if ok_checks:
-        print("[i] checks: %s" % " · ".join("%s ok (%s)" % (c["name"], c["detail"])
-                                             for c in ok_checks))
 
     # ---- 泳道名（gap = 文字底边离胶面顶边，align 相对泳道中心）
     items = []
@@ -382,7 +424,7 @@ def cmd_render(args):
     _run(cmd)
     if ln_labels and not args.no_mw and len(rows) == sum(span):
         mset = {int(k) - 1 for k in (ln or {}).get("marker_lanes", [])} | {idx}
-        rep = mw_report_build(lb, [as_entry(e, ln).get("text", "") for e in ln_labels], mset, idx,
+        rep = mw_report_build(lb_mw, [as_entry(e, ln).get("text", "") for e in ln_labels], mset, idx,
                               marker_pairs(mk_labels, span, rows, as_entry), mk_labels, span, as_entry,
                               args.mw_method)
         if "marker_lanes" not in (ln or {}):
@@ -393,7 +435,9 @@ def cmd_render(args):
             json.dump(rep, f, ensure_ascii=False, indent=2)
         print("[MW] 已写 %s" % mw_path)
     if args.debug:
-        draw_debug(args.image, info, lb, args.debug, cfg_rows=rows if mk_labels else None)
+        # draw_debug 吃分析尺度坐标；lb 是画布坐标（给 mw_report 用），这里另拷一份。
+        lb_dbg = dict(lb, lanes=[(ln["x_analysis"], ln["width"]) for ln in lf["lanes"]])
+        draw_debug(args.image, info, lb_dbg, args.debug, cfg_rows=rows if mk_labels else None)
         print("debug 覆盖图:", args.debug, "（红框=胶面，红/绿线=泳道/条带行，品红=配置指定的 marker 行）")
     gel_w_px, gel_h_px = (gel_bb[2] - gel_bb[0]) * scale, (gel_bb[3] - gel_bb[1]) * scale
     print("输出 %s（%d×%d px, %d dpi；%d 条文字）= 胶面 %d×%d + 白底留白 L%d R%d T%d B%d" % (
@@ -420,6 +464,8 @@ def main(argv=None):
     p.add_argument("--angle", type=float, default=None, help="强制用这个角度（度，正=顺时针）")
     p.add_argument("--debug", help="出一张带检测结果的覆盖图")
     p.add_argument("--gel-size", help="胶体尺寸 JSON（必须给；如 data/gel_size.json）")
+    p.add_argument("--gel-lanes", type=int, default=None,
+                   help="照片是裁过的、只含 N 条泳道时给 N：改按--gel-size 里的 lane_pitch_cm 的泳道间距定标")
     add_detect(p)
     p.set_defaults(func=cmd_probe)
 

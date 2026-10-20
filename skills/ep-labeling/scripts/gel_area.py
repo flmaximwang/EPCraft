@@ -16,7 +16,7 @@
 - 探测框的上缘含上样孔/梳齿、外缘还有一圈光晕，它的高宽比不可靠（参考照片就差了 ~4%）；
 - 所以宽（尺度）沿用探测框，高（形状）由预设给，两者不一致时只报出来（偏差 >10%）。
 
-本模块只依赖 magick_io / geometry（底层）——不 import lane_detect：stage 1 不能反向依赖 stage 2。
+本模块只依赖 magick_io / geometry（底层）——不 import lane_fit / lane_detect：stage 1 不能反向依赖 stage 2/3。
 """
 from geometry import load_dims_after, rotated_rect_bbox
 from magick_io import read_ppm, to_gray
@@ -40,8 +40,8 @@ def cross_check_height(detected_h_cm, preset_h_cm, tol=TOL):
 def cross_check_scale(px_per_cm, pitch_px, lane_pitch_cm, tol=TOL):
     """泳道间距（实测/估计，旋转画布 px）vs 当前定标推出的 px_per_cm × lane_pitch_cm。
 
-    T3 之后 render 会拿 stage 2 拟合出来的格点在冻结胶面上再调一次；这里先用能拿到的
-    pitch 值做一道独立核对。只警告，不改定标。
+    T3 起 render 不再把 stage 2 的拟合 pitch 传进来（串行：stage 1 先冻结）；默认用
+    estimate_pitch_px() 的独立估计做这道核对。只警告，不改定标。
     """
     from_pitch = px_per_cm * lane_pitch_cm
     dev = abs(pitch_px - from_pitch) / from_pitch if from_pitch else 0.0
@@ -148,7 +148,7 @@ def compute(info, preset, angle, gel_lanes=None, pitch_px=None):
              override）；preset = load_gel_size() 的 dict（或 --gel-cm 覆盖后的副本）。
     angle  = 本次实际用的角度（magick -rotate 语义，正 = 顺时针）。
     gel_lanes = 照片是裁过的、只含 N 条泳道时给 N（可见宽 = N × lane_pitch_cm）。
-    pitch_px  = 泳道间距（旋转画布 px）。T3 之前由 render 从 lanes_and_bands 拿；
+    pitch_px  = 泳道间距（旋转画布 px）。T3 之后 render 不再从泳道算法拿它；
                 不给就 estimate_pitch_px() 做一次廉价估计（只用于 scale 核对）。
 
     返回 dict：
@@ -158,6 +158,8 @@ def compute(info, preset, angle, gel_lanes=None, pitch_px=None):
       px_per_cm : 旋转画布 px / cm（= gel_box 宽 / 可见宽_cm）
       width_cm  : 这个 box 对应的物理宽（整块 = preset width_cm；裁过的 = N × lane_pitch_cm）
       height_cm : box 的物理高（= height_cm − trims）
+      lane_pitch_cm : 预设的泳道中心距（stage 2 的先验间距用它，不再从条带量）
+      canvas    : 旋转后的画布尺寸 (W1, H1)（stage 2 做逆变换时要用，免得重复外呼 magick）
       source    : {"px_per_cm": "width"|"lane_pitch", "height_cm": "preset", "box": "detect"|"rect"}
       checks    : [{"name", "ok", "detail"}] 交叉核对（height / scale / clipped）
 
@@ -220,6 +222,8 @@ def compute(info, preset, angle, gel_lanes=None, pitch_px=None):
         "px_per_cm": px_per_cm,
         "width_cm": width_cm,
         "height_cm": face_h_cm,
+        "lane_pitch_cm": pitch_cm,
+        "canvas": (W1, H1),
         "source": {"px_per_cm": src_scale, "height_cm": "preset",
                    "box": "rect" if info.get("override") else "detect"},
         "checks": checks,
