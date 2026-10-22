@@ -39,14 +39,14 @@ Automatic detection won't be perfect on phone photos. So the skill should **make
 | File | Written by | Content |
 |---|---|---|
 | `fig.vectorcraft` | `render` (new); `sync` (saved in place via the app) | The document in §4. The gel image is embedded at analysis resolution (not linked, not a proxy). |
-| `fig.png` | VectorCraft `file.exportAs`, Figure artboard only | At `--dpi` (scale = dpi/72), with pHYs set to `--dpi` (post-processed if the app doesn't write it). |
+| `fig.png` | VectorCraft `document.export {artboard: 0, ppi: dpi}` | Figure artboard only, at `--dpi`; the app writes pHYs itself (measured in V0). |
 | `fig.mw.json` | `render`, `sync` | §7: calibration, per-lane called bands with MW, and the **raw profile** per lane. `--no-mw` drops it. |
 
 The terminal MW table stays.
 
 ## 4. Document structure
 
-Units: VectorCraft points. Origin top-left, y down (verified in 0.14). 1 cm = 72/2.54 pt. Physical size is kept: the gel is `width_cm` wide on every artboard (the preset still sets the scale).
+Units: VectorCraft points. Origin top-left, y down (verified in 0.14). Non-printing layers are still drawn by the export (V0), so the Figure artboard holds only printable art. 1 cm = 72/2.54 pt. Physical size is kept: the gel is `width_cm` wide on every artboard (the preset still sets the scale).
 
 ### 4.1 Artboards
 
@@ -72,7 +72,7 @@ Object names are the binding between the document and the analysis. The agent on
 | `analysis` | Workbench | locked, non-printing, agent-owned | lane number tags `tag n`, ticks for detected sample bands `peak n.k` | no (rebuilt every sync) |
 | `labels` | Figure | unlocked, printable | lane labels `label lane n`, marker labels `label band <MW>`, user-added free text (any other name, never touched) | **text and style**; position is agent-owned |
 | `profiles` | Profiles | locked, printable | `curve n`, axis, band markers, lane captions | no (rebuilt every sync) |
-| `ep-meta` | Workbench, off-page | hidden, locked, non-printing | one text object holding the run metadata JSON (§4.6), unless V0 finds a native place for it | no |
+| `ep-meta` | Workbench, off-page | hidden, locked, non-printing | one text object `ep-meta` holding the run metadata JSON (§4.6) | no |
 
 Line style: lanes cyan, window orange, marker bands magenta, 0.5 pt, so they are easy to grab and tell apart (it mirrors today's debug overlay).
 
@@ -104,11 +104,11 @@ Every lane is kept by default. To drop a lane from the Figure, the user moves it
 
 ### 4.6 Run metadata
 
-What `sync` needs and can't read from geometry: the skill version, the photo path, the gel preset, the marker preset, px/cm of the embedded gel, dpi, the lane names given at render time, and the previous lane centres (for label matching). Stored in `ep-meta` (§4.2) unless V0 shows that VectorCraft keeps a custom key in `document.metadata` across a save.
+What `sync` needs and can't read from geometry: the skill version, the photo path, the gel preset, the marker preset, px/cm of the embedded gel, dpi, the lane names given at render time, and the previous lane centres (for label matching). Stored in the `ep-meta` text object (§4.2), written by the file writer and updated with `text.setText`. V0 ruled out the alternatives: custom keys are dropped on save, and the File Info description is copied into the exported PNG.
 
 ## 5. `.vectorcraft` file (format version 4, VectorCraft 0.14.0)
 
-Reverse-engineered from saved documents. V0 must confirm it before anything depends on it.
+Measured in V0; full details in `references/vectorcraft.md`. The writer emits the **inline** encoding (one JSON object, images as base64 `data`). The reader also accepts the `\0VCBLOBS\0` blob container below and gzip. The app's loader is strict about missing fields, so every object is **deep-copied from `templates/kinds.vectorcraft`** (app-saved), never built from scratch. Unknown keys are dropped on save.
 
 ```
 <UTF-8 JSON object> "\n" "\0VCBLOBS\0" <blob bytes concatenated>
@@ -116,7 +116,7 @@ Reverse-engineered from saved documents. V0 must confirm it before anything depe
 
 - Top level: `format: "vectorcraft"`, `version: 4`, `generator`, `document`, `images`.
 - `images[key] = {mime, blob: [offset, length]}`. Offsets are relative to the first byte after `\0VCBLOBS\0`. Image objects reference `key`, carry pixel `width`/`height`, and place the image with the affine `xf = [a, b, c, d, tx, ty]`. Our gel images are **embedded** (no `link`, no `proxy`).
-- `document`: `units: "Points"`, `artboards[] {id, name, rect{x0,y0,x1,y1}}`, `layers[]` (each `kind.type: "layer"` with `children`), `next_id` > every used id, plus the bookkeeping fields copied from a minimal app-saved template (swatches, graphic styles, grid, …) checked in at `templates/blank.vectorcraft`.
+- `document`: `units: "Points"`, `artboards[] {id, name, rect{x0,y0,x1,y1}}`, `layers[]` (each `kind.type: "layer"` with `children`), `next_id` > every used id, plus the bookkeeping fields copied from the app-saved template `templates/kinds.vectorcraft` (swatches, graphic styles, grid, …).
 - Lines: `kind.type: "path"`, a 2-anchor open subpath, `live: {shape: "line", a, b}`, with a stroke in `appearance`. Text: `kind.type: "text"`, point text, `xf` translation, `runs[{text, style}]`, `para.justify`.
 - The writer emits only what it needs. The reader reads only what it needs: names, layer membership, line endpoints, text content/position/style, and the gel blob. Any field it doesn't know is preserved when the agent edits through the app. The agent never rewrites the file directly after `render`.
 
@@ -124,8 +124,8 @@ Reverse-engineered from saved documents. V0 must confirm it before anything depe
 
 - Attach to the instance on `--port` (default 7797). If none is listening, launch `VectorCraft --control <port> fig.vectorcraft` and remember that we started it. A running instance without `--control` can't be reached: tell the user to save, quit and let the skill relaunch it.
 - Call `ui.inspect` after opening and cancel any dialog (missing links, …).
-- `sync` reads with `document.inspect` (enough depth to include names and geometry). It edits with `engine.execute` commands, such as select by id, move, set text position, delete, create path/text, set artboard rect, and replace or clip images. V0 lists the exact commands.
-- Save (`file.save`) and export (`file.exportAs`, Figure artboard, scale = dpi/72) are asynchronous. Poll until the file exists, its size is > 0 and its mtime is newer than the request; time out after 60 s. Export is whole-page: if the Figure can't be exported alone, crop to the Figure artboard rect afterwards. Then set pHYs.
+- `sync` reads with `document.json` (exact geometry, names, text style). It writes with `object.move`, `path.setAnchors`, `text.setText`, `object.setProps`, `edit.clear`, `artboard.setProps`, `layer.move` and creates (then names) new objects. Everything runs inside one `edit.undoGroup` labelled `ep-labeling sync`, so one ⌘Z undoes a sync, and a failure is rolled back with `cancel`. The command list and the pitfalls are in `references/vectorcraft.md`.
+- Save with `document.save`, then poll until the file is newer than the request **and** parses (V0 caught one half-written read); time out after 60 s. Export with `document.export {artboard: 0, ppi: dpi}`: one artboard, with pHYs written by the app.
 - Fonts: text items are created at their nominal size, never scaled (a scaled text box renders at the scaled size while the panel still shows the nominal one). The default font is Arial.
 
 ## 7. Analysis from the Workbench
@@ -196,7 +196,7 @@ python3 scripts/gel_photo.py doctor                # also checks VectorCraft.app
 
 ## 13. Open decisions
 
-- **V-D1 — trim marking.** This spec uses "move the pair into the `trimmed` layer". Alternatives: rename the lines `lane trim`, or hide them. Settle after V0 shows which one VectorCraft makes easiest.
-- **V-D2 — run metadata location** (§4.6): a hidden text object, or a native document field, depending on what V0 finds survives a save.
+- ~~V-D1 — trim marking~~ **Settled (V0):** move the pair into the unlocked `trimmed` layer; sync re-strokes trimmed lines grey.
+- ~~V-D2 — run metadata location~~ **Settled (V0):** the `ep-meta` text object (§4.6).
 - **V-D3 — Profiles layout:** horizontal stack with an MW axis, or vertical strips aligned beside each lane (V5 shows both).
 - **V-D4 — overwrite guard:** does `render` onto an existing `fig.vectorcraft` refuse, back up (`fig.vectorcraft.bak`), or ask?

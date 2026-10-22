@@ -8,7 +8,7 @@ V0 ─┬─ V1 ── V3 ─┬─ V4 ─┬─ V5 ── V6 ── V7 ── V
                  └─ V8 (parallel) ─┘
 ```
 
-## V0 — Spike: VectorCraft 0.14 facts (gate)
+## V0 — Spike: VectorCraft 0.14 facts (gate) — DONE 2026-10-22, see `references/vectorcraft.md`
 - Against `/Applications/VectorCraft.app` 0.14.0 with `--control`, find out and write down in `references/vectorcraft.md`:
   - the file format (§5): does a minimal hand-written file (one artboard, one embedded PNG, one line, one text) open without dialogs? Which document fields are required? Save it from the app and diff.
   - are object `name`s kept across a save? Can a name be set when creating a line or text? Does `document.inspect` return names, layer membership, line endpoints, text runs/style and `xf`?
@@ -16,17 +16,17 @@ V0 ─┬─ V1 ── V3 ─┬─ V4 ─┬─ V5 ── V6 ── V7 ── V
   - export: can one artboard be exported alone? What does `scale` mean? Is pHYs written?
   - does an unknown key in `document.metadata` survive a save (decides V-D2)?
   - what is easiest for trimming (decides V-D1)?
-- Commit `templates/blank.vectorcraft` (minimal app-saved document) as the writer's base.
+- Commit `templates/kinds.vectorcraft` (app-saved, one object per kind) as the writer's base.
 - Done when: every question has a measured answer with the exact JSON request/response, and the spec §5/§6 is corrected where reality differs.
 
 ## V1 — `.vectorcraft` writer and reader
 - Depends on V0.
-- New `vc_file.py`: `write(doc_model, blobs, path)` and `read(path) -> (json, blobs)`; blob packing (`\n\0VCBLOBS\0`, offsets); id allocation and `next_id`; helpers for artboard, layer, line, point text, embedded image with `xf`, clipped image.
+- New `vc_file.py`: `write(doc_model, images, path)` (inline base64, objects deep-copied from `templates/kinds.vectorcraft`) and `read(path)` accepting inline, `\0VCBLOBS\0` and gzip; id allocation and `next_id`; helpers for artboard, layer, line, point text, embedded image with `xf`, clipped image.
 - Done when: `selftest` round-trips a synthetic document (write → read → same names/geometry/blob bytes); the written file opens in VectorCraft without dialogs (manual) and looks as built.
 
 ## V2 — Control-port client
 - Depends on V0.
-- New `vc_control.py`: attach or launch (remember ownership), dialog clearing, `inspect()`, `execute(cmd, params)`, `save()`, and `export_png(path, artboard, dpi)` with mtime polling, the crop fallback and the pHYs post-process. Timeouts and clear errors ("instance without --control — save, quit, re-run").
+- New `vc_control.py`: attach or launch (remember ownership), dialog clearing, `inspect()`, `execute(cmd, params)`, `save()` (poll until newer **and** parses), `export_png(path, artboard, dpi)` via `document.export {artboard, ppi}` (pHYs comes from the app), and an undo-group context manager (`ep-labeling sync`, cancel on error). Timeouts and clear errors ("instance without --control — save, quit, re-run").
 - `doctor` checks that VectorCraft.app is present and its version (warn ≠ 0.14.x).
 - Done when: unit tests run against a fake line-JSON TCP server in `selftest`; the manual check exports a PNG of the right physical size with pHYs = dpi.
 
