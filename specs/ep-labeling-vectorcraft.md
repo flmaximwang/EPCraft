@@ -11,7 +11,7 @@ What is still wrong:
 - **The lane grid can be one lane off.** On IMG_1496 the marker is in well 1 (confirmed by the user), but the grid puts the ladder in lane 2, and the batch labelled it that way. The column-profile phase fit has too little ink to lock onto when most lanes are faint or empty.
 - **No way to correct it.** When detection is wrong, the only fix is flags and a re-run. The HTML editor only edits text, so it can't move a lane, fix a band or change the MW report.
 - **Faint sample lanes are invisible in the outputs.** On these gels the sample bands are 3–4 grey levels deep and the ladder about 24. The MW report lists called bands only, with no curve to check them against.
-- **Manual workarounds in the batch.** IMG_1497's ladder lacks the 35 kD band, so the batch rewrote the marker labels by hand.
+- **Manual workarounds in the batch.** For IMG_1497 the old detection found only 10 ladder bands, so the batch rewrote the marker labels by hand, dropping 35 kD. (V4/V8 later showed all 11 bands are there; lane 1 sits on a damaged gel edge.)
 
 Automatic detection won't be perfect on phone photos. So the skill should **make a good first guess, then let the user correct it by hand, and follow the correction**: the user moves lane lines and band lines in VectorCraft, and the agent re-reads them and updates the labels, curves and MW report.
 

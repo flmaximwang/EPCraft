@@ -116,6 +116,16 @@ def targets(model, report, gel_key, gel_px, wb, labels=None, layout=None, measur
             nm = "label band %s" % "/".join("%g" % m for m in e["mws"])
             text, size = labels.get(nm, (e["text"], MARKER_SIZE))
             marker_items.append((nm, text, size, sum(ys) / len(ys), _hex_rgb(e.get("color"))))
+        # 用户改名（band 35 → band 36）或新画的 band 线：配置里没有对应标签 → 给它一个默认的 "<MW> kD"，
+        # 否则它照样参与标定、Figure 上却没有字（spec §2.6：改名就是改值）。
+        covered = {m for e in model["meta"].get("marker_labels") or [] for m in e["mws"]}
+        for b in model["bands"]:
+            if b["mw"] in covered:
+                continue
+            nm = "label band %g" % b["mw"]
+            text, size = labels.get(nm, ("%g kD" % b["mw"], MARKER_SIZE))
+            marker_items.append((nm, text, size, b["y_cm"], (0.0, 0.0, 0.0)))
+        marker_items.sort(key=lambda it: it[3])          # spread 要按 y 排好的顺序
     left_side = (fig_x_cm(ml) or 0.0) < gel_w_cm / 2.0 if marker_items else True
 
     # ---- 页边距（spec §4 页面规则：每边 max(最小留白, 文字越界 + pad)）

@@ -37,5 +37,5 @@
       "text": "10 kD"
     }
   ],
-  "_备注": "mini-gel 15 泳道那张胶（IMG_1464）的示例配置，2026-10-13 定稿。用法：gel_photo.py render <图> --lanes 本文件 --markers 本文件 --dpi 96 （marker_lane=2 是最外侧那管 marker，标签因此落在左边距；两套 marker 是同一管）"
+  "_备注": "mini-gel 15 泳道那张胶（IMG_1464）的示例配置，2026-10-13 定稿。用法：gel_photo.py render <图> --gel-size data/gel_size.json --lanes mini-gel-15lanes.lanes.json --markers 本文件 --out fig.vectorcraft（marker_lane=2 是最外侧那管 marker；顶层 size/gap/color/font 不再读取，字样式在 VectorCraft 里改）"
 }

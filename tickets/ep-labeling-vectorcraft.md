@@ -163,3 +163,10 @@ V0 ─┬─ V1 ── V3 ─┬─ V4 ─┬─ V5 ── V6 ── V7 ── V
 - `test-prompts.json`: "lane 3 is off, I moved it — update" → `sync`; "rename lane 2 to WT" → control port + `sync`; "drop lanes 1–2" → move to `trimmed` or `--trim-lanes`; "the 35 kD band isn't there" → delete `band 35` + `sync`.
 - Mark `specs/ep-labeling-editable-output.md` as superseded.
 - Done when: no doc mentions `fig.html`, `export`, `--svg`, `--debug PNG` or `--record` except as removed; the `selftest` count is consistent everywhere.
+
+## Follow-ups closed after V9 (2026-10-22)
+- **Renamed or newly drawn `band <MW>` lines now get a Figure label** (`"<MW> kD"`, named `label band <MW>`), and the old MW's label is removed; spec §2.6 says renaming a line changes its value. selftest 77 covers it.
+- **render → first sync is idempotent live.** The model's gel height now comes from the image's whole-pixel aspect ratio, which is what read-back measures. selftest 76 covers it.
+- **render/sync find the document by full path,** not file name.
+- **Stale notes fixed:** the `_说明`/`_备注` notes in `data/` and `templates/` (well seed, marker lane candidates, style keys no longer read), plus the `profiles`/`well_grid` comments and the spec §0 note about IMG_1497.
+

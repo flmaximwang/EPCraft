@@ -1116,6 +1116,29 @@ def selftest():
         assert ops8 == [], ops8[:4]
     ok += 1
 
+    # 77) 改名 / 新画的 band 线也有 Figure 标签（spec §2.6「改名就是改值」）：band 35 改成 band 36 →
+    #     35 的标签删掉、新建 "36 kD"；新画一条 band 8 → 新建 "8 kD"；标定点随之变化；再 sync 一次 0 操作。
+    d9 = json.loads(json.dumps(d5))
+    top9 = {"format": "vectorcraft", "version": 4, "document": d9, "images": top5["images"]}
+    L9 = {l["name"]: l for l in d9["layers"]}
+    bl9 = vc_file.lay_children(L9["marker bands"])
+    [n for n in bl9 if n["name"] == "band 35"][0]["name"] = "band 36"
+    n8 = json.loads(json.dumps(bl9[-1]))
+    n8["name"], n8["id"] = "band 8", 60001
+    for a_ in n8["kind"]["path"]["subpaths"][0]["anchors"]:
+        a_["p"][1] += 0.5 * vc_file.PT_PER_CM
+    bl9.append(n8)
+    m9b, _n = workbench.from_document(d9)
+    assert [b["mw"] for b in m9b["bands"]][-3:] == [36.0, 10.0, 8.0], m9b["bands"]
+    rep9 = profiles.analyze(m9b, png5, [None] * 15)
+    ops9, _meta = figure.plan_sync(d9, m9b, rep9)
+    figure.apply_ops_json(top9, ops9)
+    labs9 = {n["name"]: vc_file.text_info(n)["text"] for n in vc_file.lay_children(L9["labels"])}
+    assert "label band 35" not in labs9 and labs9.get("label band 36") == "36 kD" and labs9.get("label band 8") == "8 kD", labs9
+    m9c, _n = workbench.from_document(d9)
+    assert figure.plan_sync(d9, m9c, profiles.analyze(m9c, png5, [None] * 15))[0] == []
+    ok += 1
+
     # 75+) 活文档执行器（V7，sync_exec；假控制口，不开 app）：每种 op 的命令序列、锁定层先解锁后锁回、
     #      新对象起名、剪切组、失败 → 撤销组 cancel 并抛原错、收尾恢复当前层与默认颜色。
     import selftest_sync
