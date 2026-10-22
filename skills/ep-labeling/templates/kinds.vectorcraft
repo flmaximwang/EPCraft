@@ -259,6 +259,75 @@
                   "burasagari": "standard"
                 }
               }
+            },
+            {
+              "id": 7,
+              "name": "polyline",
+              "appearance": {
+                "items": [
+                  {
+                    "kind": "fill",
+                    "paint": {
+                      "type": "solid",
+                      "color": {
+                        "model": "rgb",
+                        "r": 1.0,
+                        "g": 1.0,
+                        "b": 1.0
+                      }
+                    }
+                  },
+                  {
+                    "kind": "stroke",
+                    "paint": {
+                      "type": "solid",
+                      "color": {
+                        "model": "rgb",
+                        "r": 0.0,
+                        "g": 0.0,
+                        "b": 0.0
+                      }
+                    },
+                    "width": 1.0
+                  }
+                ]
+              },
+              "kind": {
+                "type": "path",
+                "path": {
+                  "subpaths": [
+                    {
+                      "anchors": [
+                        {
+                          "p": [
+                            10.0,
+                            50.0
+                          ]
+                        },
+                        {
+                          "p": [
+                            20.0,
+                            40.0
+                          ]
+                        },
+                        {
+                          "p": [
+                            30.0,
+                            60.0
+                          ]
+                        },
+                        {
+                          "p": [
+                            40.0,
+                            45.0
+                          ]
+                        }
+                      ],
+                      "closed": false
+                    }
+                  ]
+                }
+              }
             }
           ]
         }
@@ -1196,7 +1265,7 @@
     },
     "raster_effects_ppi": 72.0,
     "images": {},
-    "next_id": 7,
+    "next_id": 8,
     "metadata": {
       "author": "",
       "authorTitle": "",
@@ -1207,7 +1276,7 @@
       "copyrightNotice": "",
       "copyrightUrl": "",
       "created": 1792673792,
-      "modified": 1792673792
+      "modified": 1792677120
     },
     "last_view": {
       "name": "",

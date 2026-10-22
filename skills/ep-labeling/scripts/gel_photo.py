@@ -21,6 +21,7 @@
     workbench    Workbench 模型（建、画、读回、校验、泳道名匹配）
     profiles     泳道剖面、条带、标定、MW 报告 v2
     well_grid    泳道种子：按加样孔定相的等距梳子
+    figure       Figure / Profiles 画板、整份文档、sync 增量计划（plan_sync）
 本文件不带任何数据路径：预设与胶体尺寸由调用方用 --markers / --gel-size 显式给出。
 
 坐标约定

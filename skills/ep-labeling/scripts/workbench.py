@@ -49,6 +49,8 @@ LINE_W = 0.5                       # pt
 MARGIN_CM = 0.6                    # Workbench 画板四周留白（放泳道号）
 GRAB_CM = 0.15                     # 横线伸出胶边/泳道边的长度，方便抓
 BOTTOM_GUARD = 0.03                # 默认积分窗下沿避开胶底渐变（失效报告 §4：97.7% 处的假结构）
+TOP_GUARD_CM = 0.15                # 默认积分窗上沿避开加样孔：孔底的 U 形轮廓在胶面最上 0.12 cm 里，
+                                   # 不让开时每条剖面开头都是一根大尖峰（V5 在 IMG_1496 上看到），还会撑大每道的满幅
 _BAND_NAME = re.compile(r"^\s*band\s+(\d+(?:\.\d+)?)\s*$", re.I)
 
 
@@ -67,7 +69,7 @@ def from_record(rec, lane_names, marker_labels, marker_lane, marker_rows_cm=None
     marker_lane   = marker 泳道号（1 起）；
     marker_rows_cm= 手工标定的 marker 行（cm）；省略 = 用 record 里该泳道探到的条带；
     trim          = 要放进 trimmed 图层的泳道号；
-    window        = (top_cm, bottom_cm)；省略 = 整块胶面，下沿让开 3%。
+    window        = (top_cm, bottom_cm)；省略 = 上沿让开加样孔 0.15 cm、下沿让开 3%。
     条带数与标签需要的行数（rows 求和）对不上 → 拒绝（不硬配，同 render 的老闸门）。
     """
     gel = {"width_cm": float(rec["gel"]["width_cm"]), "height_cm": float(rec["gel"]["height_cm"])}
@@ -114,7 +116,7 @@ def from_image(png, gel_width_cm, gel_height_cm, lane_count, pitch_prior_cm, lan
     sd = well_grid.seed(gray, w, h, ppc, lane_count, pitch_prior_cm)
     lanes = [{"left_cm": a, "right_cm": b, "trimmed": (i + 1) in set(trim)} for i, (a, b) in enumerate(sd["lanes"])]
     gel = {"width_cm": float(gel_width_cm), "height_cm": float(gel_height_cm)}
-    top, bottom = window if window else (0.0, gel["height_cm"] * (1.0 - BOTTOM_GUARD))
+    top, bottom = window if window else (TOP_GUARD_CM, gel["height_cm"] * (1.0 - BOTTOM_GUARD))
     if marker_rows_cm is None:
         ml = lanes[int(marker_lane) - 1]
         ys, gs = profiles.lane_profile(gray, w, h, ppc, ml["left_cm"], ml["right_cm"], top, bottom)
@@ -143,7 +145,7 @@ def _assemble(gel, lanes, marker_rows_cm, lane_names, marker_labels, marker_lane
     pairs = marker_pairs(entries, span, rows, as_entry)
     bands = [{"mw": float(mw), "y_cm": round(float(y), 4)} for y, mw in pairs]
 
-    top, bottom = window if window else (0.0, gel["height_cm"] * (1.0 - BOTTOM_GUARD))
+    top, bottom = window if window else (TOP_GUARD_CM, gel["height_cm"] * (1.0 - BOTTOM_GUARD))
     m = dict(meta or {})
     m.update(lane_names=list(lane_names),
              marker_labels=[{"text": e.get("text", ""), "mws": parse_mw(e.get("text", "")),
@@ -173,11 +175,12 @@ def frame(model, x0, y0=0.0):
     return {"artboard": (x0, y0, w, h), "gel_x": x0 + m, "gel_y": y0 + m}
 
 
-def add_workbench(doc, layers, model, gel_key, gel_w_px, gel_h_px, x0, y0=0.0, peaks=()):
+def add_workbench(doc, layers, model, gel_key, gel_w_px, gel_h_px, x0, y0=0.0, peaks=(), tags=True):
     """把模型画到 doc 上：Workbench 画板、整胶图、线、泳道号、ep-meta。返回 frame()。
 
     gel_key/gel_w_px/gel_h_px = vc_file.add_image 的结果（胶面图，宽对应 gel.width_cm）；
-    peaks = [(泳道号, y_cm), …] 样品条带的小刻度（V4 的分析结果；建模时可以没有）。
+    peaks = [(泳道号, y_cm), …] 样品条带的小刻度（V4 的分析结果；建模时可以没有）；
+    tags=False 时不画泳道号（figure.build_document 让 targets() 统一画 analysis 层）。
     """
     fr = frame(model, x0, y0)
     vc_file.add_artboard(doc, "Workbench", *fr["artboard"])
@@ -202,9 +205,10 @@ def add_workbench(doc, layers, model, gel_key, gel_w_px, gel_h_px, x0, y0=0.0, p
         for x in (ln["left_cm"], ln["right_cm"]):
             kids(lay).append(vc_file.line(doc, "lane", (X(x), Y(win["top_cm"])), (X(x), Y(win["bottom_cm"])),
                                           col, LINE_W))
-        kids(layers["analysis"]).append(vc_file.text(
-            doc, "tag %d" % i, X((ln["left_cm"] + ln["right_cm"]) / 2.0), gy - 4, str(i), size=6,
-            rgb=(0.35, 0.35, 0.35)))
+        if tags:
+            kids(layers["analysis"]).append(vc_file.text(
+                doc, "tag %d" % i, X((ln["left_cm"] + ln["right_cm"]) / 2.0), gy - 4, str(i), size=6,
+                rgb=(0.35, 0.35, 0.35)))
     mk = model["lanes"][model["marker_lane"] - 1]
     for b in model["bands"]:
         y = Y(b["y_cm"])

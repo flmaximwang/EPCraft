@@ -33,7 +33,7 @@ TEMPLATE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 BLOB_MARK = b"\0VCBLOBS\0"
 PT_PER_CM = 72.0 / 2.54
 # 模板里每种对象的名字（templates/kinds.vectorcraft，见 references/vectorcraft.md §5）
-_KIND_NAMES = ("clip", "line", "text")
+_KIND_NAMES = ("clip", "line", "text", "polyline")
 
 _tpl_cache = {}
 
@@ -174,6 +174,25 @@ def line(doc, name, a, b, rgb=(0.0, 0.0, 0.0), width=0.5):
     return n
 
 
+def polyline(doc, name, points, rgb=(0.0, 0.0, 0.0), width=0.5):
+    """多点折线（开放、无填充、实线描边；没有 live 形状）。points = [(x, y), …] pt，至少 2 点。"""
+    if len(points) < 2:
+        raise RuntimeError("polyline 至少要 2 个点（收到 %d）" % len(points))
+    n = copy.deepcopy(doc["tpl"]["polyline"])
+    n["id"] = _id(doc)
+    n["name"] = name
+    for it in n["appearance"]["items"]:
+        if it["kind"] == "fill":
+            it["paint"] = {"type": "none"}
+        elif it["kind"] == "stroke":
+            it["paint"] = {"type": "solid", "color": _rgb(rgb)}
+            it["width"] = float(width)
+    n["kind"]["path"]["subpaths"] = [{"anchors": [{"p": [float(x), float(y)]} for x, y in points],
+                                      "closed": False}]
+    n["kind"].pop("live", None)
+    return n
+
+
 def text(doc, name, x, y, s, size=8.0, font="Arial", rgb=(0.0, 0.0, 0.0), justify="Center"):
     """点文字。(x, y) 是锚点：y 是基线，x 按 justify（Left/Center/Right）对齐。字号只写 size、从不缩放。"""
     if justify not in ("Left", "Center", "Right"):
@@ -282,7 +301,8 @@ def _template(path):
         lay["kind"]["children"] = []
         _tpl_cache[path] = {"version": top["version"], "generator": top["generator"],
                             "document": d, "layer": lay, "artboard": d["artboards"][0],
-                            "clip": kinds["clip"], "line": kinds["line"], "text": kinds["text"]}
+                            "clip": kinds["clip"], "line": kinds["line"], "text": kinds["text"],
+                            "polyline": kinds["polyline"]}
     return _tpl_cache[path]
 
 

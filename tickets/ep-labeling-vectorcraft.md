@@ -73,7 +73,20 @@ V0 ─┬─ V1 ── V3 ─┬─ V4 ─┬─ V5 ── V6 ── V7 ── V
 - `mw_report.py` writes v2 (spec §7) and keeps the terminal table.
 - Done when: `selftest` checks `gray` against an independent mean on a synthetic gel; a faint lane (3 grey levels deep) still yields its peak; deleting a band changes the fit; extrapolation flags as before.
 
-## V5 — Figure and Profiles artboards
+## V5 — Figure and Profiles artboards — DONE 2026-10-22 (V-D3 awaiting the user)
+- Close-out: `scripts/figure.py`.
+  - **One description:** `targets()` lists every agent-owned object once. `build_document()` writes them for render; `plan_sync()` diffs them against the live `document.json` into ops (artboard, create, delete, move, rename, set_text, stroke, reshape).
+  - **`apply_ops_json()`** applies ops to a file's JSON, so the round trip is tested without the app; V7's control executor mirrors it.
+  - Also: `vc_file.polyline`, and an app-made `polyline` added to `templates/kinds.vectorcraft`.
+- Layout and analysis decisions:
+  - The Figure goes **below** the Workbench, so resizing never overlaps it; Profiles go to the right. Artboard order is Figure, Workbench, Profiles.
+  - Splices are a 0.15 cm white gap, as before (no extra line object).
+  - Marker labels are spread with a minimal-displacement 1-D layout (`spread`), keeping order, so close bands (250/150/100, 40/35) no longer collide.
+  - The default window top is 0.15 cm: the wells' U outlines put a spike at the start of every curve.
+  - Each Profiles curve is scaled to at least 1/4 of the strongest sample lane, so empty lanes don't look like bands.
+- Ownership is enforced by plan_sync: labels only ever get move, rename, create or delete. Test 73 checks that a user's text and colour survive a sync. A "?" placeholder counts as unnamed.
+- Tests: selftest 71–73 cover `spread`; render structure and idempotence in both layouts; and the spec §11 scripted round trip (moved lane, deleted band, new unnamed pair, interior lane trimmed, label renamed and recoloured), followed by a second sync that yields 0 ops.
+- **V-D3:** both layouts are open for the user (`~/Downloads/DGC/vc-demo/IMG_1496.v5-{stack,strips}.vectorcraft`); the default is `stack`.
 - Depends on V3, V4.
 - Figure: kept segments from the lane lines (splice at mid-gap, as today), clipped gel instances, splice lines, page rule margins, `label lane n` / `label band <MW>` at their anchors, nominal font sizes.
 - Profiles: per-lane `ink` curves, MW axis from the calibration, called bands marked. Show the user both layouts (V-D3) on one DGC photo before settling.

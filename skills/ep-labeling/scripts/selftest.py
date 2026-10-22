@@ -39,6 +39,7 @@ import vc_control
 import workbench
 import profiles
 import well_grid
+import figure
 from mw_report import format_report_v2, write_v2
 
 
@@ -1148,7 +1149,8 @@ def selftest():
     pairs = [("line", lanes[0], tpl["line"]),
              ("text", vc_file.lay_children(vc_file.layer_by_name(d, "labels"))[0], tpl["text"]),
              ("clip", vc_file.lay_children(vc_file.layer_by_name(d, "gel"))[0], tpl["clip"]),
-             ("artboard", d["artboards"][0], tpl["artboard"])]
+             ("artboard", d["artboards"][0], tpl["artboard"]),
+             ("polyline", vc_file.polyline(vc_file.new_doc("p"), "c", [(0, 0), (1, 1), (2, 0)]), tpl["polyline"])]
     lay_w = dict(vc_file.layer_by_name(d, "labels"), kind=dict(vc_file.layer_by_name(d, "labels")["kind"], children=[]))
     pairs.append(("layer", lay_w, tpl["layer"]))
     for what, got, want in pairs:
@@ -1365,7 +1367,7 @@ def selftest():
         assert abs((ln["right_cm"] - ln["left_cm"]) - src["width_cm"]) < 1e-3
     ys = [b["y_cm"] for b in rec["bands"]["1"]]
     assert [(b["mw"], b["y_cm"]) for b in mdl["bands"]] == list(zip([250.0, 100.0, 50.0], ys)), mdl["bands"]
-    assert mdl["window"] == {"top_cm": 0.0, "bottom_cm": round(6.6 * 0.97, 4)}, mdl["window"]
+    assert mdl["window"] == {"top_cm": workbench.TOP_GUARD_CM, "bottom_cm": round(6.6 * 0.97, 4)}, mdl["window"]
     assert mdl["meta"]["lane_names"] == names and len(mdl["meta"]["prev_centres_cm"]) == 15
     pair = workbench.from_record(rec, names, ["250 kD", {"text": "21/20 kD", "rows": 2}], 1)
     assert [b["mw"] for b in pair["bands"]] == [250.0, 21.0, 20.0], pair["bands"]
@@ -1429,7 +1431,7 @@ def selftest():
     assert abs(c3 - want) < 2e-3, (c3, want)
     assert abs(got["lanes"][7]["left_cm"] - (c7 + 0.05)) < 1e-3, got["lanes"][7]
     assert [b["mw"] for b in got["bands"]] == [250.0, 50.0, 10.0]
-    assert abs(got["window"]["top_cm"] - 0.5) < 1e-3, got["window"]
+    assert abs(got["window"]["top_cm"] - (workbench.TOP_GUARD_CM + 0.5)) < 1e-3, got["window"]
     ok += 1
 
     # 63) 校验（V3）：所有问题一次报完、什么都不读出来 —— 奇数条泳道线、window 三条线、
@@ -1649,6 +1651,122 @@ def selftest():
             raise AssertionError("带数不符没拒绝")
         except workbench.WorkbenchError as e:
             assert "叫出 4 条带" in str(e) and "3.1" in str(e), e              # 把叫出来的 y 列给用户
+    ok += 1
+
+    # 71) 一维排字 spread（V5）：保持顺序、相邻中心距 ≥ 半尺寸之和 + gap、孤立的不动、
+    #     挤在一起的一簇以目标均值为中心对称展开（总位移最小）。
+    got = figure.spread([0.0, 1.0, 2.0, 10.0], [3.0] * 4)
+    assert got == [-3.0, 1.0, 5.0, 10.0], got
+    got = figure.spread([5.0, 5.0], [2.0, 4.0], gap=0.0)
+    assert abs((got[1] - got[0]) - 3.0) < 1e-9 and abs(sum(got) / 2 - 5.0) < 1e-9, got
+    rnd = _lcg(3)
+    ts = sorted(10 * next(rnd) for _ in range(30))
+    got = figure.spread(ts, [1.0] * 30, gap=0.5)
+    assert all(b - a >= 1.5 - 1e-9 for a, b in zip(got, got[1:])), got
+    ok += 1
+
+    # 72) render 出的文档（V5）：画板顺序 Figure/Workbench/Profiles，Figure 在 Workbench 下面不重叠；
+    #     每条有名字的泳道一条标签、居中在泳道上；marker 标签不互相压、各贴在自己的带旁；
+    #     页边 ≥ 最小留白；plan_sync 在刚生成的文档上 → 0 个操作（幂等）；两种 Profiles 版式都能出。
+    with tempfile.TemporaryDirectory() as td:
+        gp = os.path.join(td, "gel.png")
+        rows5 = [1.0, 1.2, 1.4, 2.3, 3.1]
+        _synth_wells(gp, first_cm=0.70, pitch_cm=0.52, ladder_rows_cm=rows5)
+        png5 = open(gp, "rb").read()
+        names5 = ["M", "A", "B"] + [""] * 9 + ["X", "Y", "Z"]
+        mk5 = ["100 kD", "70 kD", "50 kD", "35 kD", "10 kD"]
+        m5, _sd = workbench.from_image(png5, 8.6, 6.25, 15, 0.52, names5, mk5, 1, meta={"skill": "ep-labeling"})
+        rep5 = profiles.analyze(m5, png5, names5)
+        for lay in ("strips", "stack"):
+            doc5 = figure.build_document(m5, rep5, png5, "t", layout=lay)
+            top5, _b = vc_file.loads(vc_file.dumps(doc5))
+            d5 = top5["document"]
+            assert [a["name"] for a in d5["artboards"]] == ["Figure", "Workbench", "Profiles"]
+            fig_r, wb_r = d5["artboards"][0]["rect"], d5["artboards"][1]["rect"]
+            assert fig_r["y0"] >= wb_r["y1"] + figure.BOARD_GAP - 1e-6, (fig_r, wb_r)
+            ops5, _meta = figure.plan_sync(d5, m5, rep5, layout=lay)
+            assert ops5 == [], ops5[:5]
+        labs = {n["name"]: vc_file.text_info(n) for n in vc_file.lay_children(vc_file.layer_by_name(d5, "labels"))}
+        lane_labs = sorted(k for k in labs if k.startswith("label lane "))
+        assert lane_labs == sorted("label lane %d" % i for i in (1, 2, 3, 13, 14, 15)), lane_labs
+        seg = vc_file.lay_children(vc_file.layer_by_name(d5, "gel"))
+        seg = [n for n in seg if n["name"] == "gel seg 1"][0]
+        gx = seg["kind"]["children"][0]["kind"]["path"]["subpaths"][0]["anchors"][0]["p"][0]
+        for i in (1, 2, 13):
+            ln = m5["lanes"][i - 1]
+            want_x = gx + (ln["left_cm"] + ln["right_cm"]) / 2 * vc_file.PT_PER_CM
+            assert abs(labs["label lane %d" % i]["x"] - want_x) < 0.01, (i, labs["label lane %d" % i]["x"], want_x)
+        mys = sorted(v["y"] for k, v in labs.items() if k.startswith("label band "))
+        assert len(mys) == 5 and all(b - a >= figure.CAP * figure.MARKER_SIZE + 1.0 - 1e-6 for a, b in zip(mys, mys[1:])), mys
+        assert labs["label band 10"]["text"] == "10 kD" and labs["label band 10"]["justify"] == "Right"
+        assert gx - fig_r["x0"] >= figure.MARGIN_MIN_CM * vc_file.PT_PER_CM - 1e-6
+    ok += 1
+
+    # 73) sync 往返（V5，spec §11 的脚本版，不需要 app）：在 render 的文档上模拟用户 ——
+    #     泳道 3 右移 0.2 cm、删 band 50 线、在泳道 4/5 之间加一对没名字的线、把泳道 14 挪进 trimmed、
+    #     把泳道 2 的标签改成 "WT" 并改成红色 → 读回 → plan_sync → apply_ops_json：
+    #     "WT" 文字与颜色原样、跟着泳道走（改名为新泳道号）并重新居中；新泳道得到 "?" 标签；
+    #     trimmed 的泳道标签删掉、Figure 拆成两段（中间有拼缝）、trimmed 的线变灰；50 kD 标签随线删除；
+    #     任何操作都不写标签文字/样式；再跑一次 plan_sync → 0 个操作。
+    d6 = json.loads(json.dumps(d5))
+    top6 = {"format": "vectorcraft", "version": 4, "document": d6, "images": top5["images"]}
+    L6 = {l["name"]: l for l in d6["layers"]}
+    gx_wb, _s = _wb_origin(d6)
+    PTc = vc_file.PT_PER_CM
+    lines6 = sorted(vc_file.lay_children(L6["lanes"]), key=lambda n: vc_file.line_ends(n)[0][0])
+    for n in lines6[4:6]:
+        for a_ in n["kind"]["path"]["subpaths"][0]["anchors"]:
+            a_["p"][0] += 0.2 * PTc
+    for n in lines6[26:28]:                              # 原泳道 14（"Y"）→ trimmed：中间一段被拿掉
+        vc_file.lay_children(L6["lanes"]).remove(n)
+        vc_file.lay_children(L6["trimmed"]).append(n)
+    x45 = (m5["lanes"][3]["right_cm"] + m5["lanes"][4]["left_cm"]) / 2
+    for k, dx in enumerate((-0.03, 0.03)):
+        n = json.loads(json.dumps(lines6[0]))
+        n.pop("name")
+        n["id"] = 70000 + k
+        for a_ in n["kind"]["path"]["subpaths"][0]["anchors"]:
+            a_["p"][0] = gx_wb + (x45 + dx) * PTc
+        vc_file.lay_children(L6["lanes"]).append(n)
+    bl6 = vc_file.lay_children(L6["marker bands"])
+    bl6[:] = [n for n in bl6 if n["name"] != "band 50"]
+    wt = [n for n in vc_file.lay_children(L6["labels"]) if n["name"] == "label lane 2"][0]
+    wt["kind"]["runs"][0]["text"] = "WT"
+    wt["kind"]["runs"][0]["style"]["fill"] = {"type": "solid", "color": {"model": "rgb", "r": 1.0, "g": 0.0, "b": 0.0}}
+    wt_style = json.loads(json.dumps(wt["kind"]["runs"][0]["style"]))
+    m6, _notes = workbench.from_document(d6)
+    assert len(m6["lanes"]) == 16 and m6["lanes"][14]["trimmed"] and m6["marker_lane"] == 1
+    rep6 = profiles.analyze(m6, png5, [None] * 16)
+    ops6, meta6 = figure.plan_sync(d6, m6, rep6, layout="stack")
+    label_ids = {n["id"] for n in vc_file.lay_children(L6["labels"])}
+    for op in ops6:
+        if op.get("id") in label_ids:
+            assert op["op"] in ("move", "rename", "delete"), op           # 标签只动位置/名字/删
+    assert {"op": "rename", "id": wt["id"], "name": "label lane 2"} not in ops6   # 泳道 2 还是 2（新道在 4/5 之间）
+    figure.apply_ops_json(top6, ops6)
+    L7 = {l["name"]: l for l in d6["layers"]}
+    labs7 = {n["name"]: n for n in vc_file.lay_children(L7["labels"])}
+    assert labs7["label lane 2"]["kind"]["runs"][0]["text"] == "WT"
+    assert labs7["label lane 2"]["kind"]["runs"][0]["style"] == wt_style, "用户改的样式被动了"
+    assert vc_file.text_info(labs7["label lane 5"])["text"] == "?", "新泳道没得到 ? 标签"
+    assert "label lane 14" in labs7 and vc_file.text_info(labs7["label lane 14"])["text"] == "X"   # 原 13 → 14
+    assert "label lane 15" not in labs7, "trimmed 的泳道标签没删"
+    assert vc_file.text_info(labs7["label lane 16"])["text"] == "Z"
+    assert "label band 50" not in labs7 and "label band 35" in labs7
+    assert meta6["lane_names"][1] == "WT" and meta6["lane_names"][4] is None
+    segs7 = sorted(n["name"] for n in vc_file.lay_children(L7["gel"]) if n["name"].startswith("gel seg"))
+    assert segs7 == ["gel seg 1", "gel seg 2"], segs7
+    for n in vc_file.lay_children(L7["trimmed"]):
+        st = [it for it in n["appearance"]["items"] if it["kind"] == "stroke"][0]["paint"]["color"]
+        assert abs(st["r"] - figure.GREY[0]) < 1e-6, st
+    m7, _n = workbench.from_document(d6)
+    rep7 = profiles.analyze(m7, png5, [None] * 16)
+    ops7, _meta = figure.plan_sync(d6, m7, rep7, layout="stack")
+    assert ops7 == [], ops7[:6]
+    c2 = vc_file.text_info(labs7["label lane 3"])["x"]
+    seg1 = [n for n in vc_file.lay_children(L7["gel"]) if n["name"] == "gel seg 1"][0]
+    fx = seg1["kind"]["children"][0]["kind"]["path"]["subpaths"][0]["anchors"][0]["p"][0]
+    assert abs(c2 - (fx + workbench.centres(m7)[2] * PTc)) < 0.01, "改过的泳道 3 标签没重新居中"
     ok += 1
 
     print("selftest %d/%d 通过" % (ok, ok))
