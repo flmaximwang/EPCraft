@@ -25,7 +25,15 @@ V0 ─┬─ V1 ── V3 ─┬─ V4 ─┬─ V5 ── V6 ── V7 ── V
 - New `vc_file.py`: `write(doc_model, images, path)` (inline base64, objects deep-copied from `templates/kinds.vectorcraft`) and `read(path)` accepting inline, `\0VCBLOBS\0` and gzip; id allocation and `next_id`; helpers for artboard, layer, line, point text, embedded image with `xf`, clipped image.
 - Done when: `selftest` round-trips a synthetic document (write → read → same names/geometry/blob bytes); the written file opens in VectorCraft without dialogs (manual) and looks as built.
 
-## V2 — Control-port client
+## V2 — Control-port client — DONE 2026-10-22
+- Close-out: `scripts/vc_control.py` (`connect`, `Client.call/execute/open/clear_dialogs/save/export_png/batch/undo_group/quit`, `png_info`), and `doctor` reports the app, its version and the port state. selftest 55–59 run against a fake line-JSON server (protocol and split replies, dialogs, save polling past a half-written file, export dpi/size checks, undo group, batch, connect and launch). Mutation-checked: a save that doesn't wait for a parseable file and an undo group without rollback both fail selftest.
+- Manual, VectorCraft 0.14.0:
+  - `connect` launched the app with `--control` in 0.5 s.
+  - Figure export at 300 dpi was 1083 × 833 px with pHYs 300; Workbench at 150 dpi was 625 × 417.
+  - `save` waited for a complete, parseable file.
+  - An undo group rolled back on error; a successful group was one history step (`ep-labeling sync`) undone by one `edit.undo`.
+  - A batch with a failing step changed nothing.
+  - With the app opened normally (no `--control`), `connect` and `doctor` both said to save and quit.
 - Depends on V0.
 - New `vc_control.py`: attach or launch (remember ownership), dialog clearing, `inspect()`, `execute(cmd, params)`, `save()` (poll until newer **and** parses), `export_png(path, artboard, dpi)` via `document.export {artboard, ppi}` (pHYs comes from the app), and an undo-group context manager (`ep-labeling sync`, cancel on error). Timeouts and clear errors ("instance without --control — save, quit, re-run").
 - `doctor` checks that VectorCraft.app is present and its version (warn ≠ 0.14.x).

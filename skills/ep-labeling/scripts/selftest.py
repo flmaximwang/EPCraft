@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 
 from config import load_gel_size
 from editor import DEFAULT_TEMPLATE as EDITOR_TEMPLATE
@@ -34,6 +35,7 @@ from scene_png import page_px, write_png as scene_png_write
 from scene_svg import baseline_offset_px, svg_string, write_svg
 from text_layout import annotate_cmd, pick_font, text_extent
 import vc_file
+import vc_control
 
 
 def test_import_direction():
@@ -1178,6 +1180,173 @@ def selftest():
     assert raises(lambda: vc_file.loads(b'{"format": "svg"}'), "不是 .vectorcraft")
     ok += 1
 
+    # 55) 控制口协议（V2，假服务器）：一行请求一行回包；回包分两段到也要拼齐；ok=false 的错误信息
+    #     要写出是哪条命令；空包 / 非 JSON → VCError；请求 id 递增。
+    with _FakeVC() as fv:
+        c = vc_control.Client(fv.port, timeout=5)
+        fv.on["ui.inspect"] = lambda p: {"documents": []}
+        assert c.call("ui.inspect") == {"documents": []}
+        fv.on["document.json"] = lambda p: {"layers": [], "pad": "x" * 300000}
+        fv.split = True
+        assert len(c.document_json()["pad"]) == 300000, "分段回包没拼齐"
+        fv.split = False
+        fv.on["text.setText"] = lambda p: _FakeVC.Err("no such object: 99")
+        try:
+            c.execute("text.setText", {"id": 99, "text": "x"})
+            raise AssertionError("ok=false 没抛错")
+        except vc_control.VCError as e:
+            assert "text.setText" in str(e) and "no such object" in str(e), e
+        for raw in (b"\n", b"not json\n"):
+            fv.raw = raw
+            try:
+                c.call("ui.inspect")
+                raise AssertionError("坏回包 %r 没抛错" % raw)
+            except vc_control.VCError:
+                pass
+        fv.raw = None
+        ids = [r["id"] for r in fv.log]
+        assert ids == sorted(ids) and len(set(ids)) == len(ids), ids
+        assert fv.log[-1]["method"] == "ui.inspect"
+        assert fv.log[2] == {"id": ids[2], "method": "engine.execute",
+                             "params": {"command": "text.setText", "params": {"id": 99, "text": "x"}}}, fv.log[2]
+    ok += 1
+
+    # 56) 对话框（V2）：open 之后有对话框就 ui.dialog.cancel，直到没有；一直关不掉 → 报错，不死循环。
+    with _FakeVC() as fv:
+        c = vc_control.Client(fv.port, timeout=5)
+        dialogs = [{"kind": "missingLinks"}, {"kind": "fontProblems"}]
+        fv.on["file.open"] = lambda p: {"warnings": [], "index": 0}
+        fv.on["ui.inspect"] = lambda p: {"ui": {"dialog": dialogs[0] if dialogs else None}}
+        fv.on["ui.dialog.cancel"] = lambda p: dialogs.pop(0) and None
+        assert c.open("/x/fig.vectorcraft") == {"warnings": [], "index": 0}
+        assert [r["method"] for r in fv.log].count("ui.dialog.cancel") == 2
+        assert fv.log[0]["params"]["params"]["path"] == "/x/fig.vectorcraft"
+        fv.on["ui.inspect"] = lambda p: {"ui": {"dialog": {"kind": "stuck"}}}
+        fv.on["ui.dialog.cancel"] = lambda p: None
+        try:
+            c.clear_dialogs(tries=3)
+            raise AssertionError("关不掉的对话框没报错")
+        except vc_control.VCError as e:
+            assert "stuck" in str(e), e
+    ok += 1
+
+    # 57) 存盘轮询（V2）：app 先写半截再写全 → save 只在能解析之后返回；老文件（mtime 没变）不算；
+    #     一直不写 → 超时报错。
+    with _FakeVC() as fv, tempfile.TemporaryDirectory() as td:
+        c = vc_control.Client(fv.port, timeout=5)
+        full = vc_file.dumps(_synth_vc_doc()[0])
+        target = os.path.join(td, "fig.vectorcraft")
+        with open(target, "wb") as f:
+            f.write(full)                       # 旧文件已经在：没变就不能当成这次的结果
+        os.utime(target, ns=(1, 1))
+
+        def slow_save(p):
+            _later(0.05, lambda: _write(p["path"], full[:len(full) // 2]))
+            _later(0.40, lambda: _write(p["path"], full))
+            return {"bytes": len(full)}
+        fv.on["document.save"] = slow_save
+        t0 = time.time()
+        top, blobs = c.save(target, timeout=5)
+        assert time.time() - t0 >= 0.35, "半截文件就返回了"
+        assert top["document"]["title"] == "selftest" and len(blobs) == 1
+        fv.on["document.save"] = lambda p: {"bytes": 0}
+        os.utime(target, ns=(1, 1))
+        try:
+            c.save(target, timeout=0.5)
+            raise AssertionError("没写文件却没超时")
+        except vc_control.VCError as e:
+            assert "存盘" in str(e), e
+    ok += 1
+
+    # 58) 导出核对（V2）：pHYs 换算成 dpi；尺寸 = 画板 pt × dpi/72（±1 px）；dpi 或尺寸不对 → 报错；
+    #     画板下标越界 → 报错（不发 export）。
+    with _FakeVC() as fv, tempfile.TemporaryDirectory() as td:
+        c = vc_control.Client(fv.port, timeout=5)
+        fv.on["document.inspect"] = lambda p: {"artboards": [{"name": "Figure", "width": 72.0, "height": 36.0}]}
+        out = os.path.join(td, "fig.png")
+        png = {"w": 300, "h": 150, "dpi": 300}
+
+        def export(p):
+            assert p["artboard"] == 0 and p["ppi"] == 300 and p["format"] == "png", p
+            _later(0.1, lambda: _write(p["path"], _tiny_png(png["w"], png["h"], dpi=png["dpi"])))
+            return {"bytes": 1}
+        fv.on["document.export"] = export
+        w, h, dpi = c.export_png(out, 0, 300, timeout=5)
+        assert (w, h) == (300, 150) and abs(dpi - 300) < 0.01, (w, h, dpi)
+        assert vc_control.png_info(_tiny_png(2, 2))[2] is None, "没有 pHYs 应读成 None"
+        for bad, frag in (({"dpi": 72}, "dpi"), ({"w": 280}, "尺寸")):
+            png.update({"w": 300, "h": 150, "dpi": 300}, **bad)
+            try:
+                c.export_png(out, 0, 300, timeout=5)
+                raise AssertionError("坏导出 %r 没报错" % bad)
+            except vc_control.VCError as e:
+                assert frag in str(e), (bad, e)
+        n_export = [r.get("params", {}).get("command") for r in fv.log].count("document.export")
+        try:
+            c.export_png(out, 3, 300, timeout=5)
+            raise AssertionError("画板越界没报错")
+        except vc_control.VCError:
+            pass
+        assert [r.get("params", {}).get("command") for r in fv.log].count("document.export") == n_export
+    ok += 1
+
+    # 59) 撤销组 / batch / connect（V2）：成功 = begin…end{}；块里出错 = end{cancel:true} 并把原错抛出；
+    #     batch 参数形状；端口没人听但 app 在跑 → 报「存盘并退出」；launch 时带 --control 起进程并等到监听。
+    with _FakeVC() as fv:
+        c = vc_control.Client(fv.port, timeout=5)
+        cmds = lambda: [(r["params"]["command"], r["params"]["params"]) for r in fv.log
+                        if r["method"] == "engine.execute"]
+        with c.undo_group("ep-labeling sync"):
+            c.execute("text.setText", {"id": 1, "text": "A"})
+        assert cmds() == [("edit.undoGroup.begin", {"label": "ep-labeling sync"}),
+                          ("text.setText", {"id": 1, "text": "A"}),
+                          ("edit.undoGroup.end", {})], cmds()
+        fv.log.clear()
+        try:
+            with c.undo_group():
+                raise KeyError("boom")
+        except KeyError:
+            pass
+        else:
+            raise AssertionError("撤销组吞掉了异常")
+        assert cmds()[-1] == ("edit.undoGroup.end", {"cancel": True}), cmds()
+        fv.log.clear()
+        c.batch([("object.move", {"ids": [3], "dx": 1, "dy": 0}), ("edit.clear", {"ids": [4]})], label="L")
+        assert cmds() == [("command.batch", {"label": "L", "commands": [
+            {"command": "object.move", "params": {"ids": [3], "dx": 1, "dy": 0}},
+            {"command": "edit.clear", "params": {"ids": [4]}}]})], cmds()
+        cl, launched = vc_control.connect(fv.port, _running=lambda: True)
+        assert launched is False and cl.port == fv.port, "端口在听却没复用"
+    free = _free_port()
+    try:
+        vc_control.connect(free, _running=lambda: True)
+        raise AssertionError("没带 --control 的实例没报错")
+    except vc_control.VCError as e:
+        assert "存盘并退出" in str(e), e
+    try:
+        vc_control.connect(free, launch=False, _running=lambda: False)
+        raise AssertionError("launch=False 没报错")
+    except vc_control.VCError as e:
+        assert "--control %d" % free in str(e), e
+    started = []
+    with tempfile.TemporaryDirectory() as td:
+        app = os.path.join(td, "VectorCraft.app")
+        os.makedirs(os.path.join(app, "Contents", "MacOS"))
+        _write(vc_control.app_exe(app), b"#!/bin/sh\n")
+
+        def fake_popen(cmd, **kw):
+            started.append(cmd)
+            started.append(_FakeVC(port=free).__enter__())
+        cl, launched = vc_control.connect(free, path="fig.vectorcraft", app=app, wait=5,
+                                          _running=lambda: False, _popen=fake_popen)
+        try:
+            assert launched is True and cl.port == free
+            assert started[0] == [vc_control.app_exe(app), "--control", str(free),
+                                  os.path.abspath("fig.vectorcraft")], started[0]
+        finally:
+            started[1].__exit__(None, None, None)
+    ok += 1
+
     print("selftest %d/%d 通过" % (ok, ok))
     return 0
 
@@ -1574,8 +1743,8 @@ def _parse_ppm_for_test(d):
     return int(toks[1]), int(toks[2]), d[i + 1 :]
 
 
-def _tiny_png(w, h, rgb=(128, 128, 128)):
-    """stdlib 造一张纯色 RGB PNG（selftest 专用，不依赖 magick）。"""
+def _tiny_png(w, h, rgb=(128, 128, 128), dpi=None):
+    """stdlib 造一张纯色 RGB PNG（selftest 专用，不依赖 magick）；给 dpi 就写 pHYs（单位=米）。"""
     import struct
     import zlib
 
@@ -1583,8 +1752,12 @@ def _tiny_png(w, h, rgb=(128, 128, 128)):
         return (struct.pack(">I", len(body)) + tag + body
                 + struct.pack(">I", zlib.crc32(tag + body) & 0xffffffff))
     rows = b"".join(b"\0" + bytes(rgb) * w for _ in range(h))
+    phys = b""
+    if dpi:
+        ppm = int(round(dpi / 0.0254))
+        phys = chunk(b"pHYs", struct.pack(">IIB", ppm, ppm, 1))
     return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+            + phys + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
 
 
 def _synth_vc_doc():
@@ -1623,3 +1796,83 @@ def _key_paths(o, pre=""):
         for v in o:
             out |= _key_paths(v, pre + "*.")
     return out
+
+
+class _FakeVC:
+    """selftest 用的假 VectorCraft 控制口：每连接一行请求一行回包（与真 app 同）。
+
+    on[method 或 engine.execute 的 command] = fn(params) → result（或 _FakeVC.Err(msg)）；
+    没登记的一律回 ok/None。log 记下每个请求；split=True 时回包拆两段发；raw 非空时原样回它。
+    """
+    class Err:
+        def __init__(self, msg):
+            self.msg = msg
+
+    def __init__(self, port=0):
+        import socketserver
+        import threading
+        fake = self
+        self.on, self.log, self.split, self.raw = {}, [], False, None
+
+        class H(socketserver.StreamRequestHandler):
+            def handle(self):
+                line = self.rfile.readline()
+                if not line:
+                    return
+                req = json.loads(line)
+                fake.log.append(req)
+                if fake.raw is not None:
+                    self.wfile.write(fake.raw)
+                    return
+                key = req["method"]
+                params = req.get("params") or {}
+                if key == "engine.execute":
+                    key, params = params["command"], params.get("params") or {}
+                fn = fake.on.get(key)
+                res = fn(params) if fn else None
+                if isinstance(res, _FakeVC.Err):
+                    out = {"id": req["id"], "ok": False, "error": res.msg}
+                else:
+                    out = {"id": req["id"], "ok": True, "result": res}
+                data = (json.dumps(out) + "\n").encode()
+                if fake.split:
+                    self.wfile.write(data[:len(data) // 2])
+                    self.wfile.flush()
+                    time.sleep(0.05)
+                    self.wfile.write(data[len(data) // 2:])
+                else:
+                    self.wfile.write(data)
+
+        socketserver.ThreadingTCPServer.allow_reuse_address = True
+        self.srv = socketserver.ThreadingTCPServer(("127.0.0.1", port), H)
+        self.srv.daemon_threads = True
+        self.port = self.srv.server_address[1]
+        self.th = threading.Thread(target=self.srv.serve_forever, daemon=True)
+
+    def __enter__(self):
+        self.th.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.srv.shutdown()
+        self.srv.server_close()
+        return False
+
+
+def _free_port():
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _later(delay, fn):
+    import threading
+    t = threading.Timer(delay, fn)
+    t.daemon = True
+    t.start()
+
+
+def _write(path, data):
+    with open(path, "wb") as f:
+        f.write(data)

@@ -17,7 +17,7 @@
     text_layout  字体与写字               config       配置读取        debug_overlay 覆盖图
     scene        版式数据（cm/pt）        scene_png    scene → PNG（唯一的画字路径）
     scene_svg    scene → SVG             env_check    doctor          selftest     自检
-    vc_file      .vectorcraft 读写
+    vc_file      .vectorcraft 读写         vc_control   VectorCraft 控制口
 本文件不带任何数据路径：预设与胶体尺寸由调用方用 --markers / --gel-size 显式给出。
 
 坐标约定

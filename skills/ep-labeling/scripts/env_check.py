@@ -6,6 +6,7 @@ import sys
 
 from magick_io import MAGICK, _run
 from text_layout import pick_font
+import vc_control
 
 
 def cmd_doctor(args):
@@ -28,6 +29,22 @@ def cmd_doctor(args):
     print("字体   : %s" % (f or "没找到 —— 用 --font 指一个 .ttf/.ttc"))
     if not f:
         bad += 1
+    ver = vc_control.app_version()
+    if not ver:
+        print("VectorCraft: 缺 —— %s 不存在；fig.png 由 VectorCraft 导出，必须装 0.14.x" % vc_control.APP)
+        bad += 1
+    else:
+        print("VectorCraft: %s（%s）" % (vc_control.APP, ver))
+        if not vc_control.version_ok(ver):
+            print("         !! 本 skill 按 VectorCraft %sx 实测（references/vectorcraft.md），"
+                  "其它版本先按其 §6 复核" % vc_control.SUPPORTED)
+        port = vc_control.DEFAULT_PORT
+        if vc_control.listening(port):
+            print("         控制口 %d：在听" % port)
+        elif vc_control.app_running():
+            print("         控制口 %d：没人听，但 VectorCraft 在跑（没带 --control）—— render/sync 前请存盘退出" % port)
+        else:
+            print("         控制口 %d：没人听（render 会自己带 --control 启动）" % port)
     skill = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     for rel in ("data/markers.json", "data/gel_size.json"):
         p = os.path.join(skill, rel)
