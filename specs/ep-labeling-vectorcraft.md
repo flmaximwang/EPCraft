@@ -132,15 +132,15 @@ Measured in V0; full details in `references/vectorcraft.md`. The writer emits th
 
 The same code runs in `render` (on detected geometry) and in `sync` (on the user's geometry):
 
-1. **Profile per lane:** for every row y between `top` and `bottom`, the mean grey over x ∈ [L, R] of the embedded gel image (the image used for the figure, not the photo). Also an `ink = bg − gray` curve, where `bg` is a running baseline (rolling-ball or wide-median, documented in the reference). Store both raw.
-2. **Bands per lane:** peaks of `ink`, with prominence relative to the lane's own noise (MAD). There is no absolute ink floor like `min_loose_ink=6`, so faint lanes still get their peaks. Every peak is reported with its prominence; the curve is the user's check.
+1. **Profile per lane:** for every row y between `top` and `bottom`, the mean grey over x ∈ [L, R] of the embedded gel image (the image used for the figure, not the photo). Also an `ink = baseline − gray` curve, where `baseline` is the stage-3 top-hat (a sliding mean, half-window 0.30 cm, expressed in cm so it doesn't depend on resolution). Store `gray`, `baseline` and `ink` raw. V4 tried a morphological closing instead and rejected it: it turned smooth texture into a sawtooth and called bands on flat lanes.
+2. **Bands per lane:** local maxima of the lightly smoothed `ink`. **Local prominence** is the height above the higher of the two flanking minima within 0.15 cm; height above zero would lose a faint band sitting in a strong neighbour's negative lobe. A band is called when that prominence is ≥ 4 × the lane's **background** noise (MAD of the smoothed ink, iteratively excluding band rows and lobes). There is no absolute ink floor like `min_loose_ink=6`, so faint lanes still get their peaks. Each band reports prominence, SNR and width; the curve is the user's check. On IMG_1496 this calls 11/11 marker bands, finds the faint 3–4-grey-level sample bands, and calls nothing on empty lanes.
 3. **Calibration:** log-linear (as today) on the `band <MW>` lines' y; report R².
 4. **MW per band**, with extrapolated bands flagged as today.
 
 `fig.mw.json` (v2):
 
 ```json
-{"version": 2, "units": {"y": "cm from window top", "gray": "0-255"},
+{"version": 2, "units": {"x": "cm from gel-face left", "y": "cm from gel-face top", "gray": "0-255 (lower = darker)", "ink": "baseline - gray"},
  "window": {"top_cm": 0.0, "bottom_cm": 5.9},
  "calibration": {"method": "logfit", "marker_lane": 1, "points": [[0.42, 250], ...], "r2": 0.99},
  "lanes": [{"lane": 1, "label": "M", "trimmed": false, "left_cm": 0.31, "right_cm": 0.74,

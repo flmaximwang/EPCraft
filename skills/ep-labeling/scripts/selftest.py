@@ -37,6 +37,8 @@ from text_layout import annotate_cmd, pick_font, text_extent
 import vc_file
 import vc_control
 import workbench
+import profiles
+from mw_report import format_report_v2, write_v2
 
 
 def test_import_direction():
@@ -1495,6 +1497,113 @@ def selftest():
     assert workbench.lane_names_after(fake, prev, nm) == ["M", "A", None, "B", "C", "D"]
     ok += 1
 
+    # 65) 剖面像素口径（V4）：只取「中心落在 [L, R] / [top, bottom] 里」的像素做平均；
+    #     窄到一列都不含时取最近一列；y 是行中心的胶面 cm。
+    W_, H_, ppc_ = 10, 6, 2.0                                   # 5 × 3 cm，2 px/cm
+    g = bytearray(W_ * H_)
+    for y in range(H_):
+        for x in range(W_):
+            g[y * W_ + x] = 10 * x + y
+    ys_, gs_ = profiles.lane_profile(g, W_, H_, ppc_, 1.0, 2.0, 0.5, 2.5)
+    assert ys_ == [0.75, 1.25, 1.75, 2.25], ys_                 # 行 1..4（中心 0.75..2.25 cm）
+    assert gs_ == [(20 + 30) / 2.0 + y for y in (1, 2, 3, 4)], gs_    # 列 2、3（中心 1.25、1.75）
+    ys_, gs_ = profiles.lane_profile(g, W_, H_, ppc_, 1.30, 1.40, 0.0, 3.0)   # 窄于一列 → 列 2
+    assert gs_ == [20.0 + y for y in range(H_)], gs_
+    ok += 1
+
+    # 66) 条带判定（V4）：门槛按本道背景噪声，不设绝对墨量下限 ——
+    #     背景纹理（染色不匀的低频起伏 + 逐行噪声，噪声量级同 IMG_1496 的 0.4–0.7）上一条
+    #     只深 3 级的淡带要叫出来，空道一条都不叫，剖面下端的渐变（胶底）不当带；位置误差 < 1 行。
+    import math
+    ppc_ = 100.0
+    n_ = 600
+    rnd = _lcg(7)
+    tex = [0.6 * math.sin(2 * math.pi * i / 23.0) + 0.4 * math.sin(2 * math.pi * i / 57.0 + 1)
+           + 0.5 * (2 * next(rnd) - 1) for i in range(n_)]
+    flat = [200.0 + t for t in tex]
+    faint = [v - 3.0 * _gauss(i, 250, 3.0) - 40.0 * _gauss(i, 400, 3.0) for i, v in enumerate(flat)]
+    ramp = [v - max(0, i - 560) * 1.5 for i, v in enumerate(flat)]
+    ys_ = [(i + 0.5) / ppc_ for i in range(n_)]
+    def calls(gs):
+        _b, _ink, sm = profiles.ink_trace(gs, ppc_)
+        return profiles.call_bands(ys_, sm, ppc_)[0]
+    got = calls(faint)
+    assert [int(round(b["y_cm"] * ppc_ - 0.5)) for b in got] == [250, 400], got    # 行号（行中心 = (i+0.5)/ppc）
+    assert got[0]["snr"] >= profiles.K_NOISE and got[1]["prominence"] > 10 * got[0]["prominence"], got
+    assert calls(flat) == [], calls(flat)
+    assert calls(ramp) == [], calls(ramp)
+    ok += 1
+
+    # 67) 密集泳道（V4）：照 IMG_1496 的梯子（11 条带的实测位置与显著度 7–87）造一条剖面 →
+    #     11 条全叫出来、不多叫（两条浓带之间 top-hat 鼓起的假峰不算）。两处修正护着它：
+    #     噪声迭代剔除条带行与负瓣后量背景（一次性 MAD 时 IMG_1496 只叫出 8/11，见下面的反证）；
+    #     显著度取「比两侧低点高多少」（250 kD 泡在 150 kD 的负瓣里，绝对高度为负）。
+    ladder = [(1.054, 7.0), (1.215, 35.0), (1.367, 49.0), (1.672, 78.0), (1.951, 31.0), (2.222, 62.0),
+              (2.391, 87.0), (2.848, 74.0), (2.975, 72.0), (3.449, 45.0), (4.084, 41.0)]
+    dense = [200.0 + t for t in tex]
+    for y, depth in ladder:
+        c = y * ppc_ - 0.5
+        dense = [v - depth * 1.2 * _gauss(i, c, 3.0) for i, v in enumerate(dense)]
+    got = calls(dense)
+    assert len(got) == len(ladder) and all(abs(b["y_cm"] - y) <= 0.015 for b, (y, _d) in zip(got, ladder)), \
+        [b["y_cm"] for b in got]
+    _b, _ink, sm = profiles.ink_trace(dense, ppc_)
+    srt = sorted(sm)
+    one_shot = 1.4826 * sorted(abs(v - srt[len(srt) // 2]) for v in sm)[len(sm) // 2]
+    weak = [b for b in got if b["prominence"] < profiles.K_NOISE * one_shot]
+    assert weak, "反证失效：一次性 MAD 也能叫全，这条测试就护不住迭代"
+    ok += 1
+
+    # 68) 报告 v2 端到端（V4）：magick 造一张 4 条 marker 带 + 一条淡样品带的胶面 →
+    #     gray 与独立求平均一致；标定点 = band 线；样品带 MW 落在两条 marker 之间且符合内插；
+    #     删一条 band 线改变拟合；v2 键齐全、坐标是 cm、没有照片/像素口径的禁键。
+    with tempfile.TemporaryDirectory() as td:
+        gpath = os.path.join(td, "gel.png")
+        rows_cm = [1.0, 2.0, 3.0, 4.0]
+        mws = [100.0, 50.0, 25.0, 12.5]
+        draw = []
+        for y in rows_cm:
+            draw += ["-fill", "gray(60)", "-draw", "rectangle 40,%d 80,%d" % (y * 100 - 3, y * 100 + 2)]
+        draw += ["-fill", "gray(196)", "-draw", "rectangle 140,%d 180,%d" % (250 - 3, 250 + 2)]
+        _run([MAGICK, "-size", "860x625", "xc:gray(200)"] + draw + ["-depth", "8", gpath])
+        png_b = open(gpath, "rb").read()
+        mdl5 = {"gel": {"width_cm": 8.6, "height_cm": 6.25},
+                "window": {"top_cm": 0.0, "bottom_cm": 6.0},
+                "lanes": [{"left_cm": 0.35, "right_cm": 0.85, "trimmed": False},
+                          {"left_cm": 1.35, "right_cm": 1.85, "trimmed": False},
+                          {"left_cm": 2.35, "right_cm": 2.85, "trimmed": True}],
+                "bands": [{"mw": m, "y_cm": y} for m, y in zip(mws, rows_cm)],
+                "marker_lane": 1, "meta": {}}
+        rep = profiles.analyze(mdl5, png_b, ["M", "S1", None])
+        w5, h5, g5 = profiles.gel_gray(png_b)
+        ln1 = rep["lanes"][1]
+        k = 250
+        indep = sum(g5[k * w5 + x] for x in range(135, 185)) / 50.0      # 列中心 1.355..1.845 cm
+        assert abs(ln1["profile"]["gray"][k] - indep) < 1e-6, (ln1["profile"]["gray"][k], indep)
+        assert len(ln1["profile"]["y_cm"]) == 600 and ln1["profile"]["y_cm"][0] == 0.005
+        assert rep["calibration"]["points"] == [[y, m] for y, m in zip(rows_cm, mws)], rep["calibration"]
+        assert rep["calibration"]["r2"] == 1.0 and rep["calibration"]["marker_lane"] == 1
+        sb = ln1["bands"]
+        assert len(sb) == 1 and abs(sb[0]["y_cm"] - 2.5) < 0.02, sb
+        assert abs(sb[0]["mw_kda"] - 50.0 / 2 ** 0.5) < 1.0 and not sb[0]["extrapolated"], sb
+        assert sb[0]["strongest"] is True
+        assert [round(b["y_cm"], 1) for b in rep["lanes"][0]["bands"]] == rows_cm
+        assert rep["lanes"][2]["trimmed"] is True and rep["lanes"][2]["bands"] == []
+        assert rep["notes"] == ["泳道 3 还没有名字"], rep["notes"]
+        bad_keys = {k for k in _walk_keys(rep) if re.search(r"rect|bbox|angle|scale|_px$", k)}
+        assert not bad_keys, bad_keys
+        mdl5b = json.loads(json.dumps(mdl5))
+        mdl5b["bands"][1]["y_cm"] = 2.2                                # 拖动一条 band 线
+        rep_b = profiles.analyze(mdl5b, png_b, ["M", "S1", None])
+        assert rep_b["calibration"]["r2"] < 1.0 and rep_b["lanes"][1]["bands"][0]["mw_kda"] != sb[0]["mw_kda"]
+        out = os.path.join(td, "fig.mw.json")
+        write_v2(rep, out)
+        assert json.load(open(out, encoding="utf-8")) == json.loads(json.dumps(rep))
+        table = format_report_v2(rep)
+        assert "R²=1.0000" in table and "S1" in table and "%.1f kDa" % sb[0]["mw_kda"] in table, table
+        assert "外推" not in table, table          # marker 泳道两端的外推带不在表里，不该带脚注
+    ok += 1
+
     print("selftest %d/%d 通过" % (ok, ok))
     return 0
 
@@ -2055,3 +2164,16 @@ def _assert_model_close(a, b, tol=1e-3):
             and abs(x["right_cm"] - y["right_cm"]) < tol, (x, y)
     assert [x["mw"] for x in a["bands"]] == [y["mw"] for y in b["bands"]]
     assert all(abs(x["y_cm"] - y["y_cm"]) < tol for x, y in zip(a["bands"], b["bands"]))
+
+
+def _lcg(seed):
+    """确定性伪随机 [0, 1)（selftest 不用 random，结果不随 Python 版本变）。"""
+    x = seed
+    while True:
+        x = (1103515245 * x + 12345) % (1 << 31)
+        yield x / float(1 << 31)
+
+
+def _gauss(i, c, sd):
+    import math
+    return math.exp(-0.5 * ((i - c) / sd) ** 2)

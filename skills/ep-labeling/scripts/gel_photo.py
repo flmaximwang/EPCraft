@@ -19,6 +19,7 @@
     scene_svg    scene → SVG             env_check    doctor          selftest     自检
     vc_file      .vectorcraft 读写         vc_control   VectorCraft 控制口
     workbench    Workbench 模型（建、画、读回、校验、泳道名匹配）
+    profiles     泳道剖面、条带、标定、MW 报告 v2
 本文件不带任何数据路径：预设与胶体尺寸由调用方用 --markers / --gel-size 显式给出。
 
 坐标约定

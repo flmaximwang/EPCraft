@@ -200,3 +200,31 @@ def format_report(rep):
         lines.append("  * = 超出 marker 范围的外推值，仅供参考")
     lines += ["  注：" + n for n in rep["notes"]]
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- 报告 v2（spec §7，由 profiles.analyze 生成）
+
+def format_report_v2(rep):
+    """v2 报告的终端表：标定一行；每条有名字、非 marker、未裁掉的泳道一行（[主] = 显著度最大）。"""
+    c = rep["calibration"]
+    lines = ["[MW] 方法 %s；marker 泳道 %d，%d 点，R²=%.4f" % (c["method"], c["marker_lane"], len(c["points"]), c["r2"])]
+    shown = [ln for ln in rep["lanes"]
+             if not (ln["marker"] or ln["trimmed"] or not (ln["label"] or "").strip())]
+    for ln in shown:
+        parts = []
+        for b in ln["bands"]:
+            mw = "超出 marker 范围" if b["mw_kda"] is None else "%.1f kDa%s" % (b["mw_kda"], "*" if b["extrapolated"] else "")
+            parts.append("%s%s (SNR %.0f)" % ("[主] " if b["strongest"] else "", mw, b["snr"]))
+        lines.append("  泳道 %2d %-8s %s" % (ln["lane"], ln["label"], " | ".join(parts) or "（无条带）"))
+    if any(b["extrapolated"] for ln in shown for b in ln["bands"]):        # 只为表里出现的带加注
+        lines.append("  * = 超出 marker 范围的外推值，仅供参考")
+    lines += ["  注：" + n for n in rep["notes"]]
+    return "\n".join(lines)
+
+
+def write_v2(rep, path):
+    """写 v2 报告：UTF-8、不转义中文、紧凑（剖面数组很长），末尾换行。"""
+    import json
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(rep, f, ensure_ascii=False, separators=(",", ":"))
+        f.write("\n")

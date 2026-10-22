@@ -58,7 +58,16 @@ V0 ─┬─ V1 ── V3 ─┬─ V4 ─┬─ V5 ── V6 ── V7 ── V
   - Label matching on lane add/delete (nearest previous centre, spec §4.4).
 - Done when: `selftest` covers pairing by x order, odd/overlapping lines, missing window, band names, the marker lane found from the bands, and matching after an insert or delete.
 
-## V4 — Analysis from the Workbench + `fig.mw.json` v2
+## V4 — Analysis from the Workbench + `fig.mw.json` v2 — DONE 2026-10-22
+- Close-out: `scripts/profiles.py` (`gel_gray`, `lane_profile`, `ink_trace`, `noise_of`, `call_bands`, `analyze`), and `mw_report.format_report_v2` / `write_v2`. The report is in gel-face cm and carries the raw `gray`/`baseline`/`ink` per lane (about 300 KB for 15 lanes). selftest 65–68 cover pixel arithmetic, faint/flat/ramp lanes, a dense ladder built from IMG_1496's measured bands (with the counter-check that a one-shot MAD fails), and v2 end to end against an independent mean.
+- Two corrections to the stage-3 recipe, both measured on IMG_1496:
+  1. **Noise is the background MAD with band rows clipped.** Differencing sat on the floor and called texture; a one-shot MAD called only 8 of 11 ladder bands.
+  2. **Prominence is local.** A faint band in a strong neighbour's negative lobe has a negative absolute height.
+- A morphological closing baseline was tried and rejected: it called bands on flat lanes.
+- **Five DGC photos:**
+  - Calibration R² is 0.949–0.964, and every marker lane calls all its bands. Faint sample bands are found (e.g. 1496 lanes 5, 6, 13, 14 at SNR 5–11), and most empty lanes call nothing.
+  - **For V6:** the seeded `band <MW>` lines sit **0.13–0.50 mm below** the profile peaks on all five photos, always in the same direction (the old stage-3 rows). V6 should snap seeded band lines to the marker lane's called peaks (nearest, within 0.1 cm) before writing the document.
+  - **For V8, ask the user:** lanes labelled "1" (next to the marker) show full 11-band ladders in 1497–1500. Lanes labelled empty also show 11-band patterns: 1499 lanes 2–4, 1500 lanes 2–3. Either the layouts given are off, or the grid is shifted; the user needs to look.
 - Depends on V3 (model only).
 - `profile.py`: per-lane mean grey over [L, R] × [top, bottom] on the embedded gel image; baseline → `ink`; peaks with MAD-relative prominence (no absolute ink floor); log-linear calibration from `band <MW>` lines; MW per band.
 - `mw_report.py` writes v2 (spec §7) and keeps the terminal table.
