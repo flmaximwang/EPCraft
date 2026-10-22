@@ -1,466 +1,356 @@
-# 照片标注：字段表、探测机制、命令
+# 照片标注：配置、文档结构、分析、sync
+
+权威设计在 `specs/ep-labeling-vectorcraft.md`；VectorCraft 文件格式与控制口命令（实测）在 `references/vectorcraft.md`。
+本文写的是**现在代码实际怎么做**，数字来自 `tickets/ep-labeling-vectorcraft.md` 各张票的收尾记录。
 
 ## 1. 两个 JSON —— 字段表
 
-这是 markers.json / lanes.json 的权威字段表；`templates/` 里有定稿的整套示例。
+`templates/` 里有整套示例。下面没列的键（`size` / `color` / `gap` / `font` / `align`、`y_px` / `snap` / `y_frac` /
+`x_frac` / `marker_lane_x` / `lane_width` / `lane_edge`）**已不再读取**：字号、字体、颜色在 VectorCraft 里改；
+条带与泳道位置在 Workbench 上拖线改（§5、§9）。
 
-### markers.json
+### markers.json（或 `data/markers.json` 预设库 + `--preset`）
 
-| 键 | 含义 | 默认 |
-|---|---|---|
-| `size` | 字号（**成品像素 px**；工程路那边是画布 pt） | 16 |
-| `color` | 默认颜色 | `#000000` |
-| `gap` | 文字与**泳道带边缘**的水平间距 (px) | 4 |
-| `marker_lane` | marker 是左起第几条**探到的**泳道（1 起）；`0` = 第 1 条左边一条泳道带处；**不给就自动选条带最多的那条** | 自动 |
-| `marker_lane_x` | 直接给 marker 泳道的位置（<1 当占胶面宽度的比例，≥1 当输出像素） | 无 |
-| `lane_width` | 泳道带宽手给值（同上单位规则）；不给就按相邻泳道中心距的中位数（`lane_pitch`） | 自动 |
-| `lane_edge` | `inner` = 用泳道中心当边缘（不偏半个带宽） | 无 |
-| `font` | 只有写**文件路径**（`.ttf/.ttc/.otf`）才生效；工程路的字体名（如 `Source Sans 3`）会被忽略并回退 Arial | Arial |
-| `labels` | **从上到下**，每条带一项：字符串或 `{"text","size","color","font"}`（后三个可省） | — |
-| `y_px` | **照片路额外字段（手动标定的主力）**：每条带的 y，**分析尺度**（= `probe --debug` 图上 y 标尺的数），从上到下与 `labels` 一一对应 | 无 |
-| `snap` | `true` = 把 `y_px` 吸附到自动探到的最近条带行（容差 0.25×行距）。**默认 false**：自动行在密集条带上有 ~0.7 mm 系统性偏上，吸附会把你在图上读的准值拉偏 | false |
-| `rows` | **照片路额外字段**：这条标签盖几条带（默认 1）。分子量太近、并着跑的一对（21/20 kD）写成 `"rows": 2` → 配对时吃掉 2 条带、标签落在两者中间 | 1 |
-| `y_frac` | **照片路额外字段**：每条带的显式位置，0=胶面顶边、1=胶面底边 | 无 |
+| 键 | 含义 |
+|---|---|
+| `labels` | **从上到下**，每项一条标签：字符串，或 `{"text", "rows", "color"}`。`text` 里必须有分子量数字（`250 kD`、`21/20 kD`），它变成 Workbench 上的 `band <MW>` 线名。`rows: 2` = 这条标签盖两条带（两条 band 线、一个标签，见 special-cases §1）。`color` = 这条 marker 标签在 Figure 上的初始颜色（之后归用户） |
+| `marker_lane` | 可选：梯子所在泳道（1 起）。追加到 `lanes.json` `marker_lanes` 候选的**末尾** |
+| `_preset` / `_source` / `_说明` | 预设库里用来挑预设（`--preset` 的关键词在 `_preset` 里匹配，须恰好命中 1 个）与留出处 |
+
+条带数之和（`rows` 求和）必须等于梯子泳道上叫出来的峰数，否则 render 拒绝并列出叫出来的 y（不硬配）。
 
 ### lanes.json
 
-| 键 | 含义 | 默认 |
-|---|---|---|
-| `size` / `color` | 同上（px） | 16 / `#000000` |
-| `gap` | 文字**底边**离胶面顶边的距离 (px) | 0 |
-| `align` | `center` / `left` / `right`，相对该泳道中心 | `center` |
-| `labels` | **从左到右**，每条泳道一项（字符串或对象）；`text` 留 `""` 就不写，也视为**空白泳道**（分子量报告跳过） | — |
-| `marker_lanes` | 同一管 marker 所在泳道（1 起，如 `[1,2,8]`）：参与分子量标定、不当样品报告。不给就只有 `markers.json` 里 `marker_lane` 指的那一条算 marker | 无 |
-| `x_frac` | **照片路额外字段**：每条泳道的显式中心，0=胶面左、1=胶面右 | 无 |
+| 键 | 含义 |
+|---|---|
+| `labels` | **从左到右**，每条泳道一个**字符串**（名字成为 Figure 上 `label lane n` 的初始文字）。`""` = 空白泳道：不画标签、MW 终端表不列。没列到的泳道（`labels` 比泳道少）也当 `""` |
+| `marker_lanes` | **候选梯子泳道**（1 起，按优先顺序，如 `[1, 2, 3]`）。render 依次试：第一条叫出的峰数对不上标签（例如胶边损坏）就换下一条，直到配上。**标定只用配上的那一条**（不是多管加权）；之后 marker 泳道由 band 线落在哪条泳道里决定（§5） |
 
-**分子量标签列摆在胶面之外**：定左/右（泳道区中线），但整列一定落在白底留白里
-—— 按泳道带边算出来的锚点若还在胶面内，就推到胶面之外（`gap` 从胶边起算）。所以 marker 泳道在胶中间时
-（比如梯子在第 8 条），标签也会挪到胶外那一侧；想让标签紧挨梯子，就选**最外侧**那管 marker 泳道
-（本胶左数第 1、2 条与中间第 8 条是同一管 marker，选第 2 条标签就落在左边距、与左侧梯子的带一一对齐）。
+## 2. 胶体预设与成品尺寸
 
-对齐与左右判断的其余规则跟工程路一字不差：marker 泳道中心在**泳道区中线**左边 ⇒ 右对齐、
-右边缘贴泳道带左边，右边则翻成左对齐；中线取 `(min+max)/2` 的泳道中心，不取整图中线。
-
-**竖直对齐口径，别再自己凑系数**（marker 用 `("center_y", y)`
-= 文字框竖向中心落在条带行上；泳道名用 `("bottom_y", y)` = 文字框底边落在胶顶之上 `gap`）：
-
-| | 口径 | 本 skill（ImageMagick） |
-|---|---|---|
-| 参照物 | 文字对象的 bounding box | `label:` 量的文字框（同一套字体度量） |
-| marker | 框**中心** = 条带行 | `y = 条带行 − 框高/2` |
-| 泳道名 | 框**底边** = 胶顶 − `gap` | `y = 胶顶 − gap − 框高` |
-
-关键：`magick -annotate +x+y` 的 **y 是文字框的顶边**（实测：pointsize 30、`+60+100`
-时墨迹落在 106–127，框顶边正是 100），既不是基线也不是中心。早期代码拿 `0.21*字号`
-/ `0.35*字号` 近似基线与半高，结果 marker 字整体沉到条带下方近一个字高、泳道名压进胶里。
-
-## 1b. 成品尺寸怎么定（实际尺寸）
-
-`data/gel_size.json` 是胶体预设，**必给**，而且**没有默认预设**：脚本不内置路径，也不替你选一块胶。没有 `--gel-size` 时
-`probe` / `render` 一律以 `gel preset required (--gel-size FILE)` 退出 —— 旧世界「探测框就是胶面」的前提已经作废，
-灯箱光晕、上样孔都会把裁切和定标一起带偏；预设是唯一能把「这图该多大」说死的输入。
+`data/gel_size.json` **必给**、**没有默认**。没有 `--gel-size` 时 `probe` / `render` 一律以
+`gel preset required (--gel-size FILE)` 退出。
 
 | 键 | 必给 | 作用 |
 |---|---|---|
-| `name` | ✓ | 预设名。日志里会打出来，也是「这块胶用哪套数」的凭据 |
-| `width_cm` | ✓ | **定标**：成品里胶面横跨 `width_cm/2.54 × dpi` 个像素。照片裁过、只含部分泳道时改由 `lane_pitch_cm` 定标（见下） |
-| `height_cm` | ✓ | **定形**：胶面高度 = `(height_cm − trim_top_cm − trim_bottom_cm)` 按 `px_per_cm` 折算，按 `anchor` 贴到探测框的某条边上。口径是**胶板高 = 孔底到下缘**，不含上样孔之间立着的那排齿（`mini-gel` = 6.25）。图按预设裁，探测框的高度只用来核对（偏差 >5% 警告） |
-| `lane_count` | ✓ | **整块胶**的泳道数。stage 2 恒输出这么多条（淡道、空道也不丢，只标 `estimated`）；裁过的照片用 `--gel-lanes N` 改成画面里可见的条数 |
-| `lane_pitch_cm` | ✓ | 相邻泳道中心的**物理**间距（cm）。stage 2 的格点用它落位；定标也拿它交叉核验（`mini-gel` 预设 0.565 = 15 条铺满 8.6 cm 宽实测） |
-| `trim_top_cm` / `trim_bottom_cm` | | 成品里从胶面**上/下缘再裁掉**的物理长度（cm），默认 0。探测框上缘已经是孔底，孔和齿不在胶面里，一般不用再裁。命令行 `--trim-top-cm` / `--trim-bottom-cm` 可覆盖 |
-| `anchor` | | `bottom`（默认）/ `top` / `center`：预设高度贴探测框的哪条边。默认 `bottom` —— 下缘最直、最干净 |
-| `_source` / `_说明` | | 这组数字的来历；日志里会打出来，改预设时先读它 |
+| `name` | ✓ | 预设名，日志与 `ep-meta` 里都记 |
+| `width_cm` | ✓ | **定标**：胶面在每块画板上都是 `width_cm` 宽（pt = cm × 72/2.54），`fig.png` 里横跨 `width_cm/2.54 × dpi` 像素 |
+| `height_cm` | ✓ | **定形**：胶面高 = `height_cm − trim_top_cm − trim_bottom_cm`，按 `anchor` 贴探测框。口径 = **孔底到胶下缘**（不含孔间的齿；`mini-gel` = 6.25） |
+| `lane_count` | ✓ | **整块胶**的泳道数 = 种子梳子的齿数（裁过的照片用 `--gel-lanes N` 改） |
+| `lane_pitch_cm` | ✓ | 孔距**先验**：well_grid 在它 ±20% 里搜间距；render 拿实测孔距与它核对（差 >10% 打 `[!] scale`）。`mini-gel` = **0.52**（2026-10-22 由 0.565 改来，见 special-cases §4） |
+| `trim_top_cm` / `trim_bottom_cm` | | 从胶面上/下缘再裁掉的长度，默认 0；命令行 `--trim-top-cm` / `--trim-bottom-cm` 覆盖。别裁到孔（§6） |
+| `anchor` | | `bottom`（默认）/ `top` / `center` |
+| `_source` / `_说明` | | 这组数的来历 |
 
-**不变式**：加载时校验 `lane_count × lane_pitch_cm ≈ width_cm`（容差 10%），不成立直接报错、不出图。
-泳道数、间距、宽度是同一块胶的三个说法，对不上就是预设抄错了 —— 与其出一张看着正常、尺寸却整块偏大或偏小的图，不如当场停。
+**不变式**：加载时校验 `lane_count × lane_pitch_cm ≈ width_cm`（容差 10%），不成立直接报错。
+`mini-gel`：15 × 0.52 = 7.8 cm vs 8.6 cm（差 9.3%，在容差内 —— 15 个孔只占约 7.8 cm，两侧各有 0.4–0.6 cm 没有孔）。
 
-`--gel-cm WxH`：只覆盖**已加载预设**里的 `width_cm` / `height_cm`。它不能单独用（没有 `--gel-size` 时脚本先报
-`gel preset required`），也不再是「没有预设时的兜底」。什么时候用：预设宽度差一点、想按实测宽高出这一版，
-但泳道数/间距仍要预设的那套。
+`--gel-cm WxH` 只覆盖**已加载预设**里的宽高，不能单独用。
 
-## 照片是裁过的（只含部分泳道）→ `--gel-lanes N`
+**照片裁过（只含 N 条泳道）→ `--gel-lanes N`**：定标改用 `N × lane_pitch_cm`，梳子也只有 N 齿。
+不声明就会拿裁后的画面当整块 8.6 cm 胶，尺寸整体错。
 
-用户说「这张不是 15 条泳道，是裁过的」时，**别再用 `width_cm = 8.6` 定标** —— 那个前提是「画面里就是整块胶」。
+**字号是 pt，与 dpi 无关**：Figure 上的文字按名义字号创建（默认 Arial 8 pt），`--dpi` 只改 `fig.png` 的像素数，
+不改物理尺寸。用户在 VectorCraft 里改字号就是改 pt。
 
-- `N` = **画面里看得见的泳道数**。stage 1 用 `N × lane_pitch_cm` 得到可见宽度并据此定标，stage 2 也就输出 N 条。
-- 不声明时：预设说 15 条、画面里只有 8 条，定标仍按整块 8.6 cm 算 —— 条带物理尺寸整体偏大、格点也会对不上，
-  `probe` 的 `[!]` 会把两个数一起打出来。
-- 日志会打 `[i] 按泳道定标：8 条 × 0.565 cm = 胶面宽 4.52 cm（裁过的照片；整块预设 8.60 cm 不适用）`。
-- `--gel-lanes` 和 `--keep-lanes` 是两件事：前者说「画面里有几条」（改定标），后者说「这批要留几条」（只裁剪出图，见 §6b）。
+## 3. stage 1：胶面（老管线里唯一还在用的一级）
 
-```shell
-gel_photo.py render crop.jpg --lanes 8lane.json --gel-size data/gel_size.json --gel-lanes 8 --dpi 96
+认胶：
+
+- `dark`（默认）：拟合灯箱背景。取样取四边 8%–14% 的**环带**（跳过最外圈相框），两轮最小二乘拟一个平面，
+  再判 `像素 < 平面 − max(6, 平面//20)`（`--ink-thr` 改阈值）。中性/银染的胶也成立。
+- `chroma`：判 `B−R > 22`。蓝光灯箱下整块屏幕都蓝，所以是备选（`--cue chroma|union`）。
+- 掩膜去毛刺，取最大且**不贴画面边**的连通域；裁过的照片找不到时退回「允许贴边取最大块」并打 `[i] 胶面贴着画面边`。
+- 倾角 = 左右竖边在中段 20%–80% 行上的最小二乘拟合（`--angle` 强制、`--no-rotate` 不转）。
+
+按预设定形（`gel_area.py`）：
+
+1. 探测框与倾角（`--rect x0,y0,x1,y1` 跳过自动找胶，原图像素）。框上缘 = 第一条覆盖率 ≥90% 的行 = 孔底；
+   左/右/下缘按 50% 覆盖率。
+2. 定标：`px_per_cm = 探测宽度 / width_cm`（裁过的照片：`/ (N × lane_pitch_cm)`）。
+3. 定形：高按预设，贴 `anchor` 那条边。
+4. 核对：预设高 vs 探测框推出的高，差 >5% 打 `[!] height`（只警告、不改图）。
+
+产物是一张**胶面图**（PNG，`--dpi`，宽 = `width_cm`），用 magick 旋转、裁切、缩放（`+profile "*"`，不用 `-strip`）。
+它以内嵌方式进 `fig.vectorcraft`，之后的泳道、条带、剖面全部只读这张图，不再读照片。
+
+## 4. 文档结构（`fig.vectorcraft`）
+
+单位 pt，原点左上、y 向下；1 cm = 72/2.54 pt。三块画板（顺序固定）：
+
+| # | 画板 | 内容 | 导出 |
+|---|---|---|---|
+| 0 | `Figure` | 胶面（按保留泳道剪切/拼接）+ 泳道名 + marker 标签，页边距按页面规则 | → `fig.png`（`document.export {artboard: 0, ppi: dpi}`） |
+| 1 | `Workbench` | 整块胶面、所有泳道线、积分窗、marker 条带线、叫出来的带的刻度、泳道号 | 不导出 |
+| 2 | `Profiles` | 每道一条 `ink` 曲线 | 不导出（用户可手动导） |
+
+Figure 在 Workbench **下方**（变宽变高不会压到 Workbench），Profiles 在 Workbench 右边。
+非打印图层也会被 `document.export` 画出来，所以 Figure 画板上只放可打印的东西。
+
+### 图层与对象名（名字 / 图层就是文档与分析之间的绑定）
+
+| 图层 | 画板 | 锁 / 打印 | 对象 | 用户可改 |
+|---|---|---|---|---|
+| `gel` | 全部 | 锁定、打印 | Workbench：一张图 `gel`；Figure：每个保留段一个剪切组 `gel seg k` | 否 |
+| `analysis` | Workbench | 锁定、不打印 | 泳道号 `tag n`（灰），叫出来的带的短刻度 `peak n`（绿） | 否（每次 sync 重建） |
+| `window` | Workbench | 不锁、不打印 | 两条横线 `top`、`bottom`（橙），伸出胶边 0.15 cm 方便抓 | **拖** |
+| `lanes` | Workbench | 不锁、不打印 | 竖线 `lane`（青），全窗高；按 x 排序两两成对 | **拖、加、删** |
+| `trimmed` | Workbench | 不锁、不打印 | 用户挪进来的泳道线对（sync 后变灰） | **成对挪进/挪出** |
+| `marker bands` | Workbench | 不锁、不打印 | 横线 `band <MW>`（品红），伸出 marker 泳道 0.15 cm | **拖、删、改名** |
+| `labels` | Figure | 不锁、打印 | `label lane n`、`label band <MW>`（并带：`label band 21/20`）、用户自加的任意文字 | **文字与样式**；位置归 agent |
+| `profiles` | Profiles | 锁定、打印 | 曲线、坐标、刻度、泳道说明 | 否（每次 sync 重建） |
+| `ep-meta` | Workbench 画板外 | 隐藏、锁定、不打印 | 一个文字对象 `ep-meta`：运行元数据 JSON | 否 |
+
+线宽 0.5 pt。`ep-meta` 里存：skill 版本、照片路径、胶体预设、marker 预设、dpi、Profiles 版式、render 时的泳道名、
+marker 标签表、**上一次的泳道中心**（给标签匹配用）、上一次的 band 线与 R²（给 sync 的改动摘要用）、种子信息。
+不放进自定义 JSON 键（存盘就丢）也不放 `file.info`（会写进导出的 PNG），见 vectorcraft.md §4。
+
+### 所有权（sync 的硬规则）
+
+| 对象 | agent 写 | agent 从不改 |
+|---|---|---|
+| `label lane n` | x = 泳道中心（映射到 Figure），y = 胶顶上方 4 pt（基线）；新泳道新建（文字 `?`）；泳道没了就删；泳道增删时按上一次中心就近匹配，改名 | 文字、字体、字号、颜色、对齐 |
+| `label band <MW>` | y = 它的 band 线（映射到 Figure，挤的时候上下让开）；band 线删了就删 | 文字、字体、字号、颜色 |
+| `labels` 里其它名字的文字 | — | 一切 |
+| `gel seg k`、Figure / Profiles 画板大小 | 一切（由泳道线 + 保留泳道算） | — |
+| `analysis`、`profiles` 层 | 一切 | — |
+| Workbench 的线 | 只改颜色：`trimmed` 里的变灰、挪回 `lanes` 的变青 | 位置、名字、条数 |
+| `ep-meta` | 每次改写 | — |
+
+推论：用户拖了标签的位置，下一次 sync 会拉回锚点；**删掉** `label lane n` 对象，下一次 sync 会用旧名字重建它 ——
+要让某道不显示名字，把它的文字清空，别删对象。
+
+## 5. Workbench 的读法与校验
+
+`sync` 读活文档（`document.json`，不需要先存盘），按**图层**绑定，不靠对象名（用户新画的线没名字也算）：
+
+- `lanes`、`trimmed` 两层各自把竖线按中点 x 排序、两两成对（左、右）；两层的泳道合起来按中心从左到右编号 1…n。
+- `window` 层恰好两条横线 → 上 = `top`、下 = `bottom`。超出胶面只提示、按胶面裁。
+- `marker bands` 层的横线名字必须是 `band <MW>`（数字可带小数）。
+- marker 泳道 = **[L, R] 包含全部 band 线中点**的那一条（不存序号，增删泳道后照样找得到）。
+- 线不必横平竖直：竖线取两端 x 的中点，横线取两端 y 的中点。
+- 位置换算靠 Workbench 那张 `gel` 图的 `xf`；它被非等比缩放过 / 找不到 → 只能重新 render（`gel` 层本来是锁的）。
+
+读不通时**什么都不改**，一次列出全部要改的地方（`Workbench 有 N 处要改（什么都没动）`）：
+
+| 报错（大意） | 意思 / 怎么改 |
+|---|---|
+| `lanes`（或 `trimmed`）图层里有奇数条竖线 | 少拖了一条或多画了一条。挪进 `trimmed` 必须**两条一起挪** |
+| 图层里有横线 —— 泳道边界应是竖线 | 横线画错层了 |
+| 泳道 i 与泳道 j 重叠 / 左右边线几乎重合 / 整个在胶面外 | 某条线被拖过了邻线，配对错位；把它拖回去 |
+| window 应当恰好有两条横线 / top 与 bottom 几乎重合（<0.05 cm）/ top 在 bottom 下面 | 积分窗被删了一条、多了一条或拖反了 |
+| 一条线名叫 'xxx' —— 改名为「band <分子量>」 | band 线名不是 `band 35` 这种格式（含复制出来的无名线） |
+| marker bands 图层里有竖线 | 竖线画错层 |
+| 条带线的中点不在任何泳道里 | band 线被拖出了 marker 泳道，或 marker 泳道的边线收得太窄 |
+| marker 条带线横跨了泳道 … | band 线分散在几条泳道里，应全在一条里 |
+| 只剩 k 条，标定至少要 3 条 | 删多了 |
+| band A 在 band B 下面，但分子量不更小 | 名字或位置弄反了（MW 必须随 y 向下单调减小） |
+| 所有泳道都在 trimmed 里 | Figure 至少要留一条 |
+
+只提示、不报错：图层里有非直线对象（忽略）；`ep-meta` 缺失或不是 JSON（标签匹配退回按顺序）。
+
+## 6. 泳道种子：按加样孔定相的等距梳子（`well_grid.py`，V8）
+
+为什么不用条带/墨量猜泳道：样品道常常是空的或极淡（DGC 照片上样品带只深 3–4 灰度级，梯子约 24），
+老 stage 2 的列墨量拟合没东西可锁，在 IMG_1496 上整体偏了一道（梯子落进泳道 2）。加样孔则**每道都有**、不管上没上样。
+
+- 胶面最上面 **0.12 cm** 一条里，每列的「深度」= 顶条中位灰度 − 该列最暗值（孔底是一道细的深色 U）。
+- 梳子 `centre_k = c0 + k·pitch`（k = 0…lane_count−1），间距在预设 **±20%** 内以 0.002 cm 步长穷举、相位以 1 px 步长穷举。
+  打分 = 各孔窗口（宽 **0.75·pitch**）内平均深度 − 窗口外平均深度（窗外含两侧没有孔的边距，所以整排错一道会被罚）。
+- 种子泳道宽 = **0.7·pitch**（用户在 IMG_1499 上手放的宽/距 = 0.71）。
+- 最优分（孔深）< **20 灰度级** = 看不见孔 → 退回「预设间距、整排居中」的等距梳子，日志写 `看不清孔，预设间距居中`。
+- 实测（5 张 DGC 照片 IMG_1496–1500）：间距 0.510–0.522 cm，孔深 41–87 灰度级（无孔处 0.9–9.9）；
+  与用户在 IMG_1499 上手放的 15 道相比，中心平均差 **0.015 cm**、最大 **0.042 cm**（手放本身抖 ±0.03 cm）。
+- render 打印 `[i] 泳道种子：按加样孔定相，15 道，孔距 0.516 cm，首道中心 … cm（孔深 … 灰度级）`，并拿孔距与预设核对。
+
+**marker 线**：在 marker 泳道的剖面上叫带（§7），叫出来的峰 y 就是 `band <MW>` 线的位置，按 `labels`（含 `rows`）从上到下配 MW。
+老 stage 3 的行在 5 张照片上一律偏下 0.13–0.5 mm，已不用。峰数 ≠ 标签需要的行数 → 换下一条候选 marker 泳道；
+全部失败 → 拒绝，消息里列出叫出的 y（cm），例如 `marker 泳道 1 的剖面上叫出 10 条带（y = [...] cm），标签需要 11 行`。
+
+**默认积分窗**：top = **0.15 cm**（让开孔底 U 形，否则每条剖面开头一根大尖峰），bottom = 胶面高 × **0.97**（让开胶底渐变）。
+
+## 7. 剖面、条带、标定（`profiles.py`；render 与 sync 同一份代码）
+
+1. **剖面**：积分窗内每一像素行，取 x ∈ [L, R] 的平均灰度（像素中心落在区间里的列）→ `gray`。
+   基线 = 半窗 **0.30 cm** 的滑动均值（top-hat），`ink = baseline − gray`（越暗越大）。参数一律用 cm，与分辨率无关。
+2. **叫带**：在**轻平滑（半窗 0.03 cm）后的原始灰度**上找局部变暗。
+   - **局部显著度** = 比两侧 **0.15 cm** 内各自最浅点中**较深**的那个还深多少。
+   - 门槛 = **4 × 该道背景噪声**；噪声 = 平滑 ink 的 MAD × 1.4826，**迭代剔除**偏离中位数 3σ 的行（条带本身和它两旁的负瓣）最多 5 轮，下限 0.15 灰度级。
+   - **没有绝对墨量下限**（老 `min_loose_ink=6` 会把只深 3–4 级的淡道整条丢掉）。
+   - 两峰最小间隔 0.05 cm（并带 21/20 kD 约隔 0.12 cm）；剖面两端各留一段不取峰（基线在端点被截断）。
+   - 每条带报 `y_cm`、`prominence`、`snr`、`width_cm`（半高宽）、`strongest`（该道显著度最大的那条）。
+   - 为什么不在 `ink` 上叫：滑动均值基线在浓带处下陷，浓带两旁成负瓣、两条浓带之间的平背景反成「鼓包」（合成 4 带梯子在 ink 上叫出 7 条，在原始灰度上正好 4 条）；
+     浓带旁的淡带在 ink 上甚至是负的。闭运算基线试过也否了（平坦道上叫出假带）。
+   - 为什么噪声要迭代剔除：相邻行差分法几乎处处掉到下限，把 1–2 级的纹理全当带；一次性 MAD 在密梯子上被条带撑大，11 条只叫出 8 条。
+   - 实测：IMG_1496 梯子 11/11，淡样品带（泳道 5/6/13/14，SNR 5–11）叫得出，空道基本叫不出东西。
+3. **标定**：`band <MW>` 线的 y ↔ MW，`log10(MW) = a + b·y` 最小二乘，报 R²（5 张 DGC 照片 0.949–0.964）。只有 `logfit` 一种。
+4. **MW**：每条叫出的带按标定换算；超出 marker 范围的标 `extrapolated`（终端表里 `*`）。
+
+终端表：标定一行；每条**有名字、不是 marker、没被 trim** 的泳道一行，`[主]` = 显著度最大的带。
+「浓」= 局部显著度（灰度级），不是积分量；预染 marker 的表观分子量与样品有系统偏差，汇报时别说成真实分子量。
+
+### `fig.mw.json` v2
+
+```json
+{"version": 2,
+ "units": {"x": "cm from gel-face left", "y": "cm from gel-face top",
+           "gray": "0-255 (lower = darker)", "ink": "baseline - gray (higher = more stain)"},
+ "gel": {"width_cm": 8.6, "height_cm": 6.25, "px_per_cm": 118.11},
+ "window": {"top_cm": 0.15, "bottom_cm": 6.06},
+ "calibration": {"method": "logfit", "marker_lane": 1, "points": [[0.42, 250], ...],
+                 "fit": {"log10_mw": "a + b*y", "a": 2.6, "b": -0.31}, "r2": 0.95},
+ "params": {"base_half_cm": 0.3, "smooth_cm": 0.03, "min_sep_cm": 0.05, "k_noise": 4.0},
+ "lanes": [{"lane": 1, "label": "M", "marker": true, "trimmed": false,
+            "left_cm": 0.31, "right_cm": 0.67, "noise": 0.8,
+            "profile": {"y_cm": [...], "gray": [...], "baseline": [...], "ink": [...]},
+            "bands": [{"y_cm": 2.1, "prominence": 4.1, "snr": 5.2, "width_cm": 0.06,
+                       "mw_kda": 23.5, "extrapolated": false, "strongest": true}]}],
+ "notes": ["泳道 16 还没有名字"]}
 ```
 
-裁到胶**本身**（画面边就是胶面）时，探测器的严格口径会把胶当成「贴边的背景」整块丢掉 →
-自动退回「允许贴边取最大块」并打 `[i] 胶面贴着画面边`。实测那两块上下暗边都比胶小，取最大块仍是对的那块。
+- 坐标一律是胶面 cm（原点 = 胶面左上角），**没有照片像素**。剖面每个胶面图像素行一个样本（300 dpi 下 15 道约 300 KB）。
+- `label` = 文档里当前的标签文字（sync 后就是用户改过的名字）；`null` = 还没名字（`?`）；`""` = 空白道。
+- trimmed 泳道照样有剖面和条带（`"trimmed": true`）。`--no-mw` 不写这个文件。
 
-**成品版式：严格按胶面裁切 + 贴在白底画布上**（`-size WxH xc:white` + `-composite`，白边 L/R/T/B 按
-文字真实包围盒算）。这样 ① 胶面不多带一个像素的背景；② 文字全部落在白底留白里，不受上缘加样孔/灯箱
-背景影响。分子量标签列固定摆在**胶面之外**（见 §1d）。
+## 8. Figure 与 Profiles 版式（`figure.py`）
 
-## 1c. 字号单位 = pt（dpi 无关）
+**Figure**：
 
-`size`/`gap` 是 **pt**（物理尺寸），脚本按 `--dpi` 换成像素：`px = pt/72 × dpi`。所以：
+- **保留段**：没 trim 的泳道里，连续的成一段；段边界 = 与相邻（被 trim 的）泳道中心的**中点**，两端到胶边。
+  段与段之间留 **0.15 cm 白缝**（拼缝披露；没有额外的线）。不拉伸、不上下位移、不调色。
+- **泳道名**：`label lane n` 用**原泳道号**（留下的第 8 道还是 `label lane 8`），Arial 8 pt，水平居中在泳道中心，基线在胶顶上方 4 pt。
+- **marker 标签**：Arial 8 pt，竖直中心对准 band 线；marker 泳道中心在 Figure 胶面左半 → 标签在胶左侧、右对齐，否则在右侧、左对齐，离胶边 4 pt。
+  挨得近的（250/150/100、40/35）用一维最小位移排字**上下让开、保持顺序**，不叠字。marker 泳道被 trim 时不画 marker 标签（只标定）。
+- **页面规则**：每边留白 = `max(0.43 cm, 文字越界 + 0.17 cm)`，按**当前**标签文字与字号量（用户把名字改长，页就跟着变宽）。
 
-| | 8 pt 在 96 dpi | 8 pt 在 300 dpi |
-|---|---|---|
-| 像素高 | ~11 px | ~33 px |
-| 占 8.6 cm 宽胶面 | 3.4% | 3.2%（相等，差的是取整） |
-| 成品物理尺寸 | 9.46×7.73 cm | 9.46×7.73 cm |
+**Profiles**（`render --profiles stack|strips`，默认 `stack`；版式记在 `ep-meta`，sync 沿用）：
 
-历史教训：曾用「16 px」当字号，结果 96 dpi 下相当于 12 pt（密梯子标签上下相撞）、300 dpi 下只有 3.84 pt（太小）
-—— 同一份配置在两个 dpi 下比例完全不同。现在是 pt，默认 8 pt，落在两者中间。
+- `stack`：每道一行横向曲线，横轴 = 积分窗内的 y，上方标 MW 刻度；每行右侧注满幅灰度级。
+- `strips`：每道一条竖向曲线，纵轴与胶同比例（1 cm = 1 cm），按泳道顺序并排，左边一列 MW 刻度。
+- 曲线画 `ink`；满幅 = max(曲线最高点, 本胶最强样品道的 1/4, 10 × 该道噪声)（空道不会被放大成像有带）；marker 道按自己的最高点画。
+  叫出的带有标记，marker 道带标定点。
 
-## 2. 探测怎么做的（以及为什么这么选）
-
-**四段流水线，每段只读上一段的冻结输出**：胶面（stage 1）→ 泳道格点（stage 2）→ 条带（stage 3）→ 泳道选择（stage 4）。
-旧的三段式泳道启发式（间距量自最密行、宽 run 劈开、按间距补位、锚点校正、行结构验伪）**已移除** ——
-它是一条 bug 一条 bug 打出来的补丁，根子是「用条带去定泳道、再用泳道去定条带」。现在泳道数由预设给，
-条带只读冻结泳道，回路不存在了。
-
-### a) stage 1：胶面（预设定形）
-
-认胶本身没变：
-
-- `dark`（默认）：拟合灯箱背景。取样带取四边 8%–14% 的**环带**（跳过最外圈相框），两轮最小二乘
-  拟一个平面（每轮丢掉明显低于平面的样本），再判 `像素 < 平面 - max(6, 平面//20)`。
-  对中性/银染的胶也成立（胶总比灯箱暗）。
-- `chroma`：判 `B-R > 22`。本机这张照片里染色胶 B-R ≈ +33…+47、背景 ≈ −6…−15；
-  但**蓝光灯箱**下整块屏幕都蓝，所以它是备选不是默认。`probe` 会同时报两条判据的胶框，一致才可信。
-- 掩膜先去毛刺，取最大且**不贴画面边**的连通域（灯箱相框、螺丝靠这条排掉），再按行/列覆盖率 50% 裁掉光晕毛边。
-- 倾角由左右竖边在中段 20%–80% 行上的最小二乘拟合给出。
-
-预设怎么定形（`gel_area.py`）：
-
-1. 探测框与倾角（`detect_gel`；`--rect x0,y0,x1,y1` 仍可跳过自动找胶）。框的上缘 = 第一条覆盖率 ≥90% 最宽行的行，
-   也就是胶板（孔底）；左/右/下缘仍按 50% 覆盖率。齿区每行覆盖率随齿形乱跳，50% 线落在齿中间、没有物理意义。
-2. 定标：`px_per_cm = 探测宽度_px / width_cm`；裁过的照片改用 `lane_pitch_cm` ↔ 实测泳道间距。
-3. 定形：高度 = `(height_cm − trim_top_cm − trim_bottom_cm) × px_per_cm`，按 `anchor` 贴住探测框的
-   底边（默认）/ 顶边 / 中线。
-4. 核对并报告：预设高度 vs 探测框推出的高度；找到 ≥2 条泳道后再核「宽度定标 vs 间距定标」。
-   高度差 >5%、尺度差 >10% → 打 `[!]`，把那两个数一起打出来。除第 3 步的定形外不做任何静默修正。
-
-### b) stage 2：泳道格点（先验驱动，不看条带）
-
-- 期望中心 `x_i = 胶面左边界 + (i − 0.5) × pitch_px`（i = 1…`lane_count`）。
-- 冻结框内取**列暗度剖面**（宽松阈值，同旧版）。
-- 拟合格点：选 offset（以及 ±5% 以内的 pitch 微调），让期望中心处落到的剖面证据最大。
-- 每道在 **±0.4 pitch** 内细化到局部峰；细化不到、或峰（半显著度段）窄于 **1/4 pitch**（斑点、带边，不是泳道），
-  就保留格点位置，标 `estimated`。
-- 输出**恰好 `lane_count` 条**：条数不来自启发式。淡道/空道是带 `evidence` 的 `estimated` 泳道，不是被删掉。
-- 不读条带：没有「间距量自最密行」、没有 snap 锚点、没有按条带证据接受/拒绝、没有 `fill_gaps`；
-  `split_wide` / `merge_near` 只在细化确实还需要时保留。
-
-### c) stage 3：条带（只读冻结泳道）
-
-**条带行 = 泳道内沿 x 平均 → 行剖面 → 找峰**（ImageJ 的标准做法）：
-
-| | 怎么做 | 用来干什么 |
-|---|---|---|
-| 条带行 | 在泳道宽度内**沿 x 平均**成一条灰度剖面（`lane_row_profile`），减掉宽窗基线（top-hat）后取局部极大（`peaks_in_profile`） | 找**条带行**；不回头改泳道 |
-
-为什么行不能数「每行几个低于阈值的像素」：淡带可能一个像素都不过阈值，二值计数会把它连同旁边的带一起
-糊成一条宽 run。实测 Tris-Tricine 的 **21/20 kD** —— 计数法只给 1 条，沿 x 平均给 2 条（344.2 / 348.2），
-而且半高宽能看出哪条偏胖。平均保留了幅度，两条带之间那个谷不会被抹掉。
-
-行仍用**细栅格**（长边 1200）扫，泳道用 `--longest`（够用且快）。峰检测的三个参数是按本胶实测调的
-（行距 9.3 分析 px）：基线窗 ≈ 2 倍行距、显著度 ≥ 4 灰度级、只做 3 行轻平滑。调参时踩到的三个坑：
-
-- 基线窗太宽（40 px ≈ 4 条带）会把暗带一起算进基线 → 淡带的显著度从 **24 掉到 −1.7**，250 kD 整条消失；
-- 平滑太重（5 行窗）会把只有 2–3 px 高的窄带（高分子量那几条）直接抹平；
-- top-hat 在剖面**两端**不可信（基线被截断）：胶的下缘渐变会被认成一条带（实测凭空多一条）。
-
-条带只读 stage 2 的冻结泳道，不会反过来挪泳道中心 —— 旧版「11 挤 12」那类错就是回路造成的
-（当时间距、补位、锚点都拿条带证据修泳道；教训留在 `special-cases-and-pitfalls.md` §3）。
-
-### d) stage 4：泳道选择（裁/拼）
-
-选择永远发生在冻结泳道之后、摆字之前；不影响探测与定标。语法、段的取法、拼缝与披露见 §6b。
-
-## 3. 本机可复制命令（2026-10-13 实跑）
-
-环境自检：
+## 9. `sync`
 
 ```bash
-# 环境自检（python / magick / 字体 / 数据文件）
-python3 scripts/gel_photo.py doctor
+python3 scripts/gel_photo.py sync fig.vectorcraft [--port 7797] [--dry-run] [--dpi 300]
 ```
+
+### 9a. 做什么
+
+1. 连上控制口上的 VectorCraft（没有就带 `--control` 启动），文档没开就打开，激活它。
+2. 读 `document.json` → Workbench 模型（§5）。读不通 → 打印全部要改的地方，**什么都不动**。
+3. 在文档里那张胶面图上重算剖面、条带、标定（§7）→ `plan_sync` 算出最少的操作。
+4. 全部操作在**一个**撤销组 `ep-labeling sync` 里执行（⌘Z 一次撤回整个 sync；中途出错整组回滚）。
+5. 存盘（轮询到文件比请求新且能解析），按 `ep-meta` 里的 dpi 重新导出 `fig.png`，重写 `fig.mw.json`（泳道名取当前标签文字）。
+6. 打印改动摘要，例如 `泳道移动：3 +0.15 cm`、`trimmed（不进 Figure）：[14]`、`marker 线：band 35 删除`、`标定 R² 0.9470 → 0.9483`，
+   以及 `已更新：artboard 1, delete …, create …, move …`；有 `?` 泳道时打 `[?] 泳道 [n] 还没有名字`。
+
+`--dry-run` 只打印摘要和操作列表，不动文档。`--dpi` 只在 `ep-meta` 没记 dpi 时用。
+
+### 9b. 会变什么、永远不变什么
+
+- 会变：泳道标签的位置（跟泳道中心）、marker 标签的位置（跟 band 线）、新泳道的 `?` 标签、消失的泳道/带的标签被删、
+  Figure 的胶段与拼缝、Figure 与 Profiles 画板大小、`analysis` 与 `profiles` 层、trimmed 线的颜色、`ep-meta`、`fig.png`、`fig.mw.json`。
+- 永远不变：标签的文字、字体、字号、颜色；`labels` 层里用户自加的文字；Workbench 线的位置与名字；`gel` 层的 Workbench 胶面图。
+- **幂等**：Workbench 没改、标签已在位时，再跑一次是 0 个操作（`文档已经是最新的（0 个改动）`），只重新存盘和导出。
+- **泳道增删**：标签按上一次的泳道中心（`ep-meta`）就近匹配，所以用户改过的名字跟着它的泳道走；新泳道标签是 `?`，agent 要问名字。
+- **band 线**：删掉 = 去掉这个标定点、它的 Figure 标签也删；新增一条 `band <MW>` = 多一个标定点（但没有对应的 Figure 标签）；
+  改名 = 改标定值，旧 MW 的 Figure 标签会消失、新值不自动加标签（需要的话在 `labels` 里自己加文字）。
+- 实测（V7，IMG_1496）：拖泳道 3、把泳道 14 挪进 `trimmed`、删 `band 35`、泳道 2 改名 WT 并染红 → 一次 sync 约 9 s、一个撤销步；
+  WT 保持文字和红色，标签 3 重新居中，泳道 14 和 35 kD 的标签被删，Figure 拆成两段；再跑一次 0 个改动。
+
+### 9c. 只改文字：经控制口改标签（然后 sync）
+
+改泳道名之类的请求**不需要重跑 render**。最省事是请用户在 Figure 上直接改字；要 agent 来改，就用控制口的 `text.setText`
+（对象按**完整名字**找；`document.find` 是子串匹配，`label lane 1` 会命中 `label lane 10`–`15`，别用）：
+
+```bash
+python3 - <skill>/scripts fig.vectorcraft "label lane 2" "WT" <<'EOF'
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import vc_control, vc_file
+doc, name, text = os.path.abspath(sys.argv[2]), sys.argv[3], sys.argv[4]
+c, _ = vc_control.connect(7797, launch=False)
+docs = c.call("ui.inspect").get("documents") or []
+c.execute("document.activate", {"index": next(i for i, d in enumerate(docs) if d.get("title") == os.path.basename(doc))})
+lab = vc_file.layer_by_name(c.document_json(), "labels")
+node = next((n for n in vc_file.lay_children(lab) if n.get("name") == name), None)
+if node:
+    c.execute("text.setText", {"id": node["id"], "text": text})
+else:   # 空白道（lanes.json 里是 ""）没有标签对象：在 labels 层新建一个并命名，sync 会把它放到位
+    c.execute("layer.setCurrent", {"id": lab["id"]})
+    c.execute("select.set", {"ids": []})
+    r = c.execute("text.create", {"x": 0, "y": 0, "text": text, "size": 8, "font": "Arial", "justify": "center"})
+    c.execute("object.setProps", {"id": r["id"], "name": name})
+EOF
+python3 <skill>/scripts/gel_photo.py sync fig.vectorcraft
+```
+
+`text.setText` 保留第一段文字的样式（字体、字号、颜色不变）。要改样式也请用户在 app 里改，sync 不会覆盖。
+
+## 10. 命令
 
 ```bash
 cd <本 skill 目录>
+python3 scripts/gel_photo.py doctor          # python / magick / 字体 / VectorCraft 版本与控制口 / 数据文件
+python3 scripts/gel_photo.py selftest        # 不读用户文件、不开 app；全绿即可（项数以当次输出为准）
 
-# 1) 探测 + 覆盖图（--gel-size 必给：红框=胶面、红线=实测泳道、橙线=estimated 泳道、蓝线=带边、绿线=条带行）
-python3 scripts/gel_photo.py probe photo.jpeg --gel-size data/gel_size.json --debug debug.png
+# 只探测（不写文件、不开 app）：胶面、孔距/首道/孔深、每道叫出的带 y
+python3 scripts/gel_photo.py probe photo.jpeg --gel-size data/gel_size.json [--gel-lanes N] [--rect x0,y0,x1,y1]
 
-# 2) 出成品：模板配置 + 胶体预设（脚本不内置数据路径；--gel-size 必给，没有替代品）
-python3 scripts/gel_photo.py render photo.jpeg --out out.png \
-        --markers templates/mini-gel-15lanes.markers.json \
-        --lanes templates/mini-gel-15lanes.lanes.json \
-        --gel-size data/gel_size.json --dpi 96
-# → 胶面 8.60 cm 宽；换 --dpi 300 物理尺寸一模一样，只多像素（这就是 pt 字号的意义）
-# → 同时写 out.gel.png（胶面、无字）、out.scene.json（版式数据）、out.html（离线编辑器）；
-#   --svg 再加 out.svg，--no-editor 批量跑时不写 out.html
+# 出文档 + fig.png + fig.mw.json
+python3 scripts/gel_photo.py render photo.jpeg --out fig.vectorcraft \
+        --markers data/markers.json --preset 3 --lanes lanes.json \
+        --gel-size data/gel_size.json [--trim-lanes 1,2,14-15] [--dpi 300] [--profiles stack|strips] [--port 7797] [--no-mw]
 
-# 2b) 只改文字（泳道改名 / 删标签 / 挪 marker 列 / 改字号或颜色）：
-#     编辑 out.scene.json 后从 scene 出图，不重跑 render、不重新探测（约 1 秒）
-python3 scripts/gel_photo.py export out.scene.json --png out.png --dpi 300 --svg out.svg
-
-# 2c) 用户用 out.html 改完并「Save」：直接从存下来的 HTML 读 scene 出图
-python3 scripts/gel_photo.py export out.edited.html --png out.png
-
-# 3) 从预设库选 marker：序号或 _preset 描述里的关键词（命中不是恰好 1 个就报错并列出全部）
-python3 scripts/gel_photo.py render photo.jpeg --out out.png \
-        --markers data/markers.json --preset 3 --lanes lanes.json --gel-size data/gel_size.json
-
-# 自检（不读用户文件）
-python3 scripts/gel_photo.py selftest        # 跑一次看当前项数；全绿即可
+# 用户在 VectorCraft 里改完之后
+python3 scripts/gel_photo.py sync fig.vectorcraft [--dry-run]
 ```
 
-常用开关：`--cue chroma|union`、`--ink-thr`（改泳道判据阈值）、`--longest`（分析缩略图长边，默认 700）、
-`--rect x0,y0,x1,y1`（跳过自动找胶）、`--angle` / `--no-rotate`、`--margin-frac`、
-`--no-outline`、`--font <ttf>`、`--svg`、`--no-editor`、`--debug`。
+render 的其它开关（全是 stage 1）：`--gel-cm`、`--gel-lanes`、`--trim-top-cm` / `--trim-bottom-cm`、`--angle` / `--no-rotate`、
+`--longest`（分析缩略图长边，默认 700）、`--cue dark|chroma|union`、`--ink-thr`、`--rect`。
+`--out` 给 `.png` 也行（取同名 stem）。已有的 `fig.vectorcraft` 先备份成 `fig.vectorcraft.bak`；
+它在 VectorCraft 里开着且有没存的改动时 render 拒绝（免得覆盖用户的修改）。
 
-## 3b. 分子量报告（`mw_report.py`）
+## 11. 已移除 → 用什么代替
 
-对每条非 marker、非空白的泳道，列出自动探到的**每一条带**的分子量，最浓的一条标 `[主]`（浓度 = top-hat 峰高，不是积分量）。
+命令行上的旧子命令/开关都会报 `… 已经去掉了：…` 并给出替代，不会被静默忽略；配置文件里的旧键（`y_px` 等，§1）则只是不再读取。
 
-- 标定点：marker 泳道的条带行 y ↔ labels 里解析出的数字（kDa）。`markers` 里用 `y_px` / `y_frac` 手动标定过的行直接沿用；`"21/20 kD"` 配 `rows: 2` 时两条带各配各的数字。
-- 多管 marker（`marker_lanes`）：每管各拟一条，样品泳道取左右最近的两管按距离反比加权，抵消胶面 smile；条带数与标签不符的那管不参与，并在报告 `notes` 里说明。
-- 方法：`logfit` = log10(MW) ~ y 直线（Rf 与 y 仿射，R² 相同）；超出 marker 范围外推并标 `*`。`interp` = 相邻 marker 带之间线性内插，范围外不外推（给 None）。
-- estimated 泳道（淡道/空道，中心取格点位置而不是量出来的峰）不丢：条带照常探、照常进报告；覆盖图上的橙线只说明「中心是 estimated」，不代表这条道没有带。
-- 选了泳道（`--keep-lanes`）时：报告只列**保留的样品泳道**；定标仍用**全部** marker 泳道（裁掉 marker 不影响别的泳道的数）。
-- 输出：终端表 + `<out>.mw.json`（`calibration` / `lanes` / `notes`）。`--no-mw` 关闭。
-- 局限：线性 log 拟合在 10–250 kDa 这种宽范围上会弯（本机实测 R² 0.957–0.960），低分子量端误差较大；要更准用 `interp`，或缩到关心的范围。预染 marker 的表观分子量本身就与样品有系统偏差。
+| 已移除 | 代替 |
+|---|---|
+| `export` 子命令、`fig.html` 编辑器、`fig.scene.json`、`fig.gel.png` | VectorCraft 里改；`sync` 重新导出 `fig.png` |
+| `--svg` | `fig.vectorcraft` 本身是矢量文档；要 SVG 在 VectorCraft 里 File → Export |
+| `--no-editor` | 不再写 HTML 编辑器 |
+| `--debug` 覆盖图 | Workbench 画板（`lanes` / `window` / `marker bands` / `analysis` 图层） |
+| `--record` JSON | Workbench 上的线 + `ep-meta`；数值在 `fig.mw.json` |
+| `--keep-lanes` | `--trim-lanes`（写要拿掉的），或把泳道的两条线挪进 `trimmed` |
+| `--marker-policy` | 固定行为：marker 泳道被 trim 时只标定、不画标签 |
+| `--pair-force`、`y_px` 手动标定 | 在 Workbench 上拖 / 删 / 改名 `band <MW>` 线，然后 sync |
+| `--mw-method interp` | 只有 `logfit` |
+| `--margin-frac`、`--splice-gap-cm` | 页面规则自动推导；拼缝固定 0.15 cm |
+| `--font`、`--outline` / `--no-outline` | 字体与样式在 VectorCraft 里改（默认 Arial） |
 
-## 4. 坑的来龙去脉（都实测过）
+## 12. 脚本模块
 
-下表里与**泳道启发式**有关的那几行是历史（2026-10 预设先验重构之前）；现在的做法见 §2 的 stage 2 与
-`special-cases-and-pitfalls.md` §3，不要再照那些规则改 lane 代码。其余各行（行剖面、dpi、文字、IM7 坑）仍然有效。
-
-| 现象 | 原因 | 处置 |
-|---|---|---|
-| 15 条泳道只探到 9 条 | 泳道也用严格判据（只有一条淡带的泳道整条漏） | 泳道换宽松判据（k=1.5），外加行结构验伪 |
-| 补位补出一堆 7 px 宽的假泳道（34 条） | 间距量自整块胶列剖面（偏小 14.4），宽 run 又没劈开 | 间距改量自「最密的一行」；宽 run 按间距均分 |
-| 幽灵泳道（该处什么都没有） | 胶面竖纹在宽松阈值下亮起来 | 行结构验伪：真条带是峰，竖纹是平的 |
-| 只探到一条「泳道」，宽 = 整块胶 | 用「比灯箱暗」找条带 → 整块胶都是命中 | 认胶用灯箱平面，找条带用胶内中位数 |
-| 分子量标签整体错位一两条带 | 旧版在条带数与配置不等时**静默按位置硬配** | 现在默认拒绝出图；走 `y_px` 手动标定或换对预设 |
-| 梯子的分子量标签上下糊在一起 | 3 mm 的实际条带间距，低 dpi 下只有 ~11 px | 提 dpi、减小 `markers.size`、或只标关键几条带 |
-| 自动探的行比条带中心偏上 ~0.7 mm | 行 = 暗 run 的重心，受条带拖尾/模糊影响 | 要更准就 `y_px` 手动标（默认不吸附） |
-| 字大得离谱，9 pt 占满半张图 | magick 看到 density=300，把 `-pointsize` 又乘了 300/72 | 写字前 `-density 72`，dpi 留到最后写 |
-| PNG 没有 dpi，`identify` 显示 72 | `-strip` 把之后设的 `-density` 一起丢了（IM7） | 用 `+profile "*"`，别用 `-strip` |
-| 黑字被吃成白字 | `-stroke` 是画在字**上面**的 | 分两批：先整批白底、再整批黑字（0.07 em） |
-| 分子量整体错位一位 | 梯子实际条带数 ≠ 预设条带数，脚本只能按位置配前 N 个 | 换对预设 / 给 `y_frac`；别默认脚本配对了 |
-| 泳道号被胶顶光晕压住 | 胶顶到背景是渐变，掩膜边界 ≠ 视觉边界 | 留白按整字高算 + 文字细白边 |
-| **换 dpi 后文字相对胶面的大小变了** | `annotate_cmd` 算了 px 却**从没把 `-pointsize` 写进命令** → IM 用默认 12 pt 画所有字，字号与 dpi 无关（实测 96/300 dpi 的墨迹都是 8 px） | 每个 `-annotate` 前显式给 `-pointsize`（描边那批也要）；改完 96 dpi 墨迹 8 px / 300 dpi 24 px，比例 0.0236 vs 0.0246（差的是取整） |
-| 裁剪后的照片报「没找到胶面」 | `components()` 默认丢掉**贴画面边**的连通块（那是为了甩掉背景），而裁过的胶必然贴边 | 严格口径找不到时退回 `border_ok=True` 取最大块；实测裁剩半块胶仍有 24.6%，比上下两条暗边大 |
-| 白底贴图后胶面跑到左上角、边距全错 | IM7 的 `-extent WxH+x+y` 带 `-gravity northwest` 时**偏移量被忽略**（实测图贴在 0,0、只往右下补白） | 白底改用 `-size WxH xc:white` + `-geometry +L+T -composite` |
-| 某个号码明显贴着邻居（本胶：11 挤 12） | 列投影被该泳道整列的零星杂点带偏（空泳道只有一个 1 px 孤立列尖峰），旁边那条又被宽 run 均分拉偏 | 泳道中心改用**条带最密那一行**的墨 run 校正（`snap_to_anchors`） |
-| 梯子条带数**刚好**等于预设、分子量却整体错一位 | 每条泳道的行窗口取 ±整条宽（= ±一个间距），邻道稍低的带被卷进来顶替了并带的那一条 | 窗口改 ±半条宽；并带的行改由 `fat_rows` 报出来（厚 ≥1.6× 中位数） |
-| 两条贴近的带只探到一条 | 二值阈值计数把并带糊成一条宽 run | 条带行改「沿 x 平均 + top-hat 找峰」后两条分开（本胶 344.2 / 348.2）；仍分不开时 `fat_rows` 会把偏胖的那行报出来 |
-| 两条标签画出来会叠字 | 两条带实际只差 ~1.6 mm，而 8 pt 墨迹高 2.4 mm —— 同侧放不下两行字，换 dpi 无效（同比例缩放） | 给其中一条加 `"rows": 2`（吃 2 条带、落在中间，条目数仍对得上）；脚本会自己算出「字号得 ≤ 几 pt」报出来 |
-| 文字整体下沉约一个字高 / 泳道号压进胶里 | 拿基线/半高系数近似 `-annotate` 的 y（它其实是**框顶边**） | 按真实文字框高算：marker `y=行−框高/2`、泳道名 `y=胶顶−gap−框高` |
-
-## 5. 脚本模块
-
-`scripts/gel_photo.py` 只放 CLI 与 probe/render/export 编排；其余按职责分文件（同目录，纯 stdlib）：
+`scripts/gel_photo.py` 只放 CLI 与编排（`probe` / `render` / `sync`）；其余同目录、纯 stdlib：
 
 | 模块 | 承担 |
 |---|---|
-| `magick_io.py` | magick 外呼、分析缩略图读取（PPM → 灰度） |
-| `gel_detect.py` | 认胶面：平面背景、暗度/蓝度判据、连通域、竖边倾角 |
-| `gel_area.py` | **stage 1**：预设定形（`px_per_cm`、按 `anchor` 取高度边、减 trims）、宽/高与间距定标的核对 |
-| `lane_detect.py` | **stage 2 泳道格点 + stage 3 条带**：期望中心 + offset/pitch(±5%) 拟合 + ±0.4 pitch 细化（estimated）、行剖面找带、`fat_rows` 并带检测 |
-| `lane_select.py` | **stage 4**：解析 `--keep-lanes`、按相邻中点切 strip、拼缝、marker 策略（见 §6b） |
-| `record.py` | 探测记录生成：stage 输出（照片 px）→ 裁切后胶面 cm 的 record JSON（见 §6） |
-| `scene.py` | 版式数据：出图前把胶面 + 每条文字冻结成 scene JSON（cm/pt、锚点、页面规则 `page_size_cm()`），PNG/SVG/编辑器都只读它 |
-| `geometry.py` | 旋转与裁切几何、位置口径（<1 比例 / ≥1 像素）、泳道带宽 |
-| `text_layout.py` | 字体、文字真实包围盒、写字命令 |
-| `config.py` | markers / lanes / 胶体预设的读取与校验（`load_markers` 支持预设库 + `--preset`；`load_gel_size` 校验必需键与泳道不变式） |
-| `debug_overlay.py` | `--debug` 覆盖图 |
+| `magick_io.py` | magick 外呼、PPM 读取 |
+| `gel_detect.py` | 认胶面：背景平面、暗度/蓝度判据、连通域、竖边倾角 |
+| `gel_area.py` | stage 1：按预设定标定形、高度核对 |
+| `geometry.py` | 旋转几何 |
+| `config.py` | markers / lanes / 胶体预设的读取与校验 |
+| `lane_select.py` | `--trim-lanes` 语法、保留段与拼缝版式 |
+| `text_layout.py` | 字体与文字量宽（Figure 页边距用） |
+| `well_grid.py` | 泳道种子：按加样孔定相的等距梳子（§6） |
+| `profiles.py` | 剖面、叫带、标定、报告 v2（§7） |
+| `mw_report.py` | MW 数学、marker 配对、终端表与写盘 |
+| `workbench.py` | Workbench 模型：建（`from_image`）、画、读回（`from_document`）、校验、泳道名匹配 |
+| `figure.py` | Figure / Profiles 画板、整份文档（`build_document`）、sync 增量计划（`plan_sync`） |
+| `vc_file.py` | `.vectorcraft` 读写（内联 / blobs / gzip 三种编码；对象从 `templates/kinds.vectorcraft` 深拷贝） |
+| `vc_control.py` | 控制口客户端：连接/启动、对话框、存盘轮询、导出核对、撤销组 |
+| `sync_exec.py` | 把 `plan_sync` 的操作落到活文档上 |
 | `env_check.py` | `doctor` |
-| `selftest.py` | `selftest`（跑一次看当前项数，全绿即可） |
-| `mw_report.py` | 分子量标定与报告（读 record，见 §3b） |
-
-## 6. 探测记录（record JSON）
-
-stage 3 之后产出**一份 JSON**：`probe` 直接打印到终端，`render` / `probe` 加 `--record PATH` 时写成文件；
-分子量报告也从它取数（不再吃运行时的原始 `lb` dict）。它同时是「这张图是怎么来的」的唯一凭据：
-换个人、换台机器，拿着原图 + record 就能复现同一张图。
-
-**坐标口径：只记裁切后的胶面。** 原点 = 裁切后的胶面（旋转、裁切、上下 trim 之后）的**左上角**，
-x 向右、y 向下，单位一律 **cm**（物理量，与 dpi 无关）。成品 PNG 的像素位置 = `cm / 2.54 × dpi`，
-record 里不需要别的换算。stage 1–3 内部照旧用照片像素，最后一步才换算过来。
-
-| 字段 | 内容 |
-|---|---|
-| `preset` | 预设名 + 实际用到的数：`width_cm` / `height_cm` / `lane_count` / `lane_pitch_cm` / 上下 trim |
-| `gel` | 成品胶面的 `{width_cm, height_cm}`（选了泳道时是拼接后的） |
-| `crop` | 只在选了泳道时出现，见下 |
-| `checks` | stage 1 那几项核对的数与结论（数值 + pass / warn） |
-| `lanes[]` | 只含**保留**的泳道：`{index, x_cm, width_cm, estimated, evidence}`；`index` = **原始泳道号**，`x_cm` = 在成品版式里的位置 |
-| `bands[lane][]` | 每条泳道的 `{y_cm, width_cm, depth}`，按泳道分组 |
-
-**不存**：照片坐标、`gel_box`、倾角 `angle`、分析尺度/缩放 `scale`。照片在裁切后就丢了，任何需要照片
-才能解释的数都不该进 record —— 否则拿到 record 也不知道它是哪张照片的哪个像素，反而给复现埋坑。
-
-### crop（只在选了泳道时出现）
-
-| 键 | 含义 |
-|---|---|
-| `keep_lanes` | 原始泳道号（1 起，左→右），如 `[1, 2, 8, 9]` |
-| `marker_policy` | `calibrate-only` 或 `keep`；没选泳道时没有这一段 |
-| `splice_gap_cm` | 拼缝宽度（cm）；只有一段时为 0 |
-| `strips[]` | 每段 `{lanes: [原始号], src_x0_cm, src_x1_cm, dst_x0_cm}` |
-
-`src_*` 是**未裁切的胶面**上的 cm（原点在那个面的左上角），不是照片坐标；`dst_x0_cm` 是这一段在成品里的
-左边缘。`strips` 是原始泳道号 ↔ 拼接版式的唯一映射 —— 画图注、核位置都看它。
-
-## 6b. 泳道选择：裁与拼（stage 4）
-
-**只影响出图，不影响探测与定标。** stage 1–3 永远在**整块胶**上跑；选择发生在冻结泳道之后、摆字之前。
-
-- `--keep-lanes SPEC`：原始 1 起的泳道号，逗号与区间：`1,2,8-10`。省略 = 全保留。顺序永远按胶上从左到右，
-  **不重排**（重排会让泳道号与胶脱钩）。
-- **段（strip）怎么取**：连续保留的泳道成一段。段左边界 = 该段第一条与它左边那条（未保留）泳道中心的**中点**，
-  第一条到胶左缘；右边界同理，最后一条到胶右缘。中点用冻结的泳道中心。
-- **拼接**：段与段之间加**白缝 + 缝中一条细竖线**，宽度 `--splice-gap-cm`（默认 0.15 cm）。
-  只有一段连续泳道时没有缝也没有线。拼接是裁切与缩放之外**唯一**的图像操作：
-  **不拉伸、不上下位移、不调色** —— 否则条带位置和浓度都不再是这块胶的。
-- **标签**：保留的泳道仍用**原号**（留下的第 8 条还写 8，不重编成 3）。泳道名在各自泳道上方，
-  marker 标签照旧贴 marker 泳道那一侧。
-- **marker 泳道没被保留**：脚本不替用户决定 —— 停下并列出会被裁掉的 marker 泳道，由用户选：
-  `--marker-policy calibrate-only`（marker 只用于定标/分子量，不画 marker 标签）或
-  `keep`（把离保留泳道最近的 marker 泳道加进选择）。两个都不给就报错退出。
-- **分子量报告**：只报**保留的样品泳道**；定标照旧用**全部** marker 泳道（裁掉哪管 marker 都不影响别的道的数）。
-- **披露**：图注必须写明「**非相邻泳道由同一块胶拼接**」，并保留原始泳道号。产生拼缝时终端会打一行提醒，
-  但脚本不会替你写图注（`SKILL.md` 的 Checkpoints 也重复这一条）。
-
-```bash
-# 只要 1、2、8、9 四条 → 两段（1-2 与 8-9），中间一条白缝
-python3 scripts/gel_photo.py render photo.jpeg --out out.png \
-        --markers data/markers.json --preset 3 --lanes lanes.json \
-        --gel-size data/gel_size.json --keep-lanes 1,2,8-9 \
-        --marker-policy keep --record out.record.json
-```
-
-## 7. 版式场景（scene JSON）与 `export`
-
-`render` 在画字之前把**版式**冻结成一份 scene：页面多大、胶面在哪、每条文字写在哪。PNG / SVG / 浏览器编辑器
-都只读 scene 出图（spec §2 决策 1/3），所以「改一个字的写法」不再等于「重跑整条检测流水线」。
-
-**坐标口径与 record 相同**：原点 = 裁切/拼接后胶面的**左上角**，x 向右、y 向下；长度一律 **cm**，字号一律 **pt**
-（与 dpi 无关）。胶面左边/上边的标签因此是**负坐标**（如 `x_cm = -0.31`）。scene 里**永远没有**照片坐标、角度、
-分析尺度或像素框 —— `validate()` 直接拒绝任何名字里带 `rect` / `bbox` / `angle` / `scale` 的键，与 record 同一条闸。
-
-### 7a. `render --out fig.png` 写哪些文件
-
-| 文件 | 何时写 | 内容 |
-|---|---|---|
-| `fig.png` | 总是 | 成品：胶面 + 文字，`--dpi` 像素，dpi 写进 pHYs |
-| `fig.gel.png` | 总是 | **只有胶面**（裁切/正畸/拼接，拼缝线在内），无文字；scene 的 `gel.image` 指向它 |
-| `fig.scene.json` | 总是 | scene（本节）；PNG/SVG/编辑器都从它出图 |
-| `fig.html` | 总是，`--no-editor` 跳过 | 单文件离线编辑器，内嵌胶面图与 scene（spec §6） |
-| `fig.svg` | `--svg` | 矢量版（spec §5），胶面以 data URI 内嵌 |
-| `fig.mw.json` | 同今天（`--no-mw` 关闭） | 分子量报告，未变 |
-| `--record PATH` 的输出 | 同今天 | 探测记录，未变 |
-
-胶面单独成图是硬约束：文字层怎么改都动不了胶面像素、泳道位置和分子量数字（spec §2 决策 2）。
-
-### 7b. scene 的结构
-
-```json
-{
-  "version": 1,
-  "gel": {"image": "fig.gel.png", "width_cm": 8.60, "height_cm": 6.24},
-  "page": {"margin_min_cm": 0.43, "pad_cm": 0.17, "background": "#ffffff"},
-  "output": {"dpi": 300},
-  "font": {"family": "Arial", "file": "/System/Library/Fonts/Supplemental/Arial.ttf"},
-  "outline": {"color": "#ffffff", "width_frac": 0.07},
-  "items": [
-    {"id": "lane-3", "role": "lane", "bind": {"lane": 3},
-     "text": "3", "x_cm": 1.53, "y_cm": -0.14, "anchor": "bottom-center",
-     "size_pt": 8, "color": "#000000"},
-    {"id": "marker-2-1", "role": "marker",
-     "bind": {"marker_lane": 2, "label_index": 1, "band_y_cm": 0.98},
-     "text": "250 kDa", "x_cm": 0.31, "y_cm": 0.98, "anchor": "middle-right",
-     "size_pt": 8, "color": "#000000"}
-  ],
-  "source": {"record": "fig.record.json", "written": "2026-10-20", "skill": "ep-labeling"}
-}
-```
-
-**顶层键**
-
-| 键 | 含义 |
-|---|---|
-| `version` | schema 版本，当前恒为 `1` |
-| `gel` | `image` = 胶面 PNG 文件名（相对 scene 或绝对）；`width_cm` / `height_cm` = 胶面物理尺寸 |
-| `page` | `margin_min_cm` = 每边最小留白；`pad_cm` = 文字越界之外再加的余量；`background` = 画布底色 |
-| `output` | `dpi` = 默认出图 dpi；`export --dpi` 可覆盖，改 dpi 不改物理尺寸 |
-| `font` | `family` 给 SVG/浏览器；`file` 给 Python writer（`file` 为 `null` 时用 magick 默认字体） |
-| `outline` | 文字白边：`color`（`null` = 不描边）+ `width_frac`（相对字号） |
-| `items[]` | 一条标签一项，见下 |
-| `source` | `record`（只有 `render --record` 时出现）、`written`、`skill`；只作凭据，writer 忽略 |
-
-**`items[]` 字段**
-
-| 键 | 含义 |
-|---|---|
-| `id` | 同一 scene 内唯一且稳定：`lane-3`、`marker-2-1`、用户新增的 `item-N` |
-| `role` | `lane` / `marker` / `free`（用户自己加的标签） |
-| `bind` | 这个标签指向什么：`lane`、`marker_lane` + `label_index` + `band_y_cm`。**writer 忽略它**；留给以后把用户改字带回重跑（spec §10） |
-| `text` | 显示的文字，字符串 |
-| `x_cm` / `y_cm` | 锚点在胶面坐标系里的位置（cm），可为负 |
-| `anchor` | 文字框的哪个点落在 `(x_cm, y_cm)`：`{top\|middle\|bottom}-{left\|center\|right}` |
-| `size_pt` | 字号（pt），与 dpi 无关 |
-| `color` | 文字颜色，`#rrggbb` |
-
-**锚点**：`bottom-center` 是泳道名的默认口径（框底边在胶顶之上 `gap`）；marker 用 `middle-right` 或
-`middle-left`（框竖向中心落在条带行上）。锚点是**存下来**的，writer 不再推导版式。spec 例句里的横-竖写法
-`right-middle` 也接受，读入时归一成 `middle-right`（`scene.norm_anchor`）。文字框指字体的**墨迹框**，
-与 `text_layout.text_extent` 同一口径；SVG/浏览器量不到墨迹时按锚点加标准基线偏移，允许差见 spec §8。
-
-### 7c. 页面规则：推导，不存尺寸
-
-每边留白 = `max(margin_min_cm, 文字越界 + pad_cm)`，页面 = 胶面 + 四边：
-
-```
-left   = max(margin_min_cm, -min(0, 所有标签左边) + pad_cm)
-right  = max(margin_min_cm, max(0, 标签右边 - gel.width_cm) + pad_cm)
-top    = max(margin_min_cm, -min(0, 所有标签上边) + pad_cm)
-bottom = max(margin_min_cm, max(0, 标签下边 - gel.height_cm) + pad_cm)
-page   = (gel.width_cm + left + right) × (gel.height_cm + top + bottom)
-```
-
-所以 scene 里**不存**页面宽高，只存 `margin_min_cm` / `pad_cm` 和标签位置；每个 writer 与编辑器都调
-`scene.page_size_cm()` 现算（`scene.py`）。这样标签改长时页面跟着长，而不是把字裁掉；改短时白边收回。
-胶面在页面里的偏移就是 `left` / `top`，PNG 像素 = `cm / 2.54 × dpi`。
-
-### 7d. `export`：只读 scene，不重新探测
-
-```bash
-python3 scripts/gel_photo.py export fig.scene.json --png out.png [--dpi 300] [--svg out.svg] [--html out.html]
-python3 scripts/gel_photo.py export fig.html --png out.png
-```
-
-- 输入是 **scene JSON** 或**用户存下来的 `fig.html`**（从 `#scene` 块读 scene，从内嵌 data URI 读胶面）。
-- 输出 PNG / SVG / HTML，全部由 scene 现画；**不跑检测、不读原照片、不动泳道与分子量**，约 1 秒。
-- `--dpi` 覆盖 scene 的 `output.dpi`；物理尺寸不变，只改像素数与 pHYs。
-- 文字类请求（改名、删标签、挪 marker 列、改字号/颜色、加自由标签）一律走这条路，**不要**重跑 `render`。
-
-### 7e. 编辑器能改什么、不能改什么
-
-`fig.html` 是单文件：无网络、无外部脚本/字体，双击即可打开。胶面图、scene 和一小段 JS 全在里面。
-
-| 能改（只文字层） | 不能改（回 `render`） |
-|---|---|
-| 改文字、字号（pt）、颜色、锚点 | 胶面图本身、亮度/对比度 |
-| 拖动位置、方向键微调（0.01 cm，Shift 0.1 cm） | 拼缝线（属于胶面，披露是强制的） |
-| 删除标签、加 `free` 标签、Shift 多选整列一起挪 | 泳道位置、保留哪几条泳道（`--keep-lanes`） |
-| 按 role 批量改泳道名 / marker 标签的字号或颜色 | 裁剪、胶体预设、marker 预设、`y_px` 标定、条带配对 |
-| 撤销/重做；下载 PNG（带 pHYs dpi）、SVG、scene JSON | 分子量数字与报告 |
-
-编辑器会按 §7c 的页面规则实时放大/缩小页面。**Save** 下载一份新的 `fig.html`（浏览器不能覆盖原文件），
-标题与文件名会标明是编辑版；之后用 `export fig.html --png` 出图。重跑 `render` 会生成全新 scene，
-**不**把用户的文字改动带过去（`bind` 是为以后做这件事留的）。
+| `selftest.py`、`selftest_sync.py` | `selftest`（后者用假控制口测 sync 执行器） |

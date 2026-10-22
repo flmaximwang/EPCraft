@@ -149,7 +149,14 @@ V0 ─┬─ V1 ── V3 ─┬─ V4 ─┬─ V5 ── V6 ── V7 ── V
 - Fixtures: IMG_1496–1500 in a local fixture folder (not committed if large; record their hashes), with the user-confirmed layouts. IMG_1496 has its marker in well 1. **Ask the user to confirm the other four**, and whether IMG_1497 really has two ladder-like lanes (M and sample 1) before using it as truth.
 - Done when: on all five photos the marker lane is seeded in the confirmed well, and the reference photo is unchanged.
 
-## V9 — Docs, workflow, test prompts
+## V9 — Docs, workflow, test prompts — DONE 2026-10-22
+- Close-out: docs only, no code touched.
+  - `SKILL.md` rewritten around the VectorCraft loop: ask up front (marker preset, gel preset, lanes to trim, ladder wells, then lane names; the user's "DO NOT research … ASK" wording kept verbatim) → `doctor` → optional `probe` → `render` → user edits the Workbench → `sync`. Text-only changes go through the control port (or the user types them), then `sync`; re-render only for a new photo, crop or preset. Checkpoints cover Workbench validation errors, an instance without `--control`, an unsaved document blocking render, and a marker lane that can't pair.
+  - `references/photo-labeling-conventions.md` rewritten: live config fields only (`marker_lanes` = candidate ladder wells), stage 1, document structure and ownership (spec §4), Workbench reading rules and every validation message, the well-anchored seed (V8 numbers), band calling and calibration (V4/V8), `fig.mw.json` v2, Figure/Profiles layout, `sync` semantics and a label-text recipe through the port, and a removed → replacement table.
+  - `references/special-cases-and-pitfalls.md`: kept `rows: 2`, `--gel-lanes` and the stage-1/IM7 pitfalls; added the damaged gel edge, wells cut off, the 0.565 → 0.52 pitch history and the stale-installed-copy lesson; dropped the pitfalls of removed features.
+  - `test-prompts.json` 0.5.0: 31 cases. Old export/scene routes are replaced, and new cases cover move-a-lane → `sync`, rename → label text + `sync`, drop lanes → `trimmed`/`--trim-lanes`, a missing 35 kD band → delete `band 35` + `sync`, an added lane → `sync` and ask for the `?` name, plus no `--control`, re-render overwrite and a stale-copy report.
+  - `specs/ep-labeling-editable-output.md` is marked superseded.
+- `selftest` is 49/49. Docs don't hard-code the count. `env_check.py`'s doctor line still says "16 项" (stale, code).
 - Depends on V6, V7.
 - `SKILL.md`: the deliverables are `fig.vectorcraft` + `fig.png` (+ `fig.mw.json`); the user's loop is "open in VectorCraft, fix the lines on the Workbench, tell the agent to sync"; text-only changes go through the control port, then `sync`; never re-render to fix lanes or bands. Keep the user's pending wording change on the ask-up-front step.
 - References: replace the scene/editor/SVG sections with the document structure (spec §4), ownership, sync errors and `fig.mw.json` v2; link `references/vectorcraft.md`.

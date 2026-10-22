@@ -1,3 +1,5 @@
+> **Superseded by `specs/ep-labeling-vectorcraft.md` (2026-10-22).** The scene file, SVG writer, HTML editor and `export` described here were removed in V6; kept for history only.
+
 # Spec: ep-labeling — editable output (scene file, SVG, HTML editor)
 
 Status: draft · Scope: `skills/ep-labeling` · Written 2026-10-20 · Builds on `specs/ep-labeling-gel-prior.md`
