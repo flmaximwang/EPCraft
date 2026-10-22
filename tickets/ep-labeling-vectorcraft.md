@@ -93,7 +93,22 @@ V0 ─┬─ V1 ── V3 ─┬─ V4 ─┬─ V5 ── V6 ── V7 ── V
 - `plan_sync(old_doc_model, new_model) -> ops`: the minimal list of create/move/delete/replace operations, respecting the ownership table (spec §4.4). It is used by both `render` (from empty) and `sync`.
 - Done when: `selftest` asserts the ops for the spec §11 scripted round trip, and that no op ever touches a label's text or style.
 
-## V6 — `render` end to end; remove old outputs
+## V6 — `render` end to end; remove old outputs — DONE 2026-10-22
+- Close-out: `gel_photo.py` is rewritten around the new pipeline:
+  1. Stage 1 (find, straighten and crop the gel face) → gel-face PNG at `--dpi` (default now 300).
+  2. `workbench.from_image`: lanes from the wells, marker lines from profile peaks.
+  3. `profiles.analyze` → `figure.build_document` → `fig.vectorcraft`.
+  4. VectorCraft (`--port`, launched if needed) exports `fig.png` from artboard 0, and `fig.mw.json` v2 is written with the terminal table.
+- Also in `render`:
+  - **Marker lanes:** it tries each listed marker lane (`lanes.json` `marker_lanes`, then the marker preset's) until one pairs. IMG_1497 falls back from its damaged lane 1 to lane 2.
+  - **Scale check:** it now compares the measured well pitch with the preset (it was the old stage-2 cheap estimate, which gave false 62–107% warnings).
+  - **New flags:** `--trim-lanes`, `--profiles stack|strips`, `--port`.
+  - **V-D4 (overwrite guard):** an existing output is copied to `.vectorcraft.bak`. If the document is open in VectorCraft with unsaved changes, render refuses.
+  - **Removed flags:** `--keep-lanes`, `--svg`, `--no-editor`, `--debug`, `--record`, `--pair-force`, `--marker-policy`, `--margin-frac`, `--outline`, `--no-outline`, `--font`, `--mw-method`, `--splice-gap-cm` and the `export` subcommand each fail with "removed: use …".
+- `probe` prints stage 1, the well seed and every lane's called bands, without writing files. `sync` is wired here (executor: V7).
+- **Deleted:** `editor.py`, `templates/editor.html`, `scene.py`, `scene_png.py`, `scene_svg.py`, `debug_overlay.py`, `record.py`, `lane_fit.py` and `band_fit.py`, plus the dead functions left in `geometry`, `text_layout`, `lane_select` and `mw_report`.
+- **selftest:** the 32 tests of removed code are gone. The import-direction test now encodes the new layering. Test 74 is new (removed flags and pitch check). Total 42/42.
+- **Live, five DGC photos** (`~/Downloads/DGC/v6/`): each gives exactly `IMG_x.vectorcraft`, `IMG_x.png` (1213 × 859 px, pHYs 300 dpi) and `IMG_x.mw.json`. Every seed came from the wells, and every marker pairs 11 bands. Lane names there are placeholders (ladder wells "M", the rest numbered); only IMG_1496's layout is user-confirmed.
 - Depends on V2, V5.
 - `render` → model → write `fig.vectorcraft` → open in the app → export `fig.png` → `fig.mw.json`. `--trim-lanes` is added; `--keep-lanes`, `--svg`, `--no-editor`, `--debug`, `--record` and the `export` subcommand exit with "replaced by …".
 - Delete `editor.py`, `templates/editor.html`, `scene_svg.py`, `scene_png.py`, `debug_overlay.py`, `record.py` and their tests; fold or keep `scene.py` per spec §10.

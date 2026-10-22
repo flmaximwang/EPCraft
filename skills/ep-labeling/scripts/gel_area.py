@@ -152,7 +152,8 @@ def compute(info, preset, angle, gel_lanes=None, pitch_px=None):
     angle  = 本次实际用的角度（magick -rotate 语义，正 = 顺时针）。
     gel_lanes = 照片是裁过的、只含 N 条泳道时给 N（可见宽 = N × lane_pitch_cm）。
     pitch_px  = 泳道间距（旋转画布 px）。T3 之后 render 不再从泳道算法拿它；
-                不给就 estimate_pitch_px() 做一次廉价估计（只用于 scale 核对）。
+                不给就 estimate_pitch_px() 做一次廉价估计（只用于 scale 核对）；
+                给 False = 不在这里核对（render/probe 改用 well_grid 量出的孔距核对，更准）。
 
     返回 dict：
       gel_box   : (x0, y0, x1, y1) 旋转后画布坐标（与 geometry.rotated_rect_bbox 同一套）。
@@ -215,6 +216,8 @@ def compute(info, preset, angle, gel_lanes=None, pitch_px=None):
     checks = [cross_check_height(box_h / px_per_cm, height_cm)]
     if pitch_px is None:
         pitch_px = estimate_pitch_px(info, angle)
+    elif pitch_px is False:
+        pitch_px = None          # 调用方自己做 scale 核对（render/probe 用加样孔量出的孔距，见 gel_photo）
     if pitch_px and pitch_cm:
         checks.append(cross_check_scale(px_per_cm, float(pitch_px), pitch_cm))
     checks.append(_check_canvas((x0, y0, x1, y1), (W1, H1)))

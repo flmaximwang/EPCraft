@@ -15,46 +15,33 @@ import subprocess
 import time
 
 from config import load_gel_size
-from editor import DEFAULT_TEMPLATE as EDITOR_TEMPLATE
-from editor import extract as editor_extract, write_html as editor_write_html
 from gel_area import compute, estimate_pitch_px
 from magick_io import MAGICK, _run, read_ppm, to_gray
 from gel_detect import bg_plane, components, detect_gel, ink_mask
-from band_fit import clusters, fat_rows, group_rows
-from lane_fit import _refine_one, find_lanes
-from lane_select import (cropped_out_markers, layout as lane_layout, nearest_marker,
-                         parse_keep, strips as lane_strips)
-from geometry import load_dims_after, rect_to_analysis, rotate_pt, rotated_rect_bbox
-from mw_report import build_cal, estimate, marker_pairs, parse_mw, report as mw_report
-from record import (bands_from_rows, build as record_build, load as record_load,
-                    write as record_write)
-from scene import (build as scene_build, item_box_cm, load as scene_load,
-                   norm_anchor, page_size_cm, validate as scene_validate,
-                   write as scene_write)
-from scene_png import page_px, write_png as scene_png_write
-from scene_svg import baseline_offset_px, svg_string, write_svg
-from text_layout import annotate_cmd, pick_font, text_extent
+from lane_select import layout as lane_layout, parse_keep, strips as lane_strips
+from geometry import load_dims_after, rotate_pt, rotated_rect_bbox
+from mw_report import build_cal, estimate, format_report_v2, marker_pairs, parse_mw, write_v2
 import vc_file
 import vc_control
 import workbench
 import profiles
 import well_grid
 import figure
-from mw_report import format_report_v2, write_v2
 
 
 def test_import_direction():
-    """stage 不许 import 更靠后的 stage（spec §8 第 5 条）。
+    """模块不许 import 管线里更靠后的模块（stage 1 → 种子 → 剖面 → 模型 → 文档 → 执行 → CLI）。
 
     用 ast 解析真正的 import 语句（不 grep 文本：注释/文档里提到模块名不算依赖）。
     返回违规列表，每条写明「哪个模块 import 了哪个」。
     """
     scripts = os.path.dirname(os.path.abspath(__file__))
-    rules = {
-        "gel_area": {"lane_fit", "band_fit", "lane_select", "gel_photo"},
-        "lane_fit": {"band_fit", "lane_select", "gel_photo"},
-        "band_fit": {"lane_select", "gel_photo"},
-    }
+    # 管线：stage 1（gel_area）→ 泳道种子（well_grid）→ 剖面/条带（profiles）→ 模型（workbench）
+    #       → 文档与 sync 计划（figure）→ 控制口执行（sync_exec）→ CLI（gel_photo）。只许依赖前面的。
+    later = ["well_grid", "profiles", "workbench", "figure", "sync_exec", "gel_photo"]
+    rules = {"gel_area": set(later), "gel_detect": set(later)}
+    for i, mod in enumerate(later):
+        rules[mod] = set(later[i + 1:])
     bad = []
     for mod, forbidden in rules.items():
         path = os.path.join(scripts, mod + ".py")
@@ -74,60 +61,6 @@ def test_import_direction():
                 if top in forbidden:
                     bad.append("%s import 了 %s（第 %d 行）" % (mod, top, node.lineno))
     return bad
-
-
-def test_annotate_geometry():
-    """-annotate 的 y 是文字框的**顶边**（实测），不是基线也不是中心。
-
-    口径：marker 用 ("center_y", y)（框竖直中心对齐条带行）、
-    泳道名用 ("bottom_y", y)（框底边在胶顶之上 gap）。旧代码拿 0.21*s / 0.35*s
-    近似，所以 marker 字整体沉到条带下方 ~1 em、泳道名压进胶里。
-    这里按真实 box 高重算，断言三条。
-    """
-    checks = []
-    ok = lambda n, b, m="": checks.append((n, bool(b), m))
-    f = pick_font()
-    px = int(round(8 / 72.0 * 96))           # 8 pt @ 96 dpi
-    tw, th = text_extent(f, px, "250")
-
-    # 1) -annotate 的 y 是框顶边：画两次（y=50 / y=60），墨迹必须整体平移 10 px（斜率 1、无基线偏移）
-    p1, p2 = "/tmp/gel_ann_a.png", "/tmp/gel_ann_b.png"
-    for p, yy in ((p1, 50), (p2, 60)):
-        _run([MAGICK, "-size", "120x120", "xc:white", "-density", "72", "-font", f,
-              "-pointsize", str(px), "-gravity", "northwest", "-fill", "black",
-              "-annotate", "+20+%d" % yy, "250", p])
-    def _top(p):
-        w, h, rgb = read_ppm(p, 0)
-        g = to_gray(w, h, rgb)
-        rows = [y for y in range(h) if min(g[y * w + x] for x in range(w)) < 200]
-        return (min(rows), max(rows)) if rows else None
-    a, b = _top(p1), _top(p2)
-    ok("-annotate y=框顶边（y+10 → 墨迹整体下移 10，±1px）",
-       a and b and abs((b[0] - a[0]) - 10) <= 1 and abs((b[1] - a[1]) - 10) <= 1,
-       "y=50 墨迹 %s，y=60 墨迹 %s" % (a, b))
-
-    # 2) marker 对齐：框中心必须落在条带行上（±1 px）
-    band_y = 300.0
-    ay = band_y - th / 2.0
-    ok("marker：框竖直中心对齐条带行（±1px）", abs((ay + th / 2.0) - band_y) <= 1.0,
-       "框中心 %.1f，条带行 %.1f" % (ay + th / 2.0, band_y))
-
-    # 3) 泳道名：框底边必须落在 gel_top - gap（±1px），且不压胶
-    for gap in (0, 4):
-        gel_top, g2 = 260.0, float(gap)
-        ay2 = gel_top - g2 - th
-        bottom = ay2 + th
-        ok("泳道名 gap=%d：框底边=胶顶-gap（±1px）" % gap, abs(bottom - (gel_top - g2)) <= 1.0,
-           "框底边 %.1f，期望 %.1f" % (bottom, gel_top - g2))
-        ok("泳道名 gap=%d：不压胶（框底边≤胶顶）" % gap, bottom <= gel_top + 1e-6,
-           "框底边 %.1f > 胶顶 %.1f" % (bottom, gel_top))
-
-    # 4) 留白公式必须用同一个 box 高（t/b 都从 ay、ay+th 算）
-    need_t = gel_top - ay2
-    need_b = (ay2 + th) - gel_top
-    ok("留白：t 用框顶边、b 用框底边", need_t >= 0 and need_b <= 0,
-       "need_t=%.1f need_b=%.1f" % (need_t, need_b))
-    return checks
 
 
 def selftest():
@@ -157,13 +90,6 @@ def selftest():
         ex, ey = ex + (w / 2.0 - 100.0), ey + (h / 2.0 - 50.0)
         assert abs(cxm - ex) < 2.0 and abs(cym - ey) < 2.0, ("rotate 方向/矩阵不符", (cxm, cym), (ex, ey))
         ok += 1
-
-    # 3) 峰簇：三个 run 的中心与宽度
-    prof = [0, 0, 5, 9, 5, 0, 0, 0, 4, 4, 0, 7, 7, 7]
-    cl = clusters(prof, 0, 4)
-    assert len(cl) == 3, cl
-    assert abs(cl[0][0] - 3) < 0.2 and cl[1][1] == 2 and cl[2][0] > cl[1][0], cl
-    ok += 1
 
     # 4) 平面背景 + 暗度判据：亮背景上的暗块进 mask，块外不进；块大到块内没有背景像素也要成立
     w, h = 300, 300
@@ -213,161 +139,6 @@ def selftest():
         assert abs((min(ys) - 0) - 0) <= 3, "裁切上边留白异常 %s" % min(ys)
         assert abs((ch - 1 - max(ys)) - 0) <= 3, "裁切下边留白异常 %s" % (ch - 1 - max(ys))
         ok += 1
-
-    # 7) 写字：dpi 真进 PNG（pHYs），且 pointsize 不被 density 二次放大
-    with tempfile.TemporaryDirectory() as td:
-        o = os.path.join(td, "t.png")
-        _run([MAGICK, "-size", "400x100", "xc:white", "-density", "72", "-font", pick_font(),
-              "-pointsize", "20", "-fill", "black", "-annotate", "+10+40", "Ag1y"] +
-             ["+profile", "*", "-units", "PixelsPerInch", "-density", "300", o])
-        raw = open(o, "rb").read()
-        i = raw.find(b"pHYs")
-        assert i > 0, "PNG 里没有 pHYs（dpi 没写进去）"
-        ppm_x = int.from_bytes(raw[i + 4 : i + 8], "big")
-        assert abs(ppm_x - 11811) <= 1, "pHYs 不是 300 dpi: %d" % ppm_x
-        w, h, rgb = read_ppm(o, None)
-        g = to_gray(w, h, rgb)
-        rows = [y for y in range(h) if any(g[y * w + x] < 128 for x in range(w))]
-        assert 17 <= rows[-1] - rows[0] + 1 <= 23, "字号被 density 放大了: 墨高 %d px（20 pt 应约 19）" % (
-            rows[-1] - rows[0] + 1)
-        ok += 1
-
-    # 旧算法已移除：fill_gaps / pitch_from_row 已删除（泳道数恒等于先验 lane_count，
-    # 间距来自预设而不是「条带最密的一行」），对应的旧用例一并删除。
-
-    # 8) 端到端：5 条泳道（第 3 条只有很淡的带）+ 一道竖纹 → 正好 5 条、位置 ≤3 px。
-    #    旧算法已移除：旧版用泳道启发式（列投影 + 验伪 + 补位）找泳道；T3 起泳道恒由
-    #    stage 2 的 5 条先验格点给出，竖纹不可能再「变成」一条泳道，只在细化窗口外干扰不了它。
-    with tempfile.TemporaryDirectory() as td:
-        src_img = os.path.join(td, "synthetic_gel.png")
-        _synth_gel(src_img, (400, 300), (100, 60, 340, 260),
-                   [124, 172, 220, 268, 316], faint={2: 168},
-                   streak=(292, 60, 260))
-        ga = _synth_ga((100, 60, 340, 260), 48.0, canvas=(400, 300))
-        lf = find_lanes(src_img, ga, 5, longest=400)
-        got = [ln["x_analysis"] for ln in lf["lanes"]]
-        want = [124, 172, 220, 268, 316]
-        assert len(got) == 5, ("泳道数不对", got)
-        for w, g in zip(want, got):
-            assert abs(w - g) <= 3, (want, got)
-        assert all(abs(g - 292) > 6 for g in got), ("竖纹被当成了泳道", got)
-        assert lf["lanes"][2]["measured"], ("淡道 3 应仍有像素证据", lf["lanes"][2])
-        ok += 1
-
-    # 9) 空泳道：15 条格点里第 7 条完全没条带 → 仍返回 15 条；第 7 条 measured=False、
-    #    evidence 有值（可以是 0）、x 落在格点上。空道不是「识别失败」，是 estimated 泳道。
-    with tempfile.TemporaryDirectory() as td:
-        src_img = os.path.join(td, "empty_lane.png")
-        xs = [109 + 18 * i for i in range(15)]          # 胶面 100..370，格点 109..361
-        _synth_gel(src_img, (400, 300), (100, 60, 370, 260), xs, skip={6})
-        ga = _synth_ga((100, 60, 370, 260), 18.0, canvas=(400, 300))
-        lf = find_lanes(src_img, ga, 15, longest=400)
-        assert len(lf["lanes"]) == 15, len(lf["lanes"])
-        lane7 = lf["lanes"][6]
-        assert lane7["measured"] is False, lane7
-        assert isinstance(lane7["evidence"], float) and lane7["evidence"] >= 0.0, lane7
-        assert abs(lane7["x_analysis"] - 217.0) <= 1.0, lane7      # 第 7 条的格点位置（109+6×18）
-        assert sum(1 for ln in lf["lanes"] if ln["measured"]) == 14, lf["lanes"]
-        ok += 1
-
-    # 10) 偏心照片：胶块不在画面中央（左偏/上偏）→ 格点对齐到胶，不跟着画面中心跑。
-    with tempfile.TemporaryDirectory() as td:
-        src_img = os.path.join(td, "off_centre.png")
-        xs = [84, 132, 180, 228, 276]                   # 胶面 60..300，宽 240，pitch 48
-        _synth_gel(src_img, (500, 400), (60, 50, 300, 350), xs)
-        ga = _synth_ga((60, 50, 300, 350), 48.0, canvas=(500, 400))
-        lf = find_lanes(src_img, ga, 5, longest=500)
-        got = [ln["x_analysis"] for ln in lf["lanes"]]
-        assert len(got) == 5, got
-        for w, g in zip(xs, got):
-            assert abs(w - g) <= 2, (xs, got)
-        assert abs(sum(got) / len(got) - 180.0) <= 3, ("跟着画面中心跑了", got)
-        assert abs(sum(got) / len(got) - 250.0) > 30, ("用了画面中心而不是胶中心", got)
-        ok += 1
-
-    # 11) 格点拟合：15 条等距竖线（间距 18 px）→ 拟合 pitch 与真值差 ≤0.5 px、全部 measured。
-    #    顺带验 geometry.rect_to_analysis 是 rotated_rect_bbox 的严格逆变换（5° 往返 ≤1 px）。
-    with tempfile.TemporaryDirectory() as td:
-        src_img = os.path.join(td, "lattice.png")
-        xs = [74 + 18 * i for i in range(15)]          # 胶面 65..335，宽 270
-        _synth_gel(src_img, (400, 300), (65, 60, 335, 260), xs,
-                   band_y=(70, 255), band_v=120, band_half=3)   # 7 px 宽 ≈ 0.4 pitch，同参考照片最窄的真泳道
-        ga = _synth_ga((65, 60, 335, 260), 18.0, canvas=(400, 300))
-        lf = find_lanes(src_img, ga, 15, longest=400)
-        assert len(lf["lanes"]) == 15, len(lf["lanes"])
-        assert abs(lf["pitch"] - 18.0) <= 0.5, ("pitch 偏差", lf["pitch"])
-        assert all(ln["measured"] for ln in lf["lanes"]), \
-            [ln for ln in lf["lanes"] if not ln["measured"]]
-        for w, ln in zip(xs, lf["lanes"]):
-            assert abs(w - ln["x_analysis"]) <= 1.5, (xs, [x["x_analysis"] for x in lf["lanes"]])
-        # 窄斑不算泳道：窗口边上一个 2 px 宽、够显著的斑（参考照片第 10 道）→ 留在格点、estimated
-        prof = [0] * 40
-        prof[13], prof[14] = 14, 9
-        assert _refine_one(prof, 0, 20.0, 18.0, 8.9)[:2] == (20.0, False)
-        prof[17:25] = [6, 12, 16, 18, 17, 13, 8, 5]          # 8 px 宽的淡道 → measured
-        assert _refine_one(prof, 0, 20.0, 18.0, 8.9)[1] is True
-        # 旋转往返：rect_orig → rotated_rect_bbox → rect_to_analysis。
-        # 注意 bbox 是「旋转后四角的轴对齐框」，逆变换回来必然比原矩形略大（不是逐边相等）；
-        # 能钉住的是中心不漂，以及它确实包含原矩形。
-        ang = 5.0
-        (W0, H0), (W1, H1) = load_dims_after(src_img, ang)
-        rb, _ = rotated_rect_bbox((65, 60, 335, 260), ang, (W0, H0), (W1, H1))
-        back = rect_to_analysis(rb, ang, {"path": src_img, "image": (W0, H0),
-                                         "analysis": (W0, H0)})
-        assert abs((back[0] + back[2]) / 2.0 - 200.0) <= 1, back
-        assert abs((back[1] + back[3]) / 2.0 - 160.0) <= 1, back
-        assert back[0] <= 65 and back[1] <= 60 and back[2] >= 335 and back[3] >= 260, back
-        ok += 1
-
-    # 12) 条数恒等：任何输入都 len(lanes) == lane_count（5 / 15 两个预设各测一次，且是空胶）。
-    with tempfile.TemporaryDirectory() as td:
-        src_img = os.path.join(td, "blank.png")
-        _synth_gel(src_img, (400, 300), (100, 60, 370, 260), [])
-        for n, pc in ((5, 54.0), (15, 18.0)):
-            ga = _synth_ga((100, 60, 370, 260), pc, canvas=(400, 300))
-            lf = find_lanes(src_img, ga, n, longest=400)
-            assert len(lf["lanes"]) == n, (n, len(lf["lanes"]))
-            assert not any(ln["measured"] for ln in lf["lanes"]), lf["lanes"]
-        ok += 1
-
-    # 13) 文字对齐几何：-annotate 的 y 是框顶边；marker 框中心对条带行、泳道名框底边在胶顶之上 gap
-    for n, b, m in test_annotate_geometry():
-        if not b:
-            raise AssertionError("对齐几何：%s —— %s" % (n, m))
-    ok += 1          # 一组 6 项算一项，免得分子分母对不上
-
-    # 旧算法已移除：snap_to_anchors 已删除（泳道中心不再吸附到「条带最密那一行」的锚点，
-    # stage 2 只用列剖面 + 先验格点；原先的看护用例随函数一起删掉）。
-
-    # 14) 并带检测：一条行塞两条带（21/20 kD）时，那一行必须比同泳道其他行厚一截
-    assert fat_rows([(100, 6), (120, 6), (140, 6), (160, 15), (180, 6)]) == [(160, 2.5)]
-    assert fat_rows([(10, 5), (20, 5), (30, 5)]) == []      # 均匀的行不许误报
-    assert fat_rows([]) == []
-    ok += 1
-
-    # 15) 并带标签的行分组：{"rows": 2} 的标签吃两条带、落在它们中间；其余一一对应
-    assert group_rows([10, 20, 30], [1, 2]) == [10.0, 25.0]
-    assert group_rows([10, 20, 30], [1, 1, 1]) == [10.0, 20.0, 30.0]
-    assert group_rows([10, 20], [1]) == [10.0]
-    assert group_rows([], [1, 2]) == []
-    ok += 1
-
-    # 16) 字号必须真的生效：`annotate_cmd` 漏写 -pointsize 时 IM 一律按默认 12 pt 画，
-    #     96/300 dpi 的墨迹都会是同一高度（实测踩过：两个 dpi 的字相对胶面大小不同）。
-    with tempfile.TemporaryDirectory() as td:
-        o = os.path.join(td, "pt.png")
-        items = [(20, 140, "250", 24, "#000000"), (240, 140, "250", 48, "#000000")]
-        _run(annotate_cmd([MAGICK, "-size", "460x200", "xc:white"], items, pick_font(), None) + [o])
-        w3, h3, rgb3 = read_ppm(o, None)
-        g3 = to_gray(w3, h3, rgb3)
-
-        def inkh(x0, x1):
-            rows = [y for y in range(h3) if any(g3[y * w3 + x] < 128 for x in range(x0, x1))]
-            return (max(rows) - min(rows) + 1) if rows else 0
-        h_small, h_big = inkh(20, 180), inkh(240, 440)
-        assert h_big > 1.6 * h_small, ("字号没生效（-pointsize 没写进命令？）", h_small, h_big)
-        assert 14 <= h_small <= 20 and 30 <= h_big <= 40, (h_small, h_big)
-    ok += 1
 
     # 17) 分子量标定：完美的 log 线性 marker → 两种方法都应还原；interp 不外推、logfit 外推并标记
     assert parse_mw("21/20 kD") == [21.0, 20.0] and parse_mw("250 kD") == [250.0] and parse_mw("M") == []
@@ -570,62 +341,6 @@ def selftest():
     assert not bad, "stage import 方向错了：" + "；".join(bad)
     ok += 1
 
-    # 26) record 键集 / 量级：递归收集键名，不许出现 rect / bbox / angle / scale；
-    #     所有数值都得是 cm 量级（<200；照片 px 会上千），gel 宽 ≈ 预设宽，lanes = lane_count。
-    preset, rec = _synth_record()
-    bad_keys = [k for k in _walk_keys(rec)
-                if any(t in k.lower() for t in ("rect", "bbox", "angle", "scale"))]
-    assert not bad_keys, ("record 里混进了照片坐标的键", bad_keys)
-    assert "crop" not in rec, ("本轮不该有 crop 键", list(rec))
-    nums = list(_walk_nums(rec))
-    assert nums and all(abs(v) < 200 for v in nums), ("record 里出现了 px 量级的数", max(nums))
-    assert abs(rec["gel"]["width_cm"] - preset["width_cm"]) < 1e-6, rec["gel"]
-    assert len(rec["lanes"]) == preset["lane_count"], (len(rec["lanes"]), preset["lane_count"])
-    ok += 1
-
-    # 27) record 往返：write → load 深度相等；坐标单调（x 递增、每条泳道的 y 递增）
-    with tempfile.TemporaryDirectory() as td:
-        p = os.path.join(td, "rec.json")
-        record_write(rec, p)
-        back = record_load(p)
-        assert back == rec, "record 往返不相等"
-        with open(p, "rb") as f:
-            assert f.read().endswith(b"\n"), "record 文件末尾没有换行"
-        xs = [ln["x_cm"] for ln in back["lanes"]]
-        assert all(b > a for a, b in zip(xs, xs[1:])), ("lanes.x_cm 不递增", xs)
-        for k, rows in back["bands"].items():
-            ys = [r["y_cm"] for r in rows]
-            assert all(b > a for a, b in zip(ys, ys[1:])), ("泳道 %s 的 y_cm 不递增" % k, ys)
-    ok += 1
-
-    # 28) MW 等价：同一组带分别走 record（cm）与旧式 lb（分析 px），标定只差仿射 ⇒ MW 应相同。
-    #     record 的第 2 条泳道标成 estimated：它不该被跳过，只该多一条 note。
-    mrec, mlb = _synth_mw_inputs()
-    labels = ["", "S", ""]
-    ents = [{"text": "100 kD"}, {"text": "10 kD"}, {"text": "1 kD"}]
-    span = [1, 1, 1]
-    as_entry = lambda e, d: dict(e)                       # noqa: E731
-    rep_rec = mw_report(mrec, labels, {0, 2}, 0, ents, span, as_entry)
-    rep_lb = mw_report(mlb, labels, {0, 2}, 0, ents, span, as_entry)
-    assert len(rep_rec["lanes"]) == 1 and len(rep_lb["lanes"]) == 1, (rep_rec["lanes"], rep_lb["lanes"])
-    a = [b["mw_kda"] for b in rep_rec["lanes"][0]["bands"]]
-    b = [b["mw_kda"] for b in rep_lb["lanes"][0]["bands"]]
-    assert len(a) == len(b) == 2, (a, b)
-    assert max(abs(x - y) for x, y in zip(a, b)) <= 0.1, ("record / lb 的 MW 不一致", a, b)
-    assert any("位置是估计值" in n for n in rep_rec["notes"]), rep_rec["notes"]
-    ok += 1
-
-    # 29) 手动标定（markers.y_px / y_frac）必须进 record：MW 只读 record，
-    #     覆盖没写进去的话，人对着 debug 图标的行会被悄悄换回自动行。
-    #     这里直接钉换算：分析 y=10/20、1 cm = 100 画布 px、分析:原图 = 1:2 ⇒ y_cm = 0.2 / 0.4。
-    ga = {"px_per_cm": 100.0, "gel_box": (0.0, 0.0, 100.0, 100.0), "angle": 0.0,
-          "canvas": (200, 200)}       # 角度 0 时画布 = 原图 200×200
-    info = {"image": (200, 200), "analysis": (100, 100)}
-    out = bands_from_rows(50.0, [10.0, 20.0], [(10.0, 4.0, 30.0)], ga, info)
-    assert abs(out[0]["y_cm"] - 0.2) < 1e-6 and abs(out[1]["y_cm"] - 0.4) < 1e-6, out
-    assert out[0]["depth"] == 30.0 and out[1]["width_cm"] > 0, out
-    ok += 1
-
     # 30) stage 4 段边界：15 条、pitch 1.0 cm、胶 15 cm 的合成中心（1..15）。
     #     边界必须是**相邻中心的中点**（不是带边、不是固定半间距）；两端到胶缘。
     xs15 = [float(i) for i in range(1, 16)]
@@ -657,7 +372,7 @@ def selftest():
     assert len(st1) == 1 and abs(st1[0]["dst_x0_cm"]) < 1e-9 and abs(total1 - 3.0) < 1e-9, (st1, total1)
     ok += 1
 
-    # 32) --keep-lanes 语法：逗号/区间、去重升序；越界/空/反向区间/乱写都报错
+    # 32) --trim-lanes 语法：逗号/区间、去重升序；越界/空/反向区间/乱写都报错
     assert parse_keep("1,2,8-10", 15) == [1, 2, 8, 9, 10]
     assert parse_keep("3", 15) == [3]
     assert parse_keep(" 8 - 10 , 2 ", 15) == [2, 8, 9, 10]
@@ -669,417 +384,6 @@ def selftest():
         except RuntimeError:
             pass
     ok += 1
-
-    # 33) marker 策略：列出被裁的 marker；keep 时加与保留段边界最近的一条
-    assert cropped_out_markers([3, 4, 5], {1, 2, 8}) == [1, 2, 8]
-    assert cropped_out_markers([1, 2, 8], {1, 2, 8}) == []
-    assert nearest_marker({1, 2, 8}, [3, 4, 5], xs15) == 2        # 2 离 2.5 最近
-    assert nearest_marker({1, 2, 8}, [6, 7], xs15) == 8           # 8 离 7.5 最近
-    assert nearest_marker({1, 2, 8}, [1, 2, 3], xs15) == 8
-    assert nearest_marker({1}, [1, 2, 3], xs15) is None            # 没有被裁的 marker
-    ok += 1
-
-    # 34) scene schema：合法 scene write→load 往返；非法 anchor、重复 id、rect/bbox/angle/scale
-    #     任一键都必须被 validate 拒绝（spec §4/§9，与 record 的禁键闸同一条）。
-    with tempfile.TemporaryDirectory() as td:
-        sc = _synth_scene()
-        p = os.path.join(td, "synth.scene.json")
-        scene_write(sc, p)
-        assert scene_load(p) == sc, "scene 往返不相等"
-        with open(p, "rb") as f:
-            assert f.read().endswith(b"\n"), "scene 文件末尾没有换行"
-
-        def rejected(mut):
-            bad = json.loads(json.dumps(sc))
-            mut(bad)
-            try:
-                scene_validate(bad)
-            except RuntimeError:
-                return True
-            return False
-
-        assert rejected(lambda x: x["items"][0].__setitem__("anchor", "diagonal")), \
-            "非法 anchor 没报错"
-        # spec §4 的例句用 right-middle（横-竖）：两种顺序都收，规范成 middle-right
-        assert norm_anchor("right-middle") == "middle-right", "right-middle 没有归一"
-        alias = json.loads(json.dumps(sc))
-        alias["items"][0]["anchor"] = "middle-right"
-        scene_validate(alias)      # 规范名当然合法
-        assert rejected(lambda x: x["items"][1].__setitem__("id", x["items"][0]["id"])), \
-            "重复 id 没报错"
-        for k in ("rect", "bbox", "angle", "scale"):
-            assert rejected(lambda x, k=k: x["items"][0]["bind"].__setitem__(k, 1)), \
-                "禁键 %s 没报错" % k
-    ok += 1
-
-    # 35) 页面规则：无越界 → 胶 + 每边 margin_min_cm；一条长标签只让它那一侧长
-    #     overhang + pad_cm，其余三边保持 margin_min_cm（spec §4）。
-    sc = _synth_scene()
-    ps = page_size_cm(sc)
-    assert abs(ps["width_cm"] - (8.6 + 2 * 0.43)) < 1e-9, ps
-    assert abs(ps["height_cm"] - (6.25 + 2 * 0.43)) < 1e-9, ps
-    long_sc = _synth_scene(long_label=True)
-    left, _top, _right, _bottom = item_box_cm(long_sc, long_sc["items"][0])
-    pad = long_sc["page"]["pad_cm"]
-    margin = long_sc["page"]["margin_min_cm"]
-    ps2 = page_size_cm(long_sc)
-    assert left < 0, ("长标签没有越到胶面左边", left)
-    assert abs(ps2["left_cm"] - (-left + pad)) < 1e-9, (ps2, left, pad)
-    assert abs(ps2["right_cm"] - margin) < 1e-9, ps2
-    assert abs(ps2["top_cm"] - margin) < 1e-9, ps2
-    assert abs(ps2["bottom_cm"] - margin) < 1e-9, ps2
-    assert abs(ps2["width_cm"] - (8.6 + ps2["left_cm"] + ps2["right_cm"])) < 1e-9, ps2
-    ok += 1
-
-    # 36/37) 合成胶真跑一次 render：scene 一项一标签（5 个泳道名 + 2 个 marker 标签），
-    #        id 唯一、角色就是 lane/marker；gel.png 与成品里同一块胶面逐像素一致（无字）。
-    with tempfile.TemporaryDirectory() as td:
-        src = os.path.join(td, "synth.png")
-        _synth_gel(src, (400, 300), (100, 60, 340, 260), [124, 172, 220, 268, 316])
-
-        def _cfg(name, obj):
-            path = os.path.join(td, name)
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(obj, f, ensure_ascii=False)
-            return path
-
-        gel_cfg = _cfg("gel.json", {"name": "t", "width_cm": 5.0, "height_cm": 200 / 48.0,
-                                    "lane_count": 5, "lane_pitch_cm": 1.0})
-        lane_cfg = _cfg("lanes.json", {"size": 8, "color": "#000000", "gap": 4,
-                                        "align": "center",
-                                        "labels": ["1", "2", "3", "4", "5"],
-                                        "marker_lanes": [1]})
-        mk_cfg = _cfg("markers.json", {"marker_lane": 1, "size": 6, "gap": 4,
-                                        "color": "#000000",
-                                        "labels": [{"text": "250 kD"}, {"text": "10 kD"}]})
-        out = os.path.join(td, "fig.png")
-        from gel_photo import main as gp_main
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            rc = gp_main(["render", src, "--out", out, "--markers", mk_cfg,
-                          "--lanes", lane_cfg, "--gel-size", gel_cfg, "--dpi", "96"])
-        msg = buf.getvalue()
-        assert rc == 0, msg[-1200:]
-        m = re.search(r"胶面 (\d+)×(\d+) \+ 白底留白 L(\d+) R(\d+) T(\d+) B(\d+)", msg)
-        nlog = re.search(r"；(\d+) 条文字", msg)
-        assert m and nlog, msg[-800:]
-        face_w_px, face_h_px = int(m.group(1)), int(m.group(2))
-        lm, tp = int(m.group(3)), int(m.group(5))
-
-        stem = os.path.splitext(out)[0]
-        gel_png = stem + ".gel.png"
-        scene = scene_load(stem + ".scene.json")
-        ids = [it["id"] for it in scene["items"]]
-        assert len(scene["items"]) == int(nlog.group(1)) == 7, (len(scene["items"]), nlog.group(1))
-        assert {it["role"] for it in scene["items"]} == {"lane", "marker"}, ids
-        assert len(ids) == len(set(ids)), ("id 不唯一", ids)
-        assert scene["gel"]["image"] == os.path.basename(gel_png)
-        assert os.path.isfile(gel_png), gel_png
-        ok += 1
-
-        # gel.png = 成品 PNG 里 (L,T) 起的胶面区域；逐像素相等 ⇒ 胶面上没有字。
-        crop = os.path.join(td, "gel-region.png")
-        _run([MAGICK, out, "-crop", "%dx%d+%d+%d" % (face_w_px, face_h_px, lm, tp),
-              "+repage", crop])
-        w1, h1, body1 = read_ppm(gel_png, None)
-        w2, h2, body2 = read_ppm(crop, None)
-        assert (w1, h1, bytes(body1)) == (w2, h2, bytes(body2)), \
-            ("gel.png 与成品胶面区域不一致", (w1, h1), (w2, h2))
-        ok += 1
-
-        # 38) scene 往返出图：export 只读 scene，应与 render 的成品逐像素相同
-        #     （坐标/页面/字号全部来自 scene；E1 仍用旧画字路径，两条路必须重合）。
-        exp = os.path.join(td, "export.png")
-        with contextlib.redirect_stdout(io.StringIO()):
-            rc = gp_main(["export", stem + ".scene.json", "--png", exp])
-        assert rc == 0, "export 失败"
-        w0, h0, body0 = read_ppm(out, None)
-        w3, h3, body3 = read_ppm(exp, None)
-        assert (w0, h0, bytes(body0)) == (w3, h3, bytes(body3)), \
-            ("export 与 render 不一致", (w0, h0), (w3, h3))
-        ok += 1
-        # 44) 编辑器 HTML：模板里恰好一个 #scene 数据块（解析回同一 scene）、一个
-        #     data:image/png;base64 URI（解码回同一胶面），且没有任何网络 URL。
-        html_path = stem + ".html"
-        assert os.path.isfile(html_path), ("render 没写编辑器", html_path)
-        with open(html_path, encoding="utf-8") as f:
-            html = f.read()
-        blocks = re.findall(
-            r'<script\b[^>]*\bid\s*=\s*["\']scene["\'][^>]*>([\s\S]*?)</script>',
-            html, re.I)
-        assert len(blocks) == 1, ("#scene 块不是恰好一个", len(blocks))
-        assert json.loads(blocks[0]) == scene, "HTML 里的 scene 与 render 写的不一致"
-        uris = re.findall(r'data:image/png;base64,([A-Za-z0-9+/=]+)', html)
-        assert len(uris) == 1, ("胶面 data URI 不是恰好一个", len(uris))
-        with open(gel_png, "rb") as f:
-            assert base64.b64decode(uris[0]) == f.read(), "HTML 里的胶面字节变了"
-        assert not re.search(r'https?://|//cdn', html), "编辑器模板里有网络 URL"
-        ok += 1
-
-        # 44b) --no-editor：批量模式不写 HTML。
-        out_no = os.path.join(td, "fig-noeditor.png")
-        with contextlib.redirect_stdout(io.StringIO()):
-            rc = gp_main(["render", src, "--out", out_no, "--markers", mk_cfg,
-                          "--lanes", lane_cfg, "--gel-size", gel_cfg, "--dpi", "96",
-                          "--no-editor"])
-        assert rc == 0, "--no-editor render 失败"
-        assert not os.path.exists(os.path.splitext(out_no)[0] + ".html"), \
-            "--no-editor 仍然写了 HTML"
-
-        # 45) extract 往返：改 parsed scene 里一条文字，写回 HTML 再 extract ——
-        #     文字是新的、胶面字节一个不差（spec §6 的 Save 就是这么写文件）。
-        sc2, gel2 = editor_extract(html_path)
-        assert gel2 == base64.b64decode(uris[0]), "extract 的胶面字节不对"
-        sc2["items"][0]["text"] = "EDITED 250 kD"
-        j2 = json.dumps(sc2, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c")
-        edited_html = re.sub(
-            r'(<script\b[^>]*\bid\s*=\s*["\']scene["\'][^>]*>)[\s\S]*?(</script>)',
-            lambda m: m.group(1) + j2 + m.group(2), html, count=1, flags=re.I)
-        edited_path = os.path.join(td, "fig-edited.html")
-        with open(edited_path, "w", encoding="utf-8") as f:
-            f.write(edited_html)
-        sc3, gel3 = editor_extract(edited_path)
-        assert sc3["items"][0]["text"] == "EDITED 250 kD", "extract 没读到改过的文字"
-        assert gel3 == gel2, "extract 第二次的胶面字节变了"
-        ok += 1
-
-        # 46) export 直接吃编辑器 HTML：与 render 的成品逐像素相同（scene + 内嵌胶面）。
-        from_html = os.path.join(td, "from-html.png")
-        with contextlib.redirect_stdout(io.StringIO()):
-            rc = gp_main(["export", html_path, "--png", from_html])
-        assert rc == 0, "export HTML 失败"
-        w4, h4, body4 = read_ppm(from_html, None)
-        assert (w0, h0, bytes(body0)) == (w4, h4, bytes(body4)), \
-            ("export HTML 与 render 不一致", (w0, h0), (w4, h4))
-        ok += 1
-
-        # 47) JS core 在 node 下验：pHYs ppm=11811@300dpi、签名不变、pagePx 对得上
-        #     Python 的 page_size_cm、sceneToSvg 每条一个正文 <text>。没 node 就明确跳过。
-        note = _js_core_test(scene, gel_png, td, expected=(w0, h0, lm, tp, face_w_px, face_h_px))
-        print("[i] JS core：%s" % note)
-        ok += 1
-
-
-        # 39) export 复现 render：magick compare -metric AE 必须为 0（逐像素；不只比同一份字节）
-        assert _ae(out, exp).split()[0] == "0", ("export 与 render 的 AE 不为 0", _ae(out, exp))
-        ok += 1
-
-        # 40) writer 页面：page_px = page_size_cm × dpi（每边只取整一次）；默认 dpi 取 scene。
-        #     一条更长的标签只让页面长在**左边**（右边/上边/下边仍是 margin_min_cm）。
-        sc_short = _scene_one_label("250 kD")
-        sc_long = _scene_one_label("A VERY LONG LABEL 250 kD")
-        assert page_px(sc_short) == page_px(sc_short, sc_short["output"]["dpi"]), \
-            "page_px 的默认 dpi 不是 scene.output.dpi"
-        for dpi in (96, 300):
-            ppc = dpi / 2.54
-            ps = page_size_cm(sc_short)
-            Wp, Hp, Lp, Tp, fw, fh = page_px(sc_short, dpi)
-            assert fw == int(round(sc_short["gel"]["width_cm"] * ppc)), (fw, dpi)
-            assert fh == int(round(sc_short["gel"]["height_cm"] * ppc)), (fh, dpi)
-            assert Lp == int(round(ps["left_cm"] * ppc)), (Lp, dpi)
-            assert Tp == int(round(ps["top_cm"] * ppc)), (Tp, dpi)
-            assert Wp == fw + Lp + int(round(ps["right_cm"] * ppc)), (Wp, dpi)
-            assert Hp == fh + Tp + int(round(ps["bottom_cm"] * ppc)), (Hp, dpi)
-            # 每边各取整一次：总宽与「页面 cm × ppc」相差不超过各边的取整误差（≤2 px）
-            assert abs(Wp - ps["width_cm"] * ppc) <= 2.0, (Wp, ps, dpi)
-            assert abs(Hp - ps["height_cm"] * ppc) <= 2.0, (Hp, ps, dpi)
-        ps_s, ps_l = page_size_cm(sc_short), page_size_cm(sc_long)
-        Ws, _Hs = page_px(sc_short, 96)[:2]
-        Wl, Hl = page_px(sc_long, 96)[:2]
-        assert Wl > Ws + 1, ("长标签没有让页面变宽", Ws, Wl)
-        assert Hl == _Hs, ("长标签不该改变页面高度", _Hs, Hl)
-        assert abs(ps_l["right_cm"] - ps_s["right_cm"]) < 1e-9, (ps_s, ps_l)
-        assert abs(ps_l["top_cm"] - ps_s["top_cm"]) < 1e-9, (ps_s, ps_l)
-        assert abs(ps_l["bottom_cm"] - ps_s["bottom_cm"]) < 1e-9, (ps_s, ps_l)
-        assert ps_l["left_cm"] > ps_s["left_cm"] + 0.5, ("页面没长在左边", ps_s, ps_l)
-        ok += 1
-
-        # 41) scene → PNG（writer 独立跑）：手写 3 条标签 + 一张 _synth_gel 的胶面。
-        #     页面像素必须等于 page_px；每条标签的**墨迹框中心**必须落在锚点算出的位置（±1 px）。
-        gel_png = os.path.join(td, "writer-gel.png")
-        _synth_gel(gel_png, (189, 151), (20, 15, 169, 136), [50, 95, 140])
-        font = pick_font()
-        wsc = {
-            "version": 1,
-            "gel": {"image": os.path.basename(gel_png), "width_cm": 5.0, "height_cm": 4.0},
-            "page": {"margin_min_cm": 0.5, "pad_cm": 0.2, "background": "#ffffff"},
-            "output": {"dpi": 96},
-            "font": {"family": "Arial", "file": font},
-            "outline": {"color": None, "width_frac": 0.07},
-            "items": [
-                {"id": "lane-1", "role": "lane", "bind": {"lane": 1}, "text": "1",
-                 "x_cm": 1.5, "y_cm": -0.2, "anchor": "bottom-center",
-                 "size_pt": 8, "color": "#000000"},
-                {"id": "marker-1-1", "role": "marker",
-                 "bind": {"marker_lane": 1, "label_index": 1, "band_y_cm": 2.0},
-                 "text": "250 kD", "x_cm": 0.2, "y_cm": 2.0, "anchor": "middle-right",
-                 "size_pt": 8, "color": "#000000"},
-                {"id": "free-1", "role": "free", "bind": {}, "text": "WT",
-                 "x_cm": 4.5, "y_cm": 4.2, "anchor": "top-left",
-                 "size_pt": 8, "color": "#000000"},
-            ],
-            "source": {"skill": "ep-labeling"},
-        }
-        wpath = os.path.join(td, "writer.scene.json")
-        scene_write(wsc, wpath)                              # 先过 schema 再出图
-        wpng = os.path.join(td, "writer.png")
-        res = scene_png_write(wsc, wpng)
-        assert (res["width_px"], res["height_px"]) == page_px(wsc)[:2], res
-        assert res["items"] == 3 and len(res["out_items"]) == 3, res
-        wimg, himg, rgb = read_ppm(wpng, None)
-        assert (wimg, himg) == page_px(wsc)[:2], \
-            ("writer 落盘尺寸与 page_px 不一致", (wimg, himg), page_px(wsc)[:2])
-        gray = to_gray(wimg, himg, rgb)
-        ppc = 96 / 2.54
-        for it in wsc["items"]:
-            px = max(6, int(round(float(it["size_pt"]) / 72.0 * 96)))
-            _l, _t, _r, _b = item_box_cm(wsc, it)
-            bx, by = res["left_px"] + _l * ppc, res["top_px"] + _t * ppc
-            # 同一串字在同一套 annotate 下的墨迹相对 text box 左上角的偏移（控制图）
-            ctrl = os.path.join(td, "ctrl-%s.png" % it["id"])
-            _run(annotate_cmd([MAGICK, "-size", "200x80", "xc:white"],
-                               [(100, 20, it["text"], px, it["color"])], font, None) + [ctrl])
-            cw, ch, crgb = read_ppm(ctrl, None)
-            cbb = _ink_bbox(to_gray(cw, ch, crgb), cw, ch, 0, 0, cw, ch)
-            assert cbb, ("控制图没有墨迹", it["id"])
-            want = [int(round(bx)) + cbb[0] - 100, int(round(by)) + cbb[1] - 20,
-                    int(round(bx)) + cbb[2] - 100, int(round(by)) + cbb[3] - 20]
-            got = _ink_bbox(gray, wimg, himg, want[0] - 3, want[1] - 3,
-                            want[2] + 4, want[3] + 4)
-            assert got, ("成品里找不到标签墨迹", it["id"], want)
-            dcx = abs((got[0] + got[2]) / 2.0 - (want[0] + want[2]) / 2.0)
-            dcy = abs((got[1] + got[3]) / 2.0 - (want[1] + want[3]) / 2.0)
-            assert dcx <= 1 and dcy <= 1, ("墨迹中心偏了", it["id"], got, want, dcx, dcy)
-        ok += 1
-
-        # 42) writer 的 dpi 真进 PNG：identify 的 %x 与 pHYs 都必须是本次 dpi（--dpi 300 覆盖）。
-        w300 = os.path.join(td, "writer-300.png")
-        res300 = scene_png_write(wsc, w300, dpi=300)
-        assert (res300["width_px"], res300["height_px"]) == page_px(wsc, 300)[:2], res300
-        assert (res300["width_px"], res300["height_px"]) > (res["width_px"], res["height_px"])
-        res_x = _run([MAGICK, "identify", "-units", "PixelsPerInch", "-format", "%x", w300], False)
-        assert res_x.split() and abs(float(res_x.split()[0]) - 300) <= 1, res_x
-        raw = open(w300, "rb").read()
-        i = raw.find(b"pHYs")
-        assert i > 0, "writer 的 PNG 没有 pHYs"
-        ppm_x = int.from_bytes(raw[i + 4 : i + 8], "big")
-        assert abs(ppm_x - round(300 / 0.0254)) <= 1, ("pHYs 不是 300 dpi", ppm_x)
-        ok += 1
-
-    # 39/40/41) SVG writer（spec §5）：XML、页面 cm、内嵌胶面、item 数/id、白边两遍、
-    #            与 PNG 的墨迹中心（§8 容差 0.03 cm）。
-    with tempfile.TemporaryDirectory() as td:
-        import xml.etree.ElementTree as ET
-        gel = os.path.join(td, "synth.gel.png")
-        sc = _synth_svg_scene(gel, dpi=300)
-        sp = os.path.join(td, "fig.scene.json")
-        scene_write(sc, sp)
-        svg = os.path.join(td, "fig.svg")
-        info = write_svg(sc, svg, gel_path=gel, dpi=300)
-        ps = page_size_cm(sc)
-        ns = "{http://www.w3.org/2000/svg}"
-        root = ET.parse(svg).getroot()
-
-        # 39) 页面尺寸：width/height 带 cm，viewBox 同一组数（1 user unit = 1 cm）
-        w_cm = float(root.get("width")[:-2])
-        h_cm = float(root.get("height")[:-2])
-        vb = [float(v) for v in root.get("viewBox").split()]
-        assert root.get("width").endswith("cm") and root.get("height").endswith("cm"), root.attrib
-        assert abs(w_cm - ps["width_cm"]) < 1e-3 and abs(h_cm - ps["height_cm"]) < 1e-3, \
-            (w_cm, h_cm, ps)
-        assert vb == [0.0, 0.0, w_cm, h_cm], (vb, w_cm, h_cm)
-        assert info["page_cm"] == (ps["width_cm"], ps["height_cm"]), info
-
-        # 胶面：恰好一个 <image>，href 是 data URI，解出来就是 gel PNG 的字节
-        imgs = root.findall(".//%simage" % ns)
-        assert len(imgs) == 1, ("<image> 不是 1 个", len(imgs))
-        href = imgs[0].get("href") or imgs[0].get("{http://www.w3.org/1999/xlink}href")
-        assert href and href.startswith("data:image/png;base64,"), (href or "")[:40]
-        with open(gel, "rb") as f:
-            want = f.read()
-        assert base64.b64decode(href.split(",", 1)[1]) == want, "内嵌的胶面字节与 gel PNG 不一致"
-
-        # 每条 item 一个 <text>（不含白边），id 全在；属性齐全
-        texts = root.findall(".//%stext" % ns)
-        fills = [t for t in texts if not str(t.get("id")).endswith("-outline")]
-        assert len(fills) == len(sc["items"]) == info["n_items"], (len(fills), len(sc["items"]))
-        assert {t.get("id") for t in fills} == {it["id"] for it in sc["items"]}, \
-            ([t.get("id") for t in fills], [it["id"] for it in sc["items"]])
-        for t in fills:
-            assert t.get("data-role") in ("lane", "marker", "free"), t.attrib
-            assert json.loads(t.get("data-bind")) == next(
-                it["bind"] for it in sc["items"] if it["id"] == t.get("id")), t.attrib
-            assert t.get("font-family") == sc["font"]["family"] and t.get("fill")
-            assert t.get("text-anchor") in ("start", "middle", "end"), t.attrib
-
-        # 几何断言：x/y/anchor/字号都能从 scene 复算（不依赖栅格化器）
-        # 基线偏移是实测值（模块头那张表），先钉两个已知点：11px→10、33px→30。
-        assert baseline_offset_px(pick_font(), 11) == 10, baseline_offset_px(pick_font(), 11)
-        assert baseline_offset_px(pick_font(), 33) == 30, baseline_offset_px(pick_font(), 33)
-        for it, t in zip(sc["items"], fills):
-            _left, top_cm, _r, _b = item_box_cm(sc, it)
-            _v, h = norm_anchor(it["anchor"]).split("-")
-            want_anchor = {"left": "start", "center": "middle", "right": "end"}[h]
-            assert t.get("text-anchor") == want_anchor, (it["id"], t.get("text-anchor"), want_anchor)
-            assert abs(float(t.get("x")) - (ps["left_cm"] + float(it["x_cm"]))) < 1e-3, \
-                (it["id"], t.get("x"), ps["left_cm"] + float(it["x_cm"]))
-            px = max(6, int(round(float(it["size_pt"]) / 72.0 * 300)))
-            want_y = ps["top_cm"] + top_cm + baseline_offset_px(sc["font"]["file"], px) * 2.54 / 300
-            assert abs(float(t.get("y")) - want_y) < 1e-3, (it["id"], t.get("y"), want_y)
-            assert abs(float(t.get("font-size")) - float(it["size_pt"]) * 2.54 / 72.0) < 1e-4, \
-                (it["id"], t.get("font-size"))
-        ok += 1
-
-        # 40) 白边：text 数翻倍，每个 outline 都在自己的 fill **前面**（两遍画，不是 paint-order）
-        sc_o = _synth_svg_scene(gel, dpi=300, outline="#ffffff")
-        svg_o = os.path.join(td, "outline.svg")
-        write_svg(sc_o, svg_o, gel_path=gel, dpi=300)
-        root_o = ET.parse(svg_o).getroot()
-        texts_o = root_o.findall(".//%stext" % ns)
-        assert len(texts_o) == 2 * len(sc_o["items"]), (len(texts_o), len(sc_o["items"]))
-        order = [t.get("id") for t in texts_o]
-        for it in sc_o["items"]:
-            ident = it["id"]
-            assert order.index(ident + "-outline") < order.index(ident), \
-                ("outline 不在 fill 前面", ident, order)
-            o = next(t for t in texts_o if t.get("id") == ident + "-outline")
-            f = next(t for t in texts_o if t.get("id") == ident)
-            assert o.get("stroke") == "#ffffff" and o.get("fill") == "#ffffff", o.attrib
-            assert o.get("stroke-linejoin") == "round" and float(o.get("stroke-width")) > 0, o.attrib
-            assert o.get("x") == f.get("x") and o.get("y") == f.get("y"), ("白边几何变了", ident)
-            assert not f.get("stroke"), ("fill text 不该带描边", ident)
-        # scene.outline 为空 ⇒ 没有白边 text（spec §5）
-        sc_n = json.loads(json.dumps(sc_o))
-        sc_n["outline"] = None
-        root_n = ET.fromstring(svg_string(sc_n, gel_path=gel, dpi=300))
-        assert len(root_n.findall(".//%stext" % ns)) == len(sc["items"]), "outline=None 仍画了白边"
-        ok += 1
-
-        # 41) 保真（§8）：同一 scene、同一 dpi → SVG 与 PNG 的每条标签墨迹中心差 ≤ 0.03 cm。
-        #     栅格化优先用 rsvg-convert（本机 ImageMagick 的 SVG 委托就是它）；本机 magick
-        #     自带 MSVG 渲染器按 user unit 排字（墨迹大 3–4 倍），不能当文字度量的基准，
-        #     这时只保留上面的几何断言（brief 允许）。
-        png = os.path.join(td, "fig.png")
-        with contextlib.redirect_stdout(io.StringIO()):
-            rc = gp_main(["export", sp, "--png", png, "--dpi", "300"])
-        assert rc == 0, "export（保真对照的 PNG）失败"
-        raster = os.path.join(td, "raster.png")
-        tool = _svg_raster(svg, raster, 300)
-        if tool is None:
-            print("[i] 没有 rsvg-convert，SVG 保真只做几何断言（不做像素比较）")
-        else:
-            worst = 0.0
-            for it in sc["items"]:
-                box = item_box_cm(sc, it)
-                a = _ink_centre_cm(png, box, ps)
-                b = _ink_centre_cm(raster, box, ps)
-                assert a and b, ("区域里找不到墨迹", it["id"], a, b)
-                dx, dy = abs(b[0] - a[0]), abs(b[1] - a[1])
-                worst = max(worst, dx, dy)
-                assert dx <= 0.03 and dy <= 0.03, \
-                    ("SVG 与 PNG 的墨迹中心超出 §8 容差", it["id"], round(dx, 4), round(dy, 4))
-            assert worst <= 0.03, worst
-        ok += 1
 
     # 51) .vectorcraft 往返（V1）：三画板、四图层（含隐藏+锁定+不打印）、两条线、两段文字、
     #     同一张图被两个对象引用（其中一个在剪切组里）→ write → read：名字/旗标/几何/字节都不变，
@@ -1769,165 +1073,29 @@ def selftest():
     assert abs(c2 - (fx + workbench.centres(m7)[2] * PTc)) < 0.01, "改过的泳道 3 标签没重新居中"
     ok += 1
 
+    # 74) 去掉的输出与参数（V6）：--keep-lanes / --svg / --no-editor / --debug / --record 与 export 子命令
+    #     都报「已经去掉了：用什么代替」并非 0 退出（不静默忽略）；孔距核对只在偏差 > 10% 时警告。
+    from gel_photo import main as gp_main, _check_pitch
+    for extra in (["--keep-lanes", "1-3"], ["--svg"], ["--no-editor"], ["--debug", "d.png"], ["--record", "r.json"]):
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            rc = gp_main(["render", "/nonexistent/x.jpg", "--out", "/tmp/x.vectorcraft",
+                          "--gel-size", "/nonexistent/g.json"] + extra)
+        assert rc == 2 and "已经去掉了" in buf.getvalue() and extra[0] in buf.getvalue(), (extra, buf.getvalue())
+    buf = io.StringIO()
+    with contextlib.redirect_stderr(buf):
+        rc = gp_main(["export", "fig.scene.json", "--png", "x.png"])
+    assert rc == 2 and "sync" in buf.getvalue(), buf.getvalue()
+    for pitch, warn in ((0.515, False), (0.40, True)):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            _check_pitch({"source": "wells", "pitch_cm": pitch}, {"lane_pitch_cm": 0.52})
+        assert ("[!] scale" in buf.getvalue()) == warn, (pitch, buf.getvalue())
+    ok += 1
+
     print("selftest %d/%d 通过" % (ok, ok))
     return 0
 
-
-
-def _ae(a, b):
-    """magick compare -metric AE：两张 PNG 的差异像素数（字符串，期望 "0"）。"""
-    p = subprocess.run([MAGICK, "compare", "-metric", "AE", a, b, "null:"],
-                       capture_output=True, text=True)
-    return p.stderr.strip()
-
-
-def _ink_bbox(gray, w, h, x0, y0, x1, y1):
-    """在 (x0,y0)-(x1,y1) 窗口里找墨迹（灰度 <128）的包围盒；没有返回 None。"""
-    xs, ys = [], []
-    for y in range(max(0, int(y0)), min(h, int(y1))):
-        row = y * w
-        for x in range(max(0, int(x0)), min(w, int(x1))):
-            if gray[row + x] < 128:
-                xs.append(x)
-                ys.append(y)
-    if not xs:
-        return None
-    return (min(xs), min(ys), max(xs), max(ys))
-
-
-def _scene_one_label(text, x_cm=1.0, y_cm=3.0, size=8.0, dpi=96):
-    """selftest 用的单标签 scene（middle-right，右边压在 x_cm）：验页面规则与左越界。"""
-    ppc, font = 50.0, pick_font()
-    out_ppc = dpi / 2.54
-    scale = out_ppc / ppc
-    face = (100.0, 50.0, 100.0 + 8.6 * ppc, 50.0 + 6.25 * ppc)
-    px = max(6, int(round(size / 72.0 * dpi)))
-    tw, th = text_extent(font, px, text)
-    bw, bh = tw / scale, th / scale
-    ax = face[0] + x_cm * ppc - bw
-    ay = face[1] + y_cm * ppc - bh / 2.0
-    item = {"ax": ax, "ay": ay, "box_w": bw, "box_h": bh, "text": text,
-            "size_pt": size, "color": "#000000", "role": "free", "bind": {},
-            "anchor": "middle-right"}
-    return scene_build([item], face, ppc, dpi=dpi, font=font, margin_frac=0.05,
-                       gel_image="gel.png")
-
-
-
-def _js_core_test(scene, gel_png_path, td, expected):
-    """把模板里的 #core 拿到 node 下跑（spec §9：没有 node 就明确跳过，不静默）。
-
-    measureText 用 Python text_extent 的同一组数字做 stub，所以 pagePx 必须对得上
-    render 的像素；pHYs 用真的胶面 PNG 验签名/块类型/ppm；SVG 数 data-role。
-    """
-    node = None
-    for cand in ("/Users/maxim/.local/bin/node", shutil.which("node")):
-        if cand and os.path.isfile(cand):
-            node = cand
-            break
-    if not node:
-        return "node 未找到，跳过（spec §9：只在有 node 时跑）"
-
-    with open(EDITOR_TEMPLATE, encoding="utf-8") as f:
-        tpl = f.read()
-    m = re.search(r'<script\b[^>]*\bid\s*=\s*["\']core["\'][^>]*>([\s\S]*?)</script>',
-                  tpl, re.I)
-    assert m, "编辑器模板里找不到 #core"
-    dpi = int(scene["output"]["dpi"])
-    metrics = {}
-    for it in scene["items"]:
-        px = max(6, int(round(float(it["size_pt"]) / 72.0 * dpi)))
-        w, h = text_extent(scene["font"].get("file"), px, it["text"])
-        metrics["%d|%s" % (px, it["text"])] = [w, h]
-    with open(gel_png_path, "rb") as f:
-        png_b64 = base64.b64encode(f.read()).decode("ascii")
-
-    harness = r'''
-"use strict";
-var METRICS = %s;
-var ctx = {
-  font: "",
-  measureText: function (text) {
-    var px = parseInt(this.font, 10);
-    var v = METRICS[px + "|" + text];
-    var w = v ? v[0] : text.length * 0.55 * px;
-    var asc = v ? v[1] : 0.72 * px;
-    return {width: w, actualBoundingBoxLeft: 0, actualBoundingBoxRight: w,
-            actualBoundingBoxAscent: asc, actualBoundingBoxDescent: 0,
-            fontBoundingBoxAscent: asc, fontBoundingBoxDescent: 0};
-  }
-};
-function OffscreenCanvas() { this.getContext = function () { return ctx; }; }
-var PNG_B64 = %s;
-var SCENE = %s;
-var EXPECT = %s;
-%s
-var C = globalThis.__editorCore;
-if (!C) { console.error("[js] core 没有导出 __editorCore"); process.exit(2); }
-var pp = C.pagePx(SCENE, 96);
-var keys = ["W", "H", "L", "T", "faceW", "faceH"];
-for (var i = 0; i < keys.length; i++) {
-  if (Math.abs(pp[keys[i]] - EXPECT[keys[i]]) > 1) {
-    console.error("[js] pagePx " + keys[i] + " " + pp[keys[i]] + " != " + EXPECT[keys[i]]);
-    process.exit(3);
-  }
-}
-var png = Buffer.from(PNG_B64, "base64");
-var ab = png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength);
-var withp = new Uint8Array(C.insertPhys(ab, 300));
-var sig = [137, 80, 78, 71, 13, 10, 26, 10];
-for (var s = 0; s < 8; s++) {
-  if (withp[s] !== sig[s]) { console.error("[js] PNG 签名被破坏"); process.exit(4); }
-}
-var typ = String.fromCharCode(withp[37], withp[38], withp[39], withp[40]);
-if (typ !== "pHYs") { console.error("[js] IHDR 后不是 pHYs: " + typ); process.exit(5); }
-var ppm = ((withp[41] << 24) | (withp[42] << 16) | (withp[43] << 8) | withp[44]) >>> 0;
-if (ppm !== 11811) { console.error("[js] ppm=" + ppm + " 不是 11811"); process.exit(6); }
-// placements 必须以**页面**为原点（含页面留白）：漏加 (L, T) 时 marker 列会是负数，
-// canvas 上就被裁掉、PNG 只剩胶面（这就是 E4 第一版的真实故障）。
-var pl = C.placements(SCENE, 96);
-if (pl.length !== SCENE.items.length) { console.error("[js] placements 数不对"); process.exit(10); }
-var minx = Math.min.apply(null, pl.map(function (p) { return p.x; }));
-var miny = Math.min.apply(null, pl.map(function (p) { return p.y; }));
-if (!(minx >= 0 && miny >= 0)) {
-  console.error("[js] 有标签落在页面外：min x=" + minx + " min y=" + miny); process.exit(11);
-}
-if (pl[0].page.L !== pp.L || pl[0].page.T !== pp.T) {
-  console.error("[js] placements 的页面留白与 pagePx 不一致"); process.exit(12);
-}
-var svg = C.sceneToSvg(SCENE, "data:image/png;base64,");
-var roles = (svg.match(/data-role=/g) || []).length;
-if (roles !== SCENE.items.length) {
-  console.error("[js] SVG <text> 数 " + roles + " != " + SCENE.items.length);
-  process.exit(7);
-}
-for (var k = 0; k < SCENE.items.length; k++) {
-  if (svg.indexOf('id="' + SCENE.items[k].id + '"') < 0) {
-    console.error("[js] SVG 缺 id " + SCENE.items[k].id); process.exit(8);
-  }
-}
-// SVG 坐标也以页面左上角为原点：最左的标签 x 必须 ≥ 0，且与 placements 差 < 1px。
-var xs = svg.match(/<text id="[^"]+"[^>]* x="([-0-9.]+)"/g) || [];
-var sx = xs.map(function (m) { return parseFloat(m.match(/x="([-0-9.]+)"/)[1]); });
-if (!sx.length || Math.min.apply(null, sx) < 0) {
-  console.error("[js] SVG 标签落在页面外（少了页面留白）：" + sx.slice(0, 3)); process.exit(13);
-}
-console.log("[js] core ok：pagePx " + pp.W + "x" + pp.H + "，pHYs ppm " + ppm +
-            "，SVG " + roles + " 条 <text>，长度 " + svg.length);
-''' % (json.dumps(metrics, ensure_ascii=False), json.dumps(png_b64),
-       json.dumps(scene, ensure_ascii=False),
-       json.dumps({"W": expected[0], "H": expected[1], "L": expected[2],
-                   "T": expected[3], "faceW": expected[4], "faceH": expected[5]}),
-       m.group(1))
-
-    path = os.path.join(td, "core-test.js")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(harness)
-    p = subprocess.run([node, path], capture_output=True, text=True)
-    assert p.returncode == 0, ("node core 测试失败\n%s\n%s" % (p.stdout, p.stderr))
-    lines = [ln for ln in p.stdout.splitlines() if ln.startswith("[js]")]
-    assert lines, "node 没打印结果：%s" % p.stdout
-    return lines[-1]
 
 
 def _walk_keys(o):
@@ -1941,202 +1109,15 @@ def _walk_keys(o):
             yield from _walk_keys(v)
 
 
-def _walk_nums(o):
-    """递归收集所有数值（bool 不算；record 的 cm 量级检查用）。"""
-    if isinstance(o, bool):
-        return
-    if isinstance(o, (int, float)):
-        yield o
-    elif isinstance(o, dict):
-        for v in o.values():
-            yield from _walk_nums(v)
-    elif isinstance(o, (list, tuple)):
-        for v in o:
-            yield from _walk_nums(v)
-
-
 def _synth_record():
-    """selftest 用的合成 record 输入：15 条泳道、每条 3 条带，角度 0（换算可手算）。"""
-    ppc = 50.0
-    preset = _t2_preset(8.6, 6.9, trim_top=0.3)          # 15 条 × 0.565 cm
-    gx0, gy0 = 100.0, 50.0
-    gel_box = (gx0, gy0, gx0 + 8.6 * ppc, gy0 + 6.6 * ppc)
-    info = {"image": (600, 400), "analysis": (300, 200)}   # a2x = a2y = 2
-    ga = {"gel_box": gel_box, "angle": 0.0, "px_per_cm": ppc,
-          "width_cm": 8.6, "height_cm": 6.6, "lane_pitch_cm": 0.565,
-          "canvas": (600, 400),
-          "checks": [{"name": "height", "ok": True, "detail": "6.70 vs 6.90 cm, 2.9%"}]}
-    lanes, bands = [], {}
-    for i in range(1, 16):
-        xc = gx0 + (i - 0.5) * 0.565 * ppc
-        lanes.append({"index": i, "x_analysis": xc / 2.0, "x_canvas": xc,
-                      "width": 5.0, "width_canvas": 10.0,
-                      "measured": i not in (4, 5), "evidence": 10.0 + i})
-        bands[str(i)] = [(150.0 + 20.0 * k, 5.0, 30.0 - k) for k in range(3)]
-    lf = {"lanes": lanes,
-          "checks": [{"name": "pitch", "ok": True, "detail": "17.66 vs 18.11 px, 2.5%"}]}
-    bb = {"bands": [bands[str(i)] for i in range(1, 16)]}
-    return preset, record_build(preset, ga, lf, bb, info)
+    """selftest 用的「探测记录」形状的输入（workbench.from_record 吃它）：15 条泳道、每条 3 条带，胶面 cm。
 
-
-def _synth_mw_inputs():
-    """同一组带的两份输入：record（cm）与旧式 lb（分析 px）。第 2 条泳道标成 estimated。"""
-    ppc, gx0, gy0 = 50.0, 100.0, 50.0
-    preset = _t2_preset(1.8, 6.9, trim_top=0.3, lane_count=3, lane_pitch_cm=0.6)
-    info = {"image": (600, 400), "analysis": (300, 200)}
-    ga = {"gel_box": (gx0, gy0, gx0 + 1.8 * ppc, gy0 + 6.6 * ppc), "angle": 0.0,
-          "px_per_cm": ppc, "width_cm": 1.8, "height_cm": 6.6, "lane_pitch_cm": 0.6,
-          "canvas": (600, 400), "checks": []}
-    xs = [gx0 + (i - 0.5) * 0.6 * ppc for i in (1, 2, 3)]
-    y_an = {1: [120.0, 140.0, 160.0], 2: [130.0, 150.0], 3: [120.0, 140.0, 160.0]}
-    lanes, bands = [], []
-    for i, xc in enumerate(xs, 1):
-        lanes.append({"index": i, "x_analysis": xc / 2.0, "x_canvas": xc,
-                      "width": 5.0, "width_canvas": 10.0,
-                      "measured": i != 2, "evidence": 10.0})
-        bands.append([(y, 5.0, 30.0 - k) for k, y in enumerate(y_an[i])])
-    rec = record_build(preset, ga, {"lanes": lanes, "checks": []}, {"bands": bands}, info)
-    lb = {"lanes": [(xc, 10.0) for xc in xs], "interp": [False, False, False], "bands": bands}
-    return rec, lb
-
-
-def _synth_gel(path, size, gel_rect, lane_xs, faint=None, skip=None, streak=None,
-               band_y=(170, 180), band_v=120, band_half=6, gel_v=180):
-    """用 magick 现造一张合成胶（selftest 专用，不读用户文件）。
-
-    lane_xs = 泳道中心 x；faint = {序号: 灰度} 让某条道淡一点；skip = {序号} 该道完全没条带；
-    streak = (x, y0, y1) 造一道竖纹（默认灰度 172，比胶面 180 略暗、整列均匀）。
+    老 record 模块已随 stage 2/3 一起去掉；from_record 仍是「给定泳道几何 + marker 行」的建模入口。
     """
-    faint = faint or {}
-    skip = set(skip or ())
-    W, H = size
-    x0, y0, x1, y1 = gel_rect
-    cmd = [MAGICK, "-size", "%dx%d" % (W, H), "xc:white", "-fill", "gray(%d)" % gel_v,
-           "-draw", "rectangle %d,%d %d,%d" % (x0, y0, x1, y1)]
-    by0, by1 = band_y
-    for i, x in enumerate(lane_xs):
-        if i in skip:
-            continue
-        v = faint.get(i, band_v)
-        cmd += ["-fill", "gray(%d)" % v,
-                "-draw", "rectangle %d,%d %d,%d" % (x - band_half, by0, x + band_half, by1)]
-    if streak:
-        sx, sy0, sy1 = streak
-        cmd += ["-fill", "gray(172)", "-draw", "rectangle %d,%d %d,%d" % (sx - 1, sy0, sx + 1, sy1)]
-    _run(cmd + [path])
-
-
-def _synth_ga(gel_box, px_per_cm, lane_pitch_cm=1.0, canvas=None):
-    """selftest 用的 stage 1 冻结输出（角度 0；px_per_cm 与 lane_pitch_cm 一起把先验钉死）。"""
-    return {"gel_box": gel_box, "angle": 0.0, "px_per_cm": px_per_cm,
-            "lane_pitch_cm": lane_pitch_cm, "canvas": canvas}
-
-
-def _synth_scene(long_label=False):
-    """selftest 用的合法 scene：8.6 × 6.25 cm 胶面、96 dpi、两个标签（或一条长标签）。
-
-    long_label=True 时只留一条靠左的长标签（锚点 middle-right、右边压在 x=0.3 cm），
-    用来验页面规则：越界只让左边长，另外三边仍是 margin_min_cm。
-    """
-    ppc, dpi = 50.0, 96
-    font = pick_font()
-    out_ppc = dpi / 2.54
-    scale = out_ppc / ppc
-    face = (100.0, 50.0, 100.0 + 8.6 * ppc, 50.0 + 6.25 * ppc)
-
-    def item(role, bind, text, size, x_cm, y_cm, anchor):
-        px = max(6, int(round(size / 72.0 * dpi)))
-        tw, th = text_extent(font, px, text)
-        bw, bh = tw / scale, th / scale                 # 墨迹框（画布 px）
-        axp, ayp = face[0] + x_cm * ppc, face[1] + y_cm * ppc
-        v, h = anchor.split("-")
-        ax = axp - (bw if h == "right" else bw / 2.0 if h == "center" else 0.0)
-        ay = ayp - (bh if v == "bottom" else bh / 2.0 if v == "middle" else 0.0)
-        return {"ax": ax, "ay": ay, "box_w": bw, "box_h": bh, "text": text,
-                "size_pt": size, "color": "#000000", "role": role,
-                "bind": bind, "anchor": anchor}
-
-    if long_label:
-        items = [item("free", {}, "A VERY LONG LABEL 250 kD", 8, 0.3, 3.0, "middle-right")]
-    else:
-        items = [item("lane", {"lane": 1}, "3", 8, 1.0, 3.0, "middle-center"),
-                 item("marker", {"marker_lane": 2, "label_index": 1, "band_y_cm": 3.0},
-                      "250 kD", 6, 7.0, 3.0, "middle-center")]
-    return scene_build(items, face, ppc, dpi=dpi, font=font, margin_frac=0.05,
-                       gel_image="synth.gel.png")
-
-
-def _synth_svg_scene(gel_path, dpi=300, outline=None):
-    """selftest 用的 SVG scene：真 gel PNG + 四条标签（三种竖直锚点、左右两侧都有）。
-
-    标签彼此隔得远，保真检查才能按 item 的框各自找墨迹。
-    """
-    font = pick_font()
-    ppc = float(dpi) / 2.54                      # 成品 px / cm
-    W, H = int(round(8.6 * ppc)), int(round(6.25 * ppc))
-    _synth_gel(gel_path, (W, H), (4, 4, W - 5, H - 5), [], gel_v=200)
-    face = (0.0, 0.0, float(W), float(H))
-
-    def item(role, bind, text, size, x_cm, y_cm, anchor):
-        px = max(6, int(round(size / 72.0 * dpi)))
-        tw, th = text_extent(font, px, text)
-        v, h = anchor.split("-")
-        ax = x_cm * ppc - (tw if h == "right" else tw / 2.0 if h == "center" else 0.0)
-        ay = y_cm * ppc - (th if v == "bottom" else th / 2.0 if v == "middle" else 0.0)
-        return {"ax": ax, "ay": ay, "box_w": tw, "box_h": th, "text": text,
-                "size_pt": size, "color": "#000000", "role": role,
-                "bind": bind, "anchor": anchor}
-
-    items = [
-        item("lane", {"lane": 1}, "1", 8, 1.0, -0.10, "bottom-center"),
-        item("marker", {"marker_lane": 2, "label_index": 1, "band_y_cm": 1.5},
-             "250 kD", 6, 0.30, 1.5, "middle-right"),
-        item("marker", {"marker_lane": 2, "label_index": 2, "band_y_cm": 4.5},
-             "15 kD", 6, 8.30, 4.5, "middle-left"),
-        item("free", {}, "10", 8, 4.3, 1.0, "top-center"),
-    ]
-    return scene_build(items, face, ppc, dpi=dpi, font=font, outline=outline,
-                       margin_frac=0.05, gel_image=os.path.basename(gel_path))
-
-
-def _svg_raster(svg, png, dpi):
-    """SVG → PNG。用 rsvg-convert（本机 ImageMagick 的 SVG 委托）；没有就返回 None。
-
-    不用 `magick` 直接栅格化：这台机器上 IM 走内置 MSVG 渲染器，文字按 user unit 排，
-    墨迹大 3–4 倍（实测 8 pt 排成 ~0.44 cm 宽），不能当作 §8 的文字度量基准。
-    """
-    exe = shutil.which("rsvg-convert")
-    if not exe:
-        return None
-    _run([exe, "--dpi-x", str(dpi), "--dpi-y", str(dpi), "-o", png, svg])
-    return exe
-
-
-def _ink_centre_cm(path, box, ps, thr=100, pad_cm=0.12):
-    """png 里 box（胶面 cm 坐标）附近墨迹 bbox 的中心（cm，胶面坐标）。
-
-    区域按该图自己的 px/cm 换算（两张图的整数像素尺寸可能差 1 px）；只认深色，
-    合成胶的灰底（gray(200)）不会被当成字。
-    """
-    w, h, rgb = read_ppm(path, None)
-    g = to_gray(w, h, rgb)
-    sx, sy = w / ps["width_cm"], h / ps["height_cm"]
-    pad = int(round(pad_cm * sx))
-    x0 = int((box[0] + ps["left_cm"]) * sx) - pad
-    x1 = int((box[2] + ps["left_cm"]) * sx) + pad
-    y0 = int((box[1] + ps["top_cm"]) * sy) - pad
-    y1 = int((box[3] + ps["top_cm"]) * sy) + pad
-    xs, ys = [], []
-    for y in range(max(0, y0), min(h, y1)):
-        row = y * w
-        for x in range(max(0, x0), min(w, x1)):
-            if g[row + x] < thr:
-                xs.append(x)
-                ys.append(y)
-    if not xs:
-        return None
-    return ((min(xs) + max(xs) + 1) / 2.0 / sx - ps["left_cm"],
-            (min(ys) + max(ys) + 1) / 2.0 / sy - ps["top_cm"])
+    preset = _t2_preset(8.6, 6.6)
+    lanes = [{"index": i, "x_cm": round((i - 0.5) * 0.565, 4), "width_cm": 0.2} for i in range(1, 16)]
+    bands = {str(i): [{"y_cm": y} for y in (2.0, 2.8, 3.6)] for i in range(1, 16)}
+    return preset, {"gel": {"width_cm": 8.6, "height_cm": 6.6}, "lanes": lanes, "bands": bands}
 
 
 def _t2_preset(width_cm, height_cm, trim_top=0.0, trim_bottom=0.0, anchor="bottom",
