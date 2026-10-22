@@ -92,7 +92,14 @@ V0 ─┬─ V1 ── V3 ─┬─ V4 ─┬─ V5 ── V6 ── V7 ── V
 - `sync fig.vectorcraft`: attach → `inspect` → model (validate; on error, change nothing and print the fixes) → analysis → `plan_sync` → execute ops → save → export PNG → rewrite `fig.mw.json` → print the diff summary. A lane label created for a new lane says `?` and the agent asks for its name.
 - Done when: the live checklist in spec §11 passes and is recorded; a second `sync` is a no-op; the validation errors are reproduced live once each.
 
-## V8 — Better seed: wells-anchored lane phase + DGC fixtures
+## V8 — Better seed: wells-anchored lane phase + DGC fixtures — DONE 2026-10-22
+- Close-out: `scripts/well_grid.py` fits an even comb anchored on the wells. `workbench.from_image` seeds the Workbench from the gel-face image only: lanes from the comb, marker lines from the marker lane's profile peaks. The preset `lane_pitch_cm` changed from 0.565 to 0.52. selftest 69–70 cover synthetic wells (pitch, per-lane centres, a 9%-wrong prior, the no-wells fallback) and `from_image` (marker lines from peaks, refusal listing the called y values).
+- **Ground truth:** the user hand-placed IMG_1499's 15 lanes in VectorCraft (`~/Downloads/DGC/vc-demo/IMG_1499.vectorcraft`, saved 2026-10-22). The seed matches them to **0.015 cm mean, 0.042 cm max**, below the ±0.03 cm jitter of the hand placement. All five photos seed from the wells with pitch 0.510–0.522 cm.
+- **The layouts, as the wells show them:** IMG_1496 has its ladder in well 1 (as the user said). There are ladders in wells 1–3 (IMG_1497), 1–2 (IMG_1498), 1–5 (IMG_1499) and 1–4 (IMG_1500). The "blank"/"1" lanes in the original batch were ladders.
+- Fixed along the way:
+  - the comb window default was bound at definition, so tuning `FRAC` did nothing;
+  - band prominence is now measured on raw grey, which removes the ghost peaks between strong bands.
+- **Known limit:** IMG_1497 lane 1 sits on the gel's damaged left edge. Its lane-wide noise (1.88) hides the faint 250 kD band, so it calls 10/11 and seeding refuses. Lanes 2–3 pair cleanly (choose another marker lane).
 - Depends on V3 (independent of V4–V7).
 - Stage 2: detect the comb gaps at the gel top and use them to fix the grid phase; the column-ink fit becomes a tie-breaker. Log which source won.
 - Fixtures: IMG_1496–1500 in a local fixture folder (not committed if large; record their hashes), with the user-confirmed layouts. IMG_1496 has its marker in well 1. **Ask the user to confirm the other four**, and whether IMG_1497 really has two ladder-like lanes (M and sample 1) before using it as truth.

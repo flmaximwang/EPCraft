@@ -18,12 +18,14 @@
     gel 图层里顶层的 image `gel` → Workbench 上胶面的位置与比例（pt ↔ cm 就从它的 xf 来）。
 线不必完全横平竖直：竖线取两端 x 的中点，横线取两端 y 的中点。
 
-本模块只依赖 vc_file（文档读写）与 mw_report.parse_mw（标签里的分子量数字）。
+依赖 vc_file（文档读写）、mw_report（分子量数字与配对）；from_image 另用 well_grid（泳道种子）与 profiles（marker 行）。
 """
 import json
 import re
 
+import profiles
 import vc_file
+import well_grid
 from config import as_entry
 from mw_report import marker_pairs, parse_mw
 
@@ -85,17 +87,56 @@ def from_record(rec, lane_names, marker_labels, marker_lane, marker_rows_cm=None
                       "right_cm": round(min(hi, xs[i] + half), 4),
                       "trimmed": (i + 1) in set(trim)})
 
-    entries = [as_entry(e, {}) for e in marker_labels]
-    span = [max(1, int(e.get("rows", 1))) for e in entries]
     if marker_rows_cm is None:
         idx = src[int(marker_lane) - 1]["index"]
         marker_rows_cm = [b["y_cm"] for b in rec["bands"][str(idx)]]
+    return _assemble(gel, lanes, marker_rows_cm, lane_names, marker_labels, marker_lane, window, meta,
+                     "探到")
+
+
+def from_image(png, gel_width_cm, gel_height_cm, lane_count, pitch_prior_cm, lane_names, marker_labels,
+               marker_lane, marker_rows_cm=None, trim=(), window=None, meta=None):
+    """胶面图（stage 1 的产物，PNG 字节）→ Workbench 模型。不用老 stage 2/3（V8）：
+
+    泳道 = well_grid 的等距梳子（相位与间距由胶面顶上的加样孔定）；
+    marker 条带线 = marker 泳道剖面上叫出来的峰（profiles.call_bands）—— 比老 stage 3 的行准：
+    老行在 5 张 DGC 照片上一律偏下 0.13–0.5 mm（V4 实测）。
+    返回 (模型, 种子信息 dict：pitch_cm / first_cm / source / depth / note)。
+    """
+    w, h, gray = profiles.gel_gray(png)
+    ppc = w / float(gel_width_cm)
+    if abs(h / ppc - gel_height_cm) > max(0.02, 2.0 / ppc):
+        raise WorkbenchError("胶面图 %dx%d px 与胶面 %.3f×%.3f cm 不成比例" % (w, h, gel_width_cm, gel_height_cm))
+    if len(lane_names) != lane_count:
+        raise WorkbenchError("lanes 配置有 %d 个名字，胶上是 %d 条泳道" % (len(lane_names), lane_count))
+    if not 1 <= int(marker_lane) <= lane_count:
+        raise WorkbenchError("marker 泳道 %s 超出 1–%d" % (marker_lane, lane_count))
+    sd = well_grid.seed(gray, w, h, ppc, lane_count, pitch_prior_cm)
+    lanes = [{"left_cm": a, "right_cm": b, "trimmed": (i + 1) in set(trim)} for i, (a, b) in enumerate(sd["lanes"])]
+    gel = {"width_cm": float(gel_width_cm), "height_cm": float(gel_height_cm)}
+    top, bottom = window if window else (0.0, gel["height_cm"] * (1.0 - BOTTOM_GUARD))
+    if marker_rows_cm is None:
+        ml = lanes[int(marker_lane) - 1]
+        ys, gs = profiles.lane_profile(gray, w, h, ppc, ml["left_cm"], ml["right_cm"], top, bottom)
+        _b, _ink, sm = profiles.ink_trace(gs, ppc)
+        marker_rows_cm = [b["y_cm"] for b in profiles.call_bands(ys, gs, sm, ppc)[0]]
+    m = dict(meta or {})
+    m["seed"] = {k: sd[k] for k in ("pitch_cm", "first_cm", "source", "depth")}
+    model = _assemble(gel, lanes, marker_rows_cm, lane_names, marker_labels, marker_lane, (top, bottom), m,
+                      "的剖面上叫出")
+    return model, sd
+
+
+def _assemble(gel, lanes, marker_rows_cm, lane_names, marker_labels, marker_lane, window, meta, how):
+    """两个建模入口的共同后半段：marker 行配 MW（不硬配）、积分窗、元数据、校验。"""
+    entries = [as_entry(e, {}) for e in marker_labels]
+    span = [max(1, int(e.get("rows", 1))) for e in entries]
     rows = sorted(float(y) for y in marker_rows_cm)
     if len(rows) != sum(span):
         raise WorkbenchError(
-            "marker 泳道 %d 探到 %d 条带，标签需要 %d 行（rows 求和）—— 不硬配。\n"
+            "marker 泳道 %d %s %d 条带（y = %s cm），标签需要 %d 行（rows 求和）—— 不硬配。\n"
             "改 markers 的 labels（并带写成 {\"text\": \"21/20 kD\", \"rows\": 2}，缺的带删掉那条标签），"
-            "或用 y_px 手工标定。" % (int(marker_lane), len(rows), sum(span)))
+            "或手工给 marker 行。" % (int(marker_lane), how, len(rows), [round(y, 2) for y in rows], sum(span)))
     for e in entries:
         if not parse_mw(e.get("text", "")):
             raise WorkbenchError("marker 标签 %r 里没有分子量数字，没法做成 band 线" % e.get("text"))
@@ -107,7 +148,7 @@ def from_record(rec, lane_names, marker_labels, marker_lane, marker_rows_cm=None
     m.update(lane_names=list(lane_names),
              marker_labels=[{"text": e.get("text", ""), "mws": parse_mw(e.get("text", "")),
                              **({"color": e["color"]} if e.get("color") else {})} for e in entries],
-             prev_centres_cm=[round(x, 4) for x in xs])
+             prev_centres_cm=[round((ln["left_cm"] + ln["right_cm"]) / 2.0, 4) for ln in lanes])
     model = {"gel": gel, "window": {"top_cm": round(float(top), 4), "bottom_cm": round(float(bottom), 4)},
              "lanes": lanes, "bands": bands, "marker_lane": int(marker_lane), "meta": m}
     errs = validate(model)

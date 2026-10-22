@@ -8,7 +8,7 @@ render（探测出来的线）和 sync（用户改过的线）走同一份代码
 1. 剖面：积分窗 [top, bottom] 内每一像素行，取 x ∈ [L, R] 的平均灰度（列中心落在区间里的像素）。
 2. 基线与墨量：沿用 stage 3 实测调好的 top-hat —— 基线 = 宽窗滑动均值，ink = 基线 − 灰度
    （越暗越大）；窗宽、平滑、最小峰距改用 cm 表示，所以与胶面图的分辨率无关。
-3. 条带：平滑后 ink 的局部极大，**局部**显著度（比两侧低点高多少）≥ K_NOISE × 该泳道背景噪声，
+3. 条带：平滑后原始灰度的局部变暗，**局部**显著度（比两侧浅点深多少）≥ K_NOISE × 该泳道背景噪声，
    **没有绝对墨量下限**（失效报告 §6 P2-2：本批样品带只深 3–4 灰度级，绝对阈值会把整条淡道丢掉）。
    两端留一段不取峰：top-hat 的基线在剖面端点被截断（conventions §2c 的老坑）。
 4. 标定：`band <MW>` 线的 y ↔ MW，log10(MW) ~ y（或 interp），与 mw_report 同一套数学。
@@ -25,7 +25,7 @@ from mw_report import build_cal, estimate
 BASE_HALF_CM = 0.30      # top-hat 基线半窗（stage 3：20 分析 px ≈ 0.33 cm；再宽会吃掉并带的显著度）
 SMOOTH_CM = 0.03         # 轻平滑半窗（stage 3：3 行 ≈ 0.03 cm；再重会抹平 2–3 px 高的窄带）
 MIN_SEP_CM = 0.05        # 两峰最小间隔（并带 21/20 kD 的两条约隔 0.12 cm）
-FLANK_CM = 0.15          # 局部显著度的两侧取低点范围（= 基线半窗的一半；IMG_1496 实测比整窗少叫背景纹理）
+FLANK_CM = 0.15          # 局部显著度的两侧比较范围（= 基线半窗的一半；IMG_1496 实测比整窗少叫背景纹理）
 K_NOISE = 4.0            # 显著度 ≥ K_NOISE × 噪声
 NOISE_FLOOR = 0.15       # 噪声估计的下限（灰度级）：合成纯色图噪声为 0，不能让门槛也为 0
 
@@ -112,17 +112,28 @@ def noise_of(sm):
     return sigma
 
 
-def call_bands(ys, sm, px_per_cm, k=K_NOISE):
-    """平滑 ink 上的峰 → ([{y_cm, prominence, snr, width_cm}], noise)。
+def call_bands(ys, gs, sm, px_per_cm, k=K_NOISE):
+    """条带 → ([{y_cm, prominence, snr, width_cm}], noise)。
 
-    显著度 = 峰高减去两侧 FLANK_CM 内各自最低点中**较高**的那个（局部显著度），门槛 = k × noise。
-    不用「高出 0」：浓带旁边 top-hat 留下负瓣，紧挨着的淡带整个泡在负瓣里（合成梯子上
-    250 kD 的绝对高度是 −1.8，但比两侧高 3.8 —— 只看绝对高度就丢了）。
+    gs = 原始平均灰度剖面，sm = 平滑后的 ink（只用来量噪声，见 noise_of）。
+    峰与显著度都在**平滑后的原始灰度**上量：峰 = 灰度的局部极小（变暗处），显著度 = 比两侧
+    FLANK_CM 内各自最浅点中**较深**的那个还深多少；门槛 = k × noise。
+    为什么不在 ink 上量：top-hat 的滑动均值基线在浓带处下陷，于是浓带两旁的 ink 是负瓣、
+    两条浓带之间的平背景反倒成了「鼓包」—— 合成梯子上 4 条带叫出 7 条（3 条是带间假峰）；
+    原始灰度没有基线，没有负瓣也没有鼓包，同一例正好 4 条。也不用「高出 0」：浓带旁的淡带
+    在 ink 上是负的（合成梯子的 250 kD 为 −1.8），在原始灰度上它仍是一个清楚的局部变暗。
+    慢变化的背景（胶面不匀、胶底渐变）由「只跟 FLANK_CM 以内比」挡掉，两端各留一段不取峰。
     """
     n = len(sm)
     noise = noise_of(sm)
     if n < 5:
         return [], noise
+    sm_w = max(1, int(round(SMOOTH_CM * px_per_cm)))
+    pre = [0.0]
+    for v in gs:
+        pre.append(pre[-1] - v)
+    dark = [(pre[min(n, i + sm_w + 1)] - pre[max(0, i - sm_w)]) / (min(n, i + sm_w + 1) - max(0, i - sm_w))
+            for i in range(n)]                                  # 平滑后的 −灰度：越暗越大
     win = max(3, int(round(BASE_HALF_CM * px_per_cm)))
     fw = max(2, int(round(FLANK_CM * px_per_cm)))
     a_margin, b_margin = max(2, int(0.5 * win)), win
@@ -130,9 +141,9 @@ def call_bands(ys, sm, px_per_cm, k=K_NOISE):
     thr = k * noise
     cands = []
     for i in range(max(1, a_margin), min(n - 1, n - b_margin)):
-        if not (sm[i] >= sm[i - 1] and sm[i] >= sm[i + 1] and (sm[i] > sm[i - 1] or sm[i] > sm[i + 1])):
+        if not (dark[i] >= dark[i - 1] and dark[i] >= dark[i + 1] and (dark[i] > dark[i - 1] or dark[i] > dark[i + 1])):
             continue
-        prom = sm[i] - max(min(sm[max(0, i - fw):i + 1]), min(sm[i:min(n, i + fw + 1)]))
+        prom = dark[i] - max(min(dark[max(0, i - fw):i + 1]), min(dark[i:min(n, i + fw + 1)]))
         if prom >= thr:
             cands.append((i, prom))
     keep = []
@@ -144,11 +155,11 @@ def call_bands(ys, sm, px_per_cm, k=K_NOISE):
             keep.append((i, prom))
     out = []
     for i, prom in keep:
-        half = sm[i] - prom / 2.0                             # 半高宽按局部显著度的一半量
+        half = dark[i] - prom / 2.0                           # 半高宽按局部显著度的一半量
         a, b = i, i
-        while a > 0 and sm[a - 1] > half:
+        while a > 0 and dark[a - 1] > half:
             a -= 1
-        while b + 1 < n and sm[b + 1] > half:
+        while b + 1 < n and dark[b + 1] > half:
             b += 1
         out.append({"y_cm": round(ys[i], 4), "prominence": round(prom, 2),
                     "snr": round(prom / noise, 1), "width_cm": round((b - a + 1) / px_per_cm, 4)})
@@ -175,7 +186,7 @@ def analyze(model, png, lane_names, method="logfit"):
     for i, ln in enumerate(model["lanes"], 1):
         ys, gs = lane_profile(gray, w, h, ppc, ln["left_cm"], ln["right_cm"], top, bottom)
         base, ink, sm = ink_trace(gs, ppc)
-        called, noise = call_bands(ys, sm, ppc)
+        called, noise = call_bands(ys, gs, sm, ppc)
         cx = (ln["left_cm"] + ln["right_cm"]) / 2.0
         bands = []
         for bd in called:

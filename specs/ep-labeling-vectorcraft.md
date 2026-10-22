@@ -133,7 +133,7 @@ Measured in V0; full details in `references/vectorcraft.md`. The writer emits th
 The same code runs in `render` (on detected geometry) and in `sync` (on the user's geometry):
 
 1. **Profile per lane:** for every row y between `top` and `bottom`, the mean grey over x ∈ [L, R] of the embedded gel image (the image used for the figure, not the photo). Also an `ink = baseline − gray` curve, where `baseline` is the stage-3 top-hat (a sliding mean, half-window 0.30 cm, expressed in cm so it doesn't depend on resolution). Store `gray`, `baseline` and `ink` raw. V4 tried a morphological closing instead and rejected it: it turned smooth texture into a sawtooth and called bands on flat lanes.
-2. **Bands per lane:** local maxima of the lightly smoothed `ink`. **Local prominence** is the height above the higher of the two flanking minima within 0.15 cm; height above zero would lose a faint band sitting in a strong neighbour's negative lobe. A band is called when that prominence is ≥ 4 × the lane's **background** noise (MAD of the smoothed ink, iteratively excluding band rows and lobes). There is no absolute ink floor like `min_loose_ink=6`, so faint lanes still get their peaks. Each band reports prominence, SNR and width; the curve is the user's check. On IMG_1496 this calls 11/11 marker bands, finds the faint 3–4-grey-level sample bands, and calls nothing on empty lanes.
+2. **Bands per lane:** local darkenings of the lightly smoothed **raw grey** profile. **Local prominence** is how much darker the band is than the lighter of its two flanks within 0.15 cm. Not measured on `ink`: the sliding-mean baseline sags at strong bands, which leaves negative lobes beside them and turns the flat background between two strong bands into a ghost peak (a synthetic 4-band ladder gave 7 calls on `ink` and exactly 4 on raw grey). Not height above zero either: a faint band beside a strong one is negative on `ink`. A band is called when that prominence is ≥ 4 × the lane's **background** noise (MAD of the smoothed ink, iteratively excluding band rows and lobes). There is no absolute ink floor like `min_loose_ink=6`, so faint lanes still get their peaks. Each band reports prominence, SNR and width; the curve is the user's check. On IMG_1496 this calls 11/11 marker bands, finds the faint 3–4-grey-level sample bands, and calls nothing on empty lanes.
 3. **Calibration:** log-linear (as today) on the `band <MW>` lines' y; report R².
 4. **MW per band**, with extrapolated bands flagged as today.
 
@@ -154,9 +154,15 @@ Coordinates are in cm on the gel face, as in the record (gel-prior §7). There a
 
 ## 8. Initial detection (render)
 
-The stages stay: gel face (stage 1) → lane grid (stage 2) → bands (stage 3). They only **seed** the Workbench. Improving the seed is a separate ticket (V8), because the user corrects it anyway:
-- the phase of the 15-lane grid is anchored on the **wells** (the comb gaps visible at the gel top, which need no sample ink), with the column-ink fit as a tie-breaker;
-- the five DGC photos become regression fixtures, with the user-confirmed layouts (IMG_1496: marker in well 1).
+Only stage 1 (the gel face) still comes from the old pipeline. The Workbench is then seeded from the gel-face image alone (`workbench.from_image`, V8):
+- **Lanes: an evenly spaced comb anchored on the wells** (`well_grid.py`). Each well shows as a dark U in the top 0.12 cm of the gel face, whether or not it was loaded. The comb `centre_k = c0 + k·pitch` is fitted over pitch (preset ±20%) and offset, maximising the well depth inside the 0.75·pitch windows minus outside, including the well-free side margins. Lane width is 0.7·pitch.
+  - Measured on the five DGC photos: pitch 0.510–0.522 cm, well depth 41–87 grey levels (wells absent: 0.9–9.9).
+  - Against the user's hand-placed IMG_1499 lanes: 0.015 cm mean, 0.042 cm max.
+  - With no visible wells (depth < 20), it falls back to an even comb at the preset pitch, centred, and says so.
+  - The old stage-2 column-ink fit is no longer used for seeding.
+- **Marker lines: the marker lane's called profile peaks** (§7), not the old stage-3 rows, which sat 0.13–0.5 mm low on all five photos. If the count doesn't match the labels, it refuses and lists the y values it called.
+- The preset's `lane_pitch_cm` is now 0.52; the old 0.565 assumed the 15 lanes fill the whole gel width.
+- Regression fixtures: the five DGC photos, with the user's hand-placed IMG_1499 lanes as ground truth.
 
 ## 9. Commands
 

@@ -38,6 +38,7 @@ import vc_file
 import vc_control
 import workbench
 import profiles
+import well_grid
 from mw_report import format_report_v2, write_v2
 
 
@@ -1526,7 +1527,7 @@ def selftest():
     ys_ = [(i + 0.5) / ppc_ for i in range(n_)]
     def calls(gs):
         _b, _ink, sm = profiles.ink_trace(gs, ppc_)
-        return profiles.call_bands(ys_, sm, ppc_)[0]
+        return profiles.call_bands(ys_, gs, sm, ppc_)[0]
     got = calls(faint)
     assert [int(round(b["y_cm"] * ppc_ - 0.5)) for b in got] == [250, 400], got    # 行号（行中心 = (i+0.5)/ppc）
     assert got[0]["snr"] >= profiles.K_NOISE and got[1]["prominence"] > 10 * got[0]["prominence"], got
@@ -1602,6 +1603,52 @@ def selftest():
         table = format_report_v2(rep)
         assert "R²=1.0000" in table and "S1" in table and "%.1f kDa" % sb[0]["mw_kda"] in table, table
         assert "外推" not in table, table          # marker 泳道两端的外推带不在表里，不该带脚注
+    ok += 1
+
+    # 69) 泳道种子 = 等距梳子、按加样孔定相（V8）：合成胶面顶上画 15 个 U 形孔（间距 0.52 cm、
+    #     首孔 0.70 cm、两侧各留无孔边距）→ 间距与每道中心误差 < 1 px；预设间距错 9%（0.565，
+    #     DGC 预设的老值）也照样找到 0.52；胶面上没有孔 → 退回「预设间距、整排居中」并说明。
+    with tempfile.TemporaryDirectory() as td:
+        wells = os.path.join(td, "wells.png")
+        _synth_wells(wells, first_cm=0.70, pitch_cm=0.52)
+        w9, h9, g9 = profiles.gel_gray(open(wells, "rb").read())
+        for prior in (0.52, 0.565):
+            sd = well_grid.seed(g9, w9, h9, 100.0, 15, prior)
+            assert sd["source"] == "wells" and sd["depth"] >= well_grid.MIN_WELL_DEPTH, sd
+            assert abs(sd["pitch_cm"] - 0.52) <= 0.004, (prior, sd["pitch_cm"])
+            cs = [(a + b) / 2 for a, b in sd["lanes"]]
+            assert max(abs(c - (0.70 + 0.52 * k)) for k, c in enumerate(cs)) <= 0.01, (prior, cs)
+            assert all(abs((b - a) - well_grid.WIDTH_FRAC * sd["pitch_cm"]) < 1e-3 for a, b in sd["lanes"])
+        blank = os.path.join(td, "blank.png")
+        _run([MAGICK, "-size", "860x625", "xc:gray(200)", "-seed", "7", "-attenuate", "0.25",
+              "+noise", "Gaussian", "-depth", "8", blank])
+        wb_, hb_, gb_ = profiles.gel_gray(open(blank, "rb").read())
+        sd = well_grid.seed(gb_, wb_, hb_, 100.0, 15, 0.52)
+        assert sd["source"] == "even" and "看不清加样孔" in sd["note"], sd
+        cs = [(a + b) / 2 for a, b in sd["lanes"]]
+        assert abs((cs[0] + cs[-1]) / 2 - 4.3) < 1e-3 and abs(sd["pitch_cm"] - 0.52) < 1e-9, cs
+    ok += 1
+
+    # 70) from_image（V8）：只用胶面图建 Workbench —— 泳道来自孔，marker 线来自 marker 泳道剖面上
+    #     叫出的峰（不再用老 stage 3 的行；那些行在 DGC 照片上一律偏下 0.13–0.5 mm）；
+    #     叫出的带数与标签行数不符 → 拒绝，并把叫出来的 y 列给用户看。
+    with tempfile.TemporaryDirectory() as td:
+        gel9 = os.path.join(td, "gel.png")
+        rows_cm = [1.0, 1.6, 2.3, 3.1]
+        _synth_wells(gel9, first_cm=0.70, pitch_cm=0.52, ladder_rows_cm=rows_cm)
+        png9 = open(gel9, "rb").read()
+        names9 = ["M"] + [""] * 14
+        m9, sd9 = workbench.from_image(png9, 8.6, 6.25, 15, 0.565, names9, ["100", "50", "25", "10"], 1,
+                                       meta={"skill": "ep-labeling"})
+        assert sd9["source"] == "wells" and m9["meta"]["seed"]["source"] == "wells", sd9
+        assert [b["mw"] for b in m9["bands"]] == [100.0, 50.0, 25.0, 10.0]
+        assert all(abs(b["y_cm"] - y) < 0.02 for b, y in zip(m9["bands"], rows_cm)), m9["bands"]
+        assert m9["marker_lane"] == 1 and len(m9["lanes"]) == 15
+        try:
+            workbench.from_image(png9, 8.6, 6.25, 15, 0.52, names9, ["100", "50", "25", "10", "5"], 1)
+            raise AssertionError("带数不符没拒绝")
+        except workbench.WorkbenchError as e:
+            assert "叫出 4 条带" in str(e) and "3.1" in str(e), e              # 把叫出来的 y 列给用户
     ok += 1
 
     print("selftest %d/%d 通过" % (ok, ok))
@@ -2177,3 +2224,20 @@ def _lcg(seed):
 def _gauss(i, c, sd):
     import math
     return math.exp(-0.5 * ((i - c) / sd) ** 2)
+
+
+def _synth_wells(path, first_cm, pitch_cm, n=15, ladder_rows_cm=()):
+    """selftest 用的胶面图（8.6 × 6.25 cm，100 px/cm）：顶上 n 个 U 形加样孔轮廓（孔宽 0.36 cm），
+    可选在第 1 道画一列 marker 带；整张加固定种子的高斯纹理。"""
+    draw = ["-fill", "none", "-stroke", "gray(70)", "-strokewidth", "2"]
+    for k in range(n):
+        c = (first_cm + k * pitch_cm) * 100
+        a, b = c - 18, c + 18
+        draw += ["-draw", "polyline %.1f,0 %.1f,8 %.1f,8 %.1f,0" % (a, a, b, b)]
+    for y in ladder_rows_cm:
+        c = first_cm * 100
+        draw += ["-stroke", "none", "-fill", "gray(80)",
+                 "-draw", "rectangle %.1f,%d %.1f,%d" % (c - 15, y * 100 - 3, c + 15, y * 100 + 2)]
+    # 加一层固定种子的纹理：纯色合成图的噪声为 0，会让 top-hat 在带间鼓出的假峰也过门槛（真胶不会这样）
+    _run([MAGICK, "-size", "860x625", "xc:gray(200)"] + draw
+         + ["-seed", "7", "-attenuate", "0.25", "+noise", "Gaussian", "-depth", "8", path])
