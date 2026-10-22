@@ -33,9 +33,13 @@ Turn a phone photo of a gel into a labeled figure at true physical size. Detecti
 | `references/special-cases-and-pitfalls.md` | Close band pairs, cropped photos, damaged gel edge, wells cut off, history. Read when a checkpoint fires. |
 | `references/vectorcraft.md` | VectorCraft 0.14 file format and control-port commands (measured). Read before touching the document through the port. |
 
+## Constraints
+
+- 
+
 ## Workflow
 
-1. **Ask once, up front** (all together):
+1. **Ask once before working**. Further questions are prohibited except checkpoints or `?` by `sync`:
    - **Marker preset** from `data/markers.json`; offer the presets as options.
    - **Gel preset**: a `name` in `data/gel_size.json`, or the user's width × height and lane count. No preset = no run.
    - **Which lanes to trim** from the figure (`--trim-lanes`, 1-based, e.g. `1,2,14-15`; omitted = keep all). Trimmed lanes are still analysed.
@@ -80,6 +84,7 @@ Turn a phone photo of a gel into a labeled figure at true physical size. Detecti
 | Two bands too close for separate labels (21/20 kD) | One label with `"rows": 2` (two band lines, one label). |
 | User says the photo is cropped | `--gel-lanes N` (N visible lanes); otherwise the scale is wrong. |
 | A removed flag (`--keep-lanes`, `--svg`, `--debug`, `--record`, `export`, …) | The script names the replacement; follow it (conventions §11). |
+| Unsure about lane alignment, which well holds the ladder, or whether the photo is cropped | Act on numbers only: `--rect`, `--angle`, `--gel-lanes N`, or extra `marker_lanes` candidates. You can only look at photos after all scripts fail. |
 
 ## Done when
 
