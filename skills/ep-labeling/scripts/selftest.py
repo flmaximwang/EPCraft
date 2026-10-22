@@ -1093,6 +1093,29 @@ def selftest():
         assert ("[!] scale" in buf.getvalue()) == warn, (pitch, buf.getvalue())
     ok += 1
 
+    # 76) render → 第一次 sync = 0 个操作（V7 实测出的回归）：胶面图是整像素（8.6×6.25 cm 在 300 dpi 下是
+    #     1016×738 px，高其实是 6.2469 cm）。sync 的模型是从文档**读回**的（高按图量），所以 render 的模型
+    #     也必须按图的宽高比定高，否则刚 render 完的文档第一次 sync 就会去改 Figure 画板和剪切框。
+    with tempfile.TemporaryDirectory() as td:
+        gp = os.path.join(td, "gel.png")
+        _run([MAGICK, "-size", "1016x738", "xc:gray(200)", "-seed", "5", "-attenuate", "0.25", "+noise", "Gaussian",
+              "-fill", "gray(80)"] + sum((["-draw", "rectangle 80,%d 115,%d" % (y, y + 5)] for y in (150, 230, 330, 460)), [])
+             + ["-fill", "none", "-stroke", "gray(70)", "-strokewidth", "2"]
+             + sum((["-draw", "polyline %.1f,0 %.1f,8 %.1f,8 %.1f,0" % (c - 21, c - 21, c + 21, c + 21)]
+                    for c in [97.6 + 61.4 * k for k in range(15)]), [])
+             + ["-depth", "8", gp])
+        png8 = open(gp, "rb").read()
+        m8, _sd = workbench.from_image(png8, 8.6, 6.25, 15, 0.52, ["M"] + [""] * 14, ["100", "50", "25", "10"], 1,
+                                       marker_rows_cm=[1.29, 1.97, 2.82, 3.92],   # 本测只验高的口径，不验叫带
+                                       meta={"skill": "ep-labeling"})
+        assert abs(m8["gel"]["height_cm"] - 738 * 8.6 / 1016) < 1e-9, m8["gel"]
+        rep8 = profiles.analyze(m8, png8, ["M"] + [""] * 14)
+        d8 = vc_file.loads(vc_file.dumps(figure.build_document(m8, rep8, png8, "t")))[0]["document"]
+        back8, _n = workbench.from_document(d8)                       # sync 的口径：模型从文档读回
+        ops8, _meta = figure.plan_sync(d8, back8, profiles.analyze(back8, png8, [None] * 15))
+        assert ops8 == [], ops8[:4]
+    ok += 1
+
     # 75+) 活文档执行器（V7，sync_exec；假控制口，不开 app）：每种 op 的命令序列、锁定层先解锁后锁回、
     #      新对象起名、剪切组、失败 → 撤销组 cancel 并抛原错、收尾恢复当前层与默认颜色。
     import selftest_sync

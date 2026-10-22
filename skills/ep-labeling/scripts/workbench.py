@@ -115,7 +115,9 @@ def from_image(png, gel_width_cm, gel_height_cm, lane_count, pitch_prior_cm, lan
         raise WorkbenchError("marker 泳道 %s 超出 1–%d" % (marker_lane, lane_count))
     sd = well_grid.seed(gray, w, h, ppc, lane_count, pitch_prior_cm)
     lanes = [{"left_cm": a, "right_cm": b, "trimmed": (i + 1) in set(trim)} for i, (a, b) in enumerate(sd["lanes"])]
-    gel = {"width_cm": float(gel_width_cm), "height_cm": float(gel_height_cm)}
+    # 胶面高取**图本身**的宽高比（整像素）：预设高 6.25 cm 在 300 dpi 下是 738 px = 6.2469 cm。
+    # 读回（from_document）只能从图量高，两边口径不一致时，刚 render 完的文档第一次 sync 就会「改」画板与剪切框。
+    gel = {"width_cm": float(gel_width_cm), "height_cm": h * float(gel_width_cm) / w}
     top, bottom = window if window else (TOP_GUARD_CM, gel["height_cm"] * (1.0 - BOTTOM_GUARD))
     if marker_rows_cm is None:
         ml = lanes[int(marker_lane) - 1]

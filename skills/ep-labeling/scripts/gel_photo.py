@@ -184,10 +184,18 @@ def _lanes_and_markers(args, lane_count):
 
 
 def _doc_state(client, path):
-    """VectorCraft 里是否开着这份文件：→ (下标或 None, 是否有未存改动)。"""
-    base = os.path.basename(path)
+    """VectorCraft 里是否开着**这份**文件：→ (下标或 None, 是否有未存改动)。
+
+    文档列表只给文件名：别的文件夹里同名的 fig.vectorcraft 也叫这个名字。所以名字对上的逐个激活，
+    用 document.inspect 的 path 核对完整路径（会把命中的那份切到前台）。
+    """
+    base, want = os.path.basename(path), os.path.realpath(path)
     for i, d in enumerate(client.call("ui.inspect").get("documents") or []):
-        if d.get("title") == base:
+        if d.get("title") != base:
+            continue
+        client.execute("document.activate", {"index": i})
+        got = client.inspect(0).get("path")
+        if got and os.path.realpath(got) == want:
             return i, bool(d.get("dirty"))
     return None, False
 
