@@ -39,7 +39,17 @@ V0 ─┬─ V1 ── V3 ─┬─ V4 ─┬─ V5 ── V6 ── V7 ── V
 - `doctor` checks that VectorCraft.app is present and its version (warn ≠ 0.14.x).
 - Done when: unit tests run against a fake line-JSON TCP server in `selftest`; the manual check exports a PNG of the right physical size with pHYs = dpi.
 
-## V3 — Workbench model (build + read back)
+## V3 — Workbench model (build + read back) — DONE 2026-10-22
+- Close-out: `scripts/workbench.py`.
+  - **Build:** `from_record` builds the model from the record, which is already in gel-face cm, so no stage code is touched. It keeps the old "labels vs band count" check, and a `rows: 2` pair becomes two band lines.
+  - **Write:** `make_layers` creates the spec §4.2 layers; `add_workbench` draws the Workbench.
+  - **Read back:** `from_document` binds by **layer**, so an unnamed new line counts. Positions come from the Workbench gel image's own `xf`. All problems are reported in one message.
+  - **Validate:** `validate` checks the invariants.
+  - **Lane matching:** `match_lanes` and `lane_names_after` move lane names with their lanes.
+- Tests: selftest 60–64 cover the build, the round trip, reading back edits (moved and tilted lines, a deleted band, a new unnamed pair, a pair moved to `trimmed`, a moved window), every validation error, and lane matching.
+- Manual, IMG_1496 in VectorCraft 0.14.0: the document opened cleanly and the Workbench rendered as intended. A live read-back equalled the model with 0 cm difference. Simulated drags read back exactly: lane 2 moved +5 pt = 0.1764 cm, `band 250` moved +1.5 pt, and deleting `band 35` removed that band.
+- Seen on the real gel (for V8): lane 1 is seeded at 0.15 cm, hugging the left edge, so the ladder lands in lane 2. Several band lines also sit about 0.5 mm off their bands, the known bias in the automatic rows. Both are now fixable by hand on the Workbench.
+- Default window: the whole gel face, with the bottom 3% excluded (the bottom-edge gradient). Band lines reach 0.15 cm past their lane, and window lines past the gel, so they are easy to grab.
 - Depends on V1.
 - `workbench.py`: a plain data model (gel image, lane pairs, window, marker bands with MW, trimmed pairs, metadata) ↔ document objects per spec §4.2.
   - `from_detection(stage outputs, lane names, marker preset, trim)` → model.

@@ -36,6 +36,7 @@ from scene_svg import baseline_offset_px, svg_string, write_svg
 from text_layout import annotate_cmd, pick_font, text_extent
 import vc_file
 import vc_control
+import workbench
 
 
 def test_import_direction():
@@ -1347,6 +1348,153 @@ def selftest():
             started[1].__exit__(None, None, None)
     ok += 1
 
+    # 60) Workbench 建模（V3）：record → 模型。泳道左右 = 中心 ± 宽/2（不越过邻道中点），
+    #     marker 条带线按标签配 MW（rows:2 的并带出两条线），trim 进 trimmed，默认窗下沿让开 3%；
+    #     条带数与标签行数对不上 → 拒绝；标签里没数字 → 拒绝。
+    _preset, rec = _synth_record()
+    names = ["M"] + [str(i) for i in range(1, 15)]
+    mdl = workbench.from_record(rec, names, ["250 kD", "100 kD", "50 kD"], 1, trim=[14, 15],
+                                meta={"skill": "ep-labeling"})
+    assert len(mdl["lanes"]) == 15 and mdl["marker_lane"] == 1
+    assert [ln["trimmed"] for ln in mdl["lanes"]][-3:] == [False, True, True]
+    for ln, src in zip(mdl["lanes"], rec["lanes"]):
+        assert abs((ln["left_cm"] + ln["right_cm"]) / 2 - src["x_cm"]) < 1e-3
+        assert abs((ln["right_cm"] - ln["left_cm"]) - src["width_cm"]) < 1e-3
+    ys = [b["y_cm"] for b in rec["bands"]["1"]]
+    assert [(b["mw"], b["y_cm"]) for b in mdl["bands"]] == list(zip([250.0, 100.0, 50.0], ys)), mdl["bands"]
+    assert mdl["window"] == {"top_cm": 0.0, "bottom_cm": round(6.6 * 0.97, 4)}, mdl["window"]
+    assert mdl["meta"]["lane_names"] == names and len(mdl["meta"]["prev_centres_cm"]) == 15
+    pair = workbench.from_record(rec, names, ["250 kD", {"text": "21/20 kD", "rows": 2}], 1)
+    assert [b["mw"] for b in pair["bands"]] == [250.0, 21.0, 20.0], pair["bands"]
+    for labels, frag in ((["250", "100", "50", "10"], "不硬配"), (["250", "ladder", "50"], "没有分子量")):
+        try:
+            workbench.from_record(rec, names, labels, 1)
+            raise AssertionError("坏 marker 标签 %r 没报错" % labels)
+        except workbench.WorkbenchError as e:
+            assert frag in str(e), e
+    ok += 1
+
+    # 61) Workbench 往返（V3）：模型 → 文档 → 文件字节 → 读回 == 原模型（cm 误差 < 1e-3）；
+    #     胶面图的位置/比例只从文档里那张 gel 图的 xf 来（不靠元数据）。
+    doc_wb, png_wb = _synth_wb_doc(mdl)
+    top_wb, _blobs = vc_file.loads(vc_file.dumps(doc_wb))
+    back, notes = workbench.from_document(top_wb["document"])
+    assert not notes, notes
+    _assert_model_close(back, mdl)
+    assert back["meta"] == mdl["meta"]
+    names_in = {l["name"] for l in top_wb["document"]["layers"]}
+    assert names_in == {n for n, *_r in workbench.LAYERS}, names_in
+    ok += 1
+
+    # 62) 读回用户的改动（V3）：泳道 3 右移 0.2 cm（且线有点斜）、删 band 100、在泳道 7/8 之间
+    #     新画一对**没有名字**的线、把泳道 2 挪进 trimmed、积分窗上沿下移 → 全部按几何读出来。
+    mdl4 = workbench.from_record(rec, names, ["250 kD", "100 kD", "50 kD", "10 kD"], 1,
+                                 marker_rows_cm=ys + [ys[-1] + 0.5], trim=[14, 15])
+    d = vc_file.loads(vc_file.dumps(_synth_wb_doc(mdl4)[0]))[0]["document"]
+    L = {l["name"]: l for l in d["layers"]}
+    gx, s_pt = _wb_origin(d)
+    cm = lambda pt: (pt - gx) / vc_file.PT_PER_CM
+    lane_lines = vc_file.lay_children(L["lanes"])
+    by_x = sorted(lane_lines, key=lambda n: vc_file.line_ends(n)[0][0])
+    for n in by_x[4:6]:                                  # 泳道 3 的左右线
+        for a_ in n["kind"]["path"]["subpaths"][0]["anchors"]:
+            a_["p"][0] += 0.2 * vc_file.PT_PER_CM
+        n["kind"]["path"]["subpaths"][0]["anchors"][1]["p"][0] += 0.6     # 下端斜 0.6 pt：读中点
+    moved = by_x[2:4]                                    # 泳道 2 → trimmed
+    for n in moved:
+        lane_lines.remove(n)
+    vc_file.lay_children(L["trimmed"]).extend(moved)
+    bands_l = vc_file.lay_children(L["marker bands"])
+    bands_l[:] = [n for n in bands_l if n["name"] != "band 100"]
+    c7, c8 = (mdl["lanes"][6]["right_cm"], mdl["lanes"][7]["left_cm"])
+    for x_cm in (c7 + 0.05, c8 - 0.05):
+        n = json.loads(json.dumps(by_x[0]))
+        n.pop("name")
+        n["id"] = 90000 + int(x_cm * 1000)
+        x = gx + x_cm * vc_file.PT_PER_CM
+        for a_ in n["kind"]["path"]["subpaths"][0]["anchors"]:
+            a_["p"][0] = x
+        lane_lines.append(n)
+    wl = sorted(vc_file.lay_children(L["window"]), key=lambda n: vc_file.line_ends(n)[0][1])
+    for a_ in wl[0]["kind"]["path"]["subpaths"][0]["anchors"]:
+        a_["p"][1] += 0.5 * vc_file.PT_PER_CM
+    got, notes = workbench.from_document(d)
+    assert len(got["lanes"]) == 16, len(got["lanes"])
+    assert [ln["trimmed"] for ln in got["lanes"]][:3] == [False, True, False]
+    c3 = (got["lanes"][2]["left_cm"] + got["lanes"][2]["right_cm"]) / 2
+    want = rec["lanes"][2]["x_cm"] + 0.2 + 0.3 / vc_file.PT_PER_CM   # 两条线下端各斜 0.6 pt → 中点各多 0.3 pt
+    assert abs(c3 - want) < 2e-3, (c3, want)
+    assert abs(got["lanes"][7]["left_cm"] - (c7 + 0.05)) < 1e-3, got["lanes"][7]
+    assert [b["mw"] for b in got["bands"]] == [250.0, 50.0, 10.0]
+    assert abs(got["window"]["top_cm"] - 0.5) < 1e-3, got["window"]
+    ok += 1
+
+    # 63) 校验（V3）：所有问题一次报完、什么都不读出来 —— 奇数条泳道线、window 三条线、
+    #     band 名字不合规、泳道交错；另一份：条带线横跨两条泳道、MW 不单调、条带不足 3 条。
+    bad = json.loads(json.dumps(top_wb["document"]))
+    B = {l["name"]: l for l in bad["layers"]}
+    lanes_b = vc_file.lay_children(B["lanes"])
+    lanes_b.pop()                                                           # 奇数
+    vc_file.lay_children(B["window"]).append(json.loads(json.dumps(vc_file.lay_children(B["window"])[0])))
+    vc_file.lay_children(B["marker bands"])[0]["name"] = "250kD band"
+    try:
+        workbench.from_document(bad)
+        raise AssertionError("坏 Workbench 没报错")
+    except workbench.WorkbenchError as e:
+        msg = str(e)
+        assert "有 3 处要改" in msg, msg                                     # 一次报完
+        for frag in ("奇数", "window 图层应当恰好有两条横线", "band <分子量>"):
+            assert frag in msg, (frag, msg)
+    bad3 = json.loads(json.dumps(top_wb["document"]))
+    B3 = {l["name"]: l for l in bad3["layers"]}
+    dup = json.loads(json.dumps(sorted(vc_file.lay_children(B3["lanes"]),
+                                       key=lambda n: vc_file.line_ends(n)[0][0])[6:8]))
+    for i, n in enumerate(dup):
+        n["id"] = 80000 + i
+        for a_ in n["kind"]["path"]["subpaths"][0]["anchors"]:
+            a_["p"][0] += 1.0                                               # 与泳道 4 交错 1 pt
+    vc_file.lay_children(B3["trimmed"]).extend(dup)
+    try:
+        workbench.from_document(bad3)
+        raise AssertionError("交错的泳道没报错")
+    except workbench.WorkbenchError as e:
+        assert "重叠" in str(e), e
+    bad2 = json.loads(json.dumps(top_wb["document"]))
+    B2 = {l["name"]: l for l in bad2["layers"]}
+    bl = sorted(vc_file.lay_children(B2["marker bands"]), key=lambda n: vc_file.line_ends(n)[0][1])
+    a0 = bl[0]["kind"]["path"]["subpaths"][0]["anchors"]
+    for shift, frag in ((4 * 0.565, "横跨了泳道"), (2.0, "不在任何泳道里")):   # 落到泳道 5 上 / 落在道间空隙
+        for a_ in a0:
+            a_["p"][0] += shift * vc_file.PT_PER_CM
+        try:
+            workbench.from_document(bad2)
+            raise AssertionError("条带线挪 %.2f cm 没报错" % shift)
+        except workbench.WorkbenchError as e:
+            assert frag in str(e), (frag, e)
+            assert frag != "不在任何泳道里" or bl[0]["name"] in str(e), e        # 点名是哪条线
+        for a_ in a0:
+            a_["p"][0] -= shift * vc_file.PT_PER_CM
+    bl[0]["name"], bl[1]["name"] = "band 50", "band 100"                   # MW 随 y 变大
+    vc_file.lay_children(B2["marker bands"]).remove(bl[2])                 # 只剩 2 条
+    try:
+        workbench.from_document(bad2)
+        raise AssertionError("MW 不单调 / 不足 3 条没报错")
+    except workbench.WorkbenchError as e:
+        assert "分子量不更小" in str(e) and "至少要 3 条" in str(e), e
+    ok += 1
+
+    # 64) 泳道名跟着泳道走（V3）：中间插一条 → 原名不顺移；删一条 → 其余原名不变；
+    #     小挪动（< 半个中心距）仍配上；挪太远 → 当成新泳道（None，agent 去问名字）。
+    prev = [0.5, 1.0, 1.5, 2.0, 2.5]
+    nm = ["M", "A", "B", "C", "D"]
+    assert workbench.match_lanes(prev, [0.5, 1.0, 1.25, 1.5, 2.0, 2.5]) == [0, 1, None, 2, 3, 4]
+    assert workbench.match_lanes(prev, [0.5, 1.0, 2.0, 2.5]) == [0, 1, 3, 4]
+    assert workbench.match_lanes(prev, [0.6, 1.1, 1.4, 2.0, 2.5]) == [0, 1, 2, 3, 4]
+    assert workbench.match_lanes(prev, [0.5, 1.0, 1.5, 2.0, 3.4]) == [0, 1, 2, 3, None]
+    fake = {"lanes": [{"left_cm": c - 0.1, "right_cm": c + 0.1} for c in (0.5, 1.0, 1.25, 1.5, 2.0, 2.5)]}
+    assert workbench.lane_names_after(fake, prev, nm) == ["M", "A", None, "B", "C", "D"]
+    ok += 1
+
     print("selftest %d/%d 通过" % (ok, ok))
     return 0
 
@@ -1876,3 +2024,34 @@ def _later(delay, fn):
 def _write(path, data):
     with open(path, "wb") as f:
         f.write(data)
+
+
+def _synth_wb_doc(model):
+    """selftest：模型 → 只有 Workbench 的 vc_file 文档（胶面图是 _tiny_png，宽高比与胶面一致）。"""
+    doc = vc_file.new_doc("wb")
+    w_px = 172
+    h_px = int(round(w_px * model["gel"]["height_cm"] / model["gel"]["width_cm"]))
+    png = _tiny_png(w_px, h_px)
+    key, w, h = vc_file.add_image(doc, png)
+    layers = workbench.make_layers(doc)
+    workbench.add_workbench(doc, layers, model, key, w, h, x0=340.0)
+    return doc, png
+
+
+def _wb_origin(document):
+    img = [n for n in vc_file.lay_children(vc_file.layer_by_name(document, "gel")) if n.get("name") == "gel"][0]
+    return img["kind"]["xf"][4], img["kind"]["xf"][0]
+
+
+def _assert_model_close(a, b, tol=1e-3):
+    assert a["marker_lane"] == b["marker_lane"], (a["marker_lane"], b["marker_lane"])
+    for k in ("width_cm", "height_cm"):
+        assert abs(a["gel"][k] - b["gel"][k]) < tol, (k, a["gel"], b["gel"])
+    for k in ("top_cm", "bottom_cm"):
+        assert abs(a["window"][k] - b["window"][k]) < tol, (k, a["window"], b["window"])
+    assert len(a["lanes"]) == len(b["lanes"]), (len(a["lanes"]), len(b["lanes"]))
+    for x, y in zip(a["lanes"], b["lanes"]):
+        assert x["trimmed"] == y["trimmed"] and abs(x["left_cm"] - y["left_cm"]) < tol \
+            and abs(x["right_cm"] - y["right_cm"]) < tol, (x, y)
+    assert [x["mw"] for x in a["bands"]] == [y["mw"] for y in b["bands"]]
+    assert all(abs(x["y_cm"] - y["y_cm"]) < tol for x, y in zip(a["bands"], b["bands"]))
