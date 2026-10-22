@@ -140,20 +140,26 @@ def selftest():
         assert abs((ch - 1 - max(ys)) - 0) <= 3, "裁切下边留白异常 %s" % (ch - 1 - max(ys))
         ok += 1
 
-    # 17) 分子量标定：完美的 log 线性 marker → 两种方法都应还原；interp 不外推、logfit 外推并标记
+    # 17) 分子量：只在**相邻两条 marker 带之间**插值（禁止全局拟合）。
+    #     marker 点上的值必须严格等于标签值；区间外不给数字；弯曲的梯子按局部斜率走，不被一条直线抹平。
     assert parse_mw("21/20 kD") == [21.0, 20.0] and parse_mw("250 kD") == [250.0] and parse_mw("M") == []
     ents = [{"text": "100 kD"}, {"text": "21/20 kD", "rows": 2}, {"text": "10 kD"}]
     pr = marker_pairs(ents, [1, 2, 1], [10, 20, 24, 30], lambda e, d: dict(e))
     assert pr == [(10, 100.0), (20, 21.0), (24, 20.0), (30, 10.0)], pr
     cal = build_cal([(y, 10 ** (2.0 - 0.05 * (y - 10))) for y in (10, 20, 30, 40)])
-    assert abs(cal["fit"][2] - 1.0) < 1e-9
-    mw, ex = estimate(25, 100.0, [(100.0, cal)], "logfit")
-    assert abs(mw - 10 ** (2.0 - 0.75)) < 1e-6 and not ex, (mw, ex)
-    mw, ex = estimate(25, 100.0, [(100.0, cal)], "interp")
-    assert abs(mw - 10 ** (2.0 - 0.75)) < 1e-6 and not ex, (mw, ex)
-    assert estimate(50, 100.0, [(100.0, cal)], "interp")[0] is None
-    mw, ex = estimate(50, 100.0, [(100.0, cal)], "logfit")
-    assert ex and abs(mw - 10 ** (2.0 - 2.0)) < 1e-6, (mw, ex)
+    assert "fit" not in cal, cal                                   # 标定里没有任何拟合曲线
+    for y in (10, 20, 30, 40):                                     # 标记点上 = 标签值
+        mw, ex = estimate(y, 100.0, [(100.0, cal)])
+        assert abs(mw / 10 ** (2.0 - 0.05 * (y - 10)) - 1) < 1e-12 and not ex, (y, mw, ex)
+    mw, ex = estimate(25, 100.0, [(100.0, cal)])                   # 两点之间 = 两点的 log 线性
+    assert abs(mw - 10 ** (2.0 - 0.75)) < 1e-9 and not ex, (mw, ex)
+    mw, ex = estimate(50, 100.0, [(100.0, cal)])                   # 范围外：不给数字
+    assert mw is None and ex
+    curve = build_cal([(1.0, 250.0), (2.0, 100.0), (4.0, 30.0), (5.0, 10.0)])   # 弯曲的梯子
+    mw, _ = estimate(3.0, 100.0, [(100.0, curve)])
+    assert abs(mw / (100.0 * 30.0) ** 0.5 - 1) < 1e-9, mw          # 100↔30 之间走它们自己的斜率
+    mw, _ = estimate(4.5, 100.0, [(100.0, curve)])
+    assert abs(mw / (30.0 * 10.0) ** 0.5 - 1) < 1e-9, mw           # 30↔10 之间同理
     ok += 1
 
     # 18) 强制预设闸门：probe 没给 --gel-size 必须在**跑检测之前**就失败。
@@ -889,7 +895,8 @@ def selftest():
         assert abs(ln1["profile"]["gray"][k] - indep) < 1e-6, (ln1["profile"]["gray"][k], indep)
         assert len(ln1["profile"]["y_cm"]) == 600 and ln1["profile"]["y_cm"][0] == 0.005
         assert rep["calibration"]["points"] == [[y, m] for y, m in zip(rows_cm, mws)], rep["calibration"]
-        assert rep["calibration"]["r2"] == 1.0 and rep["calibration"]["marker_lane"] == 1
+        assert rep["calibration"]["method"] == "interp" and rep["calibration"]["marker_lane"] == 1
+        assert "r2" not in rep["calibration"] and "fit" not in rep["calibration"], rep["calibration"]
         sb = ln1["bands"]
         assert len(sb) == 1 and abs(sb[0]["y_cm"] - 2.5) < 0.02, sb
         assert abs(sb[0]["mw_kda"] - 50.0 / 2 ** 0.5) < 1.0 and not sb[0]["extrapolated"], sb
@@ -902,13 +909,14 @@ def selftest():
         mdl5b = json.loads(json.dumps(mdl5))
         mdl5b["bands"][1]["y_cm"] = 2.2                                # 拖动一条 band 线
         rep_b = profiles.analyze(mdl5b, png_b, ["M", "S1", None])
-        assert rep_b["calibration"]["r2"] < 1.0 and rep_b["lanes"][1]["bands"][0]["mw_kda"] != sb[0]["mw_kda"]
+        assert rep_b["lanes"][1]["bands"][0]["mw_kda"] != sb[0]["mw_kda"]      # 拖线后插值跟着变
         out = os.path.join(td, "fig.mw.json")
         write_v2(rep, out)
         assert json.load(open(out, encoding="utf-8")) == json.loads(json.dumps(rep))
         table = format_report_v2(rep)
-        assert "R²=1.0000" in table and "S1" in table and "%.1f kDa" % sb[0]["mw_kda"] in table, table
-        assert "外推" not in table, table          # marker 泳道两端的外推带不在表里，不该带脚注
+        assert "interp" in table and "R²" not in table and "S1" in table and \
+            "%.1f kDa" % sb[0]["mw_kda"] in table, table
+        assert "外推" not in table, table          # 插值不外推：范围外的带写「超出 marker 范围」，没有脚注
     ok += 1
 
     # 69) 泳道种子 = 等距梳子、按加样孔定相（V8）：合成胶面顶上画 15 个 U 形孔（间距 0.52 cm、

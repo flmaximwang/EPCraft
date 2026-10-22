@@ -102,7 +102,7 @@ Figure 在 Workbench **下方**（变宽变高不会压到 Workbench），Profil
 | `ep-meta` | Workbench 画板外 | 隐藏、锁定、不打印 | 一个文字对象 `ep-meta`：运行元数据 JSON | 否 |
 
 线宽 0.5 pt。`ep-meta` 里存：skill 版本、照片路径、胶体预设、marker 预设、dpi、Profiles 版式、render 时的泳道名、
-marker 标签表、**上一次的泳道中心**（给标签匹配用）、上一次的 band 线与 R²（给 sync 的改动摘要用）、种子信息。
+marker 标签表、**上一次的泳道中心**（给标签匹配用）、上一次的 band 线（给 sync 的改动摘要用）、种子信息。
 不放进自定义 JSON 键（存盘就丢）也不放 `file.info`（会写进导出的 PNG），见 vectorcraft.md §4。
 
 ### 所有权（sync 的硬规则）
@@ -183,8 +183,11 @@ marker 标签表、**上一次的泳道中心**（给标签匹配用）、上一
      浓带旁的淡带在 ink 上甚至是负的。闭运算基线试过也否了（平坦道上叫出假带）。
    - 为什么噪声要迭代剔除：相邻行差分法几乎处处掉到下限，把 1–2 级的纹理全当带；一次性 MAD 在密梯子上被条带撑大，11 条只叫出 8 条。
    - 实测：IMG_1496 梯子 11/11，淡样品带（泳道 5/6/13/14，SNR 5–11）叫得出，空道基本叫不出东西。
-3. **标定**：`band <MW>` 线的 y ↔ MW，`log10(MW) = a + b·y` 最小二乘，报 R²（5 张 DGC 照片 0.949–0.964）。只有 `logfit` 一种。
-4. **MW**：每条叫出的带按标定换算；超出 marker 范围的标 `extrapolated`（终端表里 `*`）。
+3. **标定（只有一种做法：两点间插值）**：`band <MW>` 线的 y ↔ MW。相邻两条 marker 带夹住的区间内，按 `log10(MW)`
+   在**这两点之间**线性插值 —— marker 点上的值严格等于标签值，两点之间按这条胶自己的局部斜率走。**禁止全局拟合**：
+   `log10(MW) = a + b·y` 最小二乘在 Tris-Tricine 胶上不成立（残差是系统的：250 kD 被压低约四成、10 kD 抬高约三成，
+   R² 只有 0.95），而且这条直线在标记点之间也不经过真实值。标定里不存拟合系数、也不报 R²。
+4. **MW**：每条叫出的带按标定换算；超出 marker 范围的记 `mw_kda: null` + `extrapolated: true`（终端表里写「超出 marker 范围」，不给外推数字）。
 
 终端表：标定一行；每条**有名字、不是 marker、没被 trim** 的泳道一行，`[主]` = 显著度最大的带。
 「浓」= 局部显著度（灰度级），不是积分量；预染 marker 的表观分子量与样品有系统偏差，汇报时别说成真实分子量。
@@ -197,8 +200,7 @@ marker 标签表、**上一次的泳道中心**（给标签匹配用）、上一
            "gray": "0-255 (lower = darker)", "ink": "baseline - gray (higher = more stain)"},
  "gel": {"width_cm": 8.6, "height_cm": 6.25, "px_per_cm": 118.11},
  "window": {"top_cm": 0.15, "bottom_cm": 6.06},
- "calibration": {"method": "logfit", "marker_lane": 1, "points": [[0.42, 250], ...],
-                 "fit": {"log10_mw": "a + b*y", "a": 2.6, "b": -0.31}, "r2": 0.95},
+ "calibration": {"method": "interp", "marker_lane": 1, "points": [[0.42, 250], ...]},
  "params": {"base_half_cm": 0.3, "smooth_cm": 0.03, "min_sep_cm": 0.05, "k_noise": 4.0},
  "lanes": [{"lane": 1, "label": "M", "marker": true, "trimmed": false,
             "left_cm": 0.31, "right_cm": 0.67, "noise": 0.8,
@@ -243,7 +245,7 @@ python3 scripts/gel_photo.py sync fig.vectorcraft [--port 7797] [--dry-run] [--d
 3. 在文档里那张胶面图上重算剖面、条带、标定（§7）→ `plan_sync` 算出最少的操作。
 4. 全部操作在**一个**撤销组 `ep-labeling sync` 里执行（⌘Z 一次撤回整个 sync；中途出错整组回滚）。
 5. 存盘（轮询到文件比请求新且能解析），按 `ep-meta` 里的 dpi 重新导出 `fig.png`，重写 `fig.mw.json`（泳道名取当前标签文字）。
-6. 打印改动摘要，例如 `泳道移动：3 +0.15 cm`、`trimmed（不进 Figure）：[14]`、`marker 线：band 35 删除`、`标定 R² 0.9470 → 0.9483`，
+6. 打印改动摘要，例如 `泳道移动：3 +0.15 cm`、`trimmed（不进 Figure）：[14]`、`marker 线：band 35 删除`，
    以及 `已更新：artboard 1, delete …, create …, move …`；有 `?` 泳道时打 `[?] 泳道 [n] 还没有名字`。
 
 `--dry-run` 只打印摘要和操作列表，不动文档。`--dpi` 只在 `ep-meta` 没记 dpi 时用。
@@ -327,7 +329,7 @@ render 的其它开关（全是 stage 1）：`--gel-cm`、`--gel-lanes`、`--tri
 | `--keep-lanes` | `--trim-lanes`（写要拿掉的），或把泳道的两条线挪进 `trimmed` |
 | `--marker-policy` | 固定行为：marker 泳道被 trim 时只标定、不画标签 |
 | `--pair-force`、`y_px` 手动标定 | 在 Workbench 上拖 / 删 / 改名 `band <MW>` 线，然后 sync |
-| `--mw-method interp` | 只有 `logfit` |
+| `--mw-method interp` | 没有可选方法：MW 一律在相邻两条 marker 带之间插值，全局拟合被禁止 |
 | `--margin-frac`、`--splice-gap-cm` | 页面规则自动推导；拼缝固定 0.15 cm |
 | `--font`、`--outline` / `--no-outline` | 字体与样式在 VectorCraft 里改（默认 Arial） |
 

@@ -70,7 +70,7 @@ REMOVED = {
     "--outline": "文字样式在 VectorCraft 里改",
     "--no-outline": "文字样式在 VectorCraft 里改",
     "--font": "字体在 VectorCraft 里改（默认 Arial）",
-    "--mw-method": "只有 logfit（log10 MW ~ y）",
+    "--mw-method": "MW 一律在相邻两条 marker 带之间做两点插值，没有可选方法（禁止全局拟合）",
     "--splice-gap-cm": "拼缝固定 0.15 cm",
 }
 _FLAG_ONLY = ("--svg", "--no-editor", "--pair-force", "--no-outline")
@@ -270,9 +270,8 @@ def cmd_render(args):
 
 
 def _meta_state(model, report):
-    """写进 ep-meta 的「上一次」状态：sync 拿它说清楚这次改了什么。"""
-    return {"bands": [[b["mw"], b["y_cm"]] for b in model["bands"]],
-            "r2": report["calibration"]["r2"]}
+    """写进 ep-meta 的「上一次」状态：sync 拿它说清楚这次改了什么（R² 不再有：标定不做全局拟合）。"""
+    return {"bands": [[b["mw"], b["y_cm"]] for b in model["bands"]]}
 
 
 def _ask_names(model):
@@ -361,9 +360,6 @@ def _summary(old, model, report):
     bd += ["band %g 新增" % mw for mw in nb if mw not in ob]
     if bd:
         out.append("marker 线：%s" % "，".join(bd))
-    r2 = report["calibration"]["r2"]
-    if old.get("r2") is not None and abs(old["r2"] - r2) >= 0.00005:
-        out.append("标定 R² %.4f → %.4f" % (old["r2"], r2))
     return out or ["Workbench 没有改动"]
 
 

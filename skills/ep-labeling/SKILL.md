@@ -17,7 +17,7 @@ Turn a phone photo of a gel into a labeled figure at true physical size. Detecti
 |---|---|
 | `fig.vectorcraft` | The editable document: artboards `Figure` (exported), `Workbench` (edit here), `Profiles` (curves). Structure: `references/photo-labeling-conventions.md` §4. |
 | `fig.png` | The Figure artboard, **exported by VectorCraft** at `--dpi` (pHYs set). Always matches what the user sees. |
-| `fig.mw.json` | Report v2: calibration, every lane's raw `gray`/`baseline`/`ink` profile, called bands with MW (`--no-mw` drops it). |
+| `fig.mw.json` | Report v2: calibration points, every lane's raw `gray`/`baseline`/`ink` profile, called bands with MW (`--no-mw` drops it). MW comes from two-point interpolation between neighbouring marker bands — no global fit. |
 
 - Not covered: perspective correction (shoot straight, or `--angle`), band quantification (profiles are raw data, not densitometry), identifying what a band is, editing the gel crop/angle/brightness in VectorCraft (that is a re-render).
 
@@ -80,7 +80,7 @@ Turn a phone photo of a gel into a labeled figure at true physical size. Detecti
 | sync: `Workbench 有 N 处要改（什么都没动）` | Nothing was changed. Relay every listed fix (odd line count in `lanes`/`trimmed`, overlapping pairs, window not exactly two horizontal lines or top below bottom, a band line not named `band <MW>`, band lines outside or across lanes, fewer than 3 bands, MW not decreasing downwards). Meanings: conventions §5. After the user fixes them, `sync` again. |
 | Figure is spliced (non-adjacent kept lanes) | The figure legend **must** state that non-adjacent lanes were spliced from one gel; labels keep the original lane numbers. |
 | Marker lane is trimmed | Calibration still uses it; no marker labels are drawn on the Figure. Tell the user. |
-| Calibration R² low (< ~0.98) or `*` extrapolated values | Report them; suggest checking the `band` lines against the ladder on the Workbench. Don't hide extrapolation. |
+| A band prints `超出 marker 范围` | Its y lies outside the ladder's span, so two-point interpolation gives it no number (never extrapolate). If a real band of interest fell outside, check the `band` lines on the Workbench — a misplaced line shrinks the calibrated span. |
 | Two bands too close for separate labels (21/20 kD) | One label with `"rows": 2` (two band lines, one label). |
 | User says the photo is cropped | `--gel-lanes N` (N visible lanes); otherwise the scale is wrong. |
 | A removed flag (`--keep-lanes`, `--svg`, `--debug`, `--record`, `export`, …) | The script names the replacement; follow it (conventions §11). |
@@ -89,5 +89,5 @@ Turn a phone photo of a gel into a labeled figure at true physical size. Detecti
 ## Done when
 
 - `fig.vectorcraft`, `fig.png` and `fig.mw.json` exist; `fig.png` passed the read-back and has the intended dpi; the document is open in VectorCraft on the control port.
-- The reply includes the MW table (strongest band per lane, R², any extrapolation), the configs used, the script's warnings, which lanes are unnamed, and anything not verified. If lanes were spliced, it states the splice.
+- The reply includes the MW table (strongest band per lane; bands outside the ladder span are reported as having no number), the configs used, the script's warnings, which lanes are unnamed, and anything not verified. If lanes were spliced, it states the splice.
 - After every `sync`, the reply relays the printed change summary.

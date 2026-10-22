@@ -55,7 +55,7 @@
       "id": "should-not-trigger-06",
       "type": "should_not_trigger",
       "prompt": "这张胶上这些条带分别是什么蛋白、多少 kD，你看着判一下。",
-      "expected_behavior": "越界：本 skill 只报**位置上的分子量估计**（由 marker 标定），不判读条带是什么蛋白。说明这点；若用户要的是分子量数，走 render / fig.mw.json 的报告，并如实带上 R² 与外推标记。",
+      "expected_behavior": "越界：本 skill 只报**位置上的分子量估计**（由 marker 标定），不判读条带是什么蛋白。说明这点；若用户要的是分子量数，走 render / fig.mw.json 的报告，并如实说明超出 marker 范围的带没有数值（两点插值不外推）。",
       "notes": "诱饵：题面里全是本 skill 的关键词，但要素是判读。"
     },
     {
@@ -111,7 +111,7 @@
       "id": "should-trigger-14",
       "type": "should_trigger",
       "prompt": "标完图后，顺便告诉我每条样品泳道里条带大概多少 kDa，最浓的那条是哪个。",
-      "expected_behavior": "读 render / sync 打出的 MW 表和 `fig.mw.json`：每条有名字、非 marker、未 trim 的泳道一行，`[主]` = 局部显著度最大的带（不是积分量），`*` = 超出 marker 范围的外推值。汇报时带上标定 R² 与外推提示；R² 低时建议核对 Workbench 上的 band 线。不要把预染 marker 的表观分子量说成样品的真实分子量；淡带要看 SNR。",
+      "expected_behavior": "读 render / sync 打出的 MW 表和 `fig.mw.json`：每条有名字、非 marker、未 trim 的泳道一行，`[主]` = 局部显著度最大的带（不是积分量）；MW 来自相邻两条 marker 带之间的两点插值，超出 marker 范围的带写「超出 marker 范围」（不外推）。汇报时如实说明；若真有想要的带落在范围外，建议核对 Workbench 上的 band 线。不要把预染 marker 的表观分子量说成样品的真实分子量；淡带要看 SNR。",
       "notes": ""
     },
     {
@@ -181,14 +181,14 @@
       "id": "should-trigger-24",
       "type": "should_trigger",
       "prompt": "lane 3 is off, I moved it — update",
-      "expected_behavior": "Run `python3 scripts/gel_photo.py sync fig.vectorcraft` (the user's VectorCraft instance on port 7797 holds the live document; no need to save first). Do not re-render. Relay the printed summary (e.g. `泳道移动：3 +0.12 cm`, R² before → after), the updated MW table, and that `fig.png` / `fig.mw.json` were re-exported; one ⌘Z in VectorCraft undoes the whole sync. If sync reports Workbench errors, relay every listed fix and change nothing.",
+      "expected_behavior": "Run `python3 scripts/gel_photo.py sync fig.vectorcraft` (the user's VectorCraft instance on port 7797 holds the live document; no need to save first). Do not re-render. Relay the printed summary (e.g. `泳道移动：3 +0.12 cm`, `marker 线：band 35 删除`), the updated MW table, and that `fig.png` / `fig.mw.json` were re-exported; one ⌘Z in VectorCraft undoes the whole sync. If sync reports Workbench errors, relay every listed fix and change nothing.",
       "notes": ""
     },
     {
       "id": "should-trigger-25",
       "type": "should_trigger",
       "prompt": "the 35 kD band isn't there",
-      "expected_behavior": "Delete the `band 35` line in the Workbench's `marker bands` layer (ask the user to, or the agent deletes that object via the control port), then `sync`. Sync drops that calibration point, refits (prints R² before → after), removes the 35 kD label from the Figure and re-exports. Do not hand-edit marker label text and do not re-render. At least 3 band lines must remain.",
+      "expected_behavior": "Delete the `band 35` line in the Workbench's `marker bands` layer (ask the user to, or the agent deletes that object via the control port), then `sync`. Sync drops that calibration point (the two bands that used to bracket it now interpolate directly between each other), removes the 35 kD label from the Figure and re-exports. Do not hand-edit marker label text and do not re-render. At least 3 band lines must remain.",
       "notes": "Replaces the IMG_1497 hand-rewritten marker labels."
     },
     {

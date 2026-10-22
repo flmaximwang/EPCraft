@@ -11,7 +11,7 @@ render（探测出来的线）和 sync（用户改过的线）走同一份代码
 3. 条带：平滑后原始灰度的局部变暗，**局部**显著度（比两侧浅点深多少）≥ K_NOISE × 该泳道背景噪声，
    **没有绝对墨量下限**（失效报告 §6 P2-2：本批样品带只深 3–4 灰度级，绝对阈值会把整条淡道丢掉）。
    两端留一段不取峰：top-hat 的基线在剖面端点被截断（conventions §2c 的老坑）。
-4. 标定：`band <MW>` 线的 y ↔ MW，log10(MW) ~ y（logfit），与 mw_report 同一套数学。
+4. 标定：`band <MW>` 线的 y ↔ MW，**只做相邻两点之间的 log10(MW) 线性插值**（不做全局拟合），与 mw_report 同一套数学。
 
 报告 v2 的坐标一律是胶面 cm（与 record 同口径），不存照片像素。
 """
@@ -168,8 +168,13 @@ def call_bands(ys, gs, sm, px_per_cm, k=K_NOISE):
 
 # ---------------------------------------------------------------- 整份报告
 
-def analyze(model, png, lane_names, method="logfit"):
-    """workbench 模型 + 胶面图 → 报告 v2 dict（spec §7）。lane_names 与 model["lanes"] 一一对应（None = 未命名）。"""
+def analyze(model, png, lane_names):
+    """workbench 模型 + 胶面图 → 报告 v2 dict（spec §7）。lane_names 与 model["lanes"] 一一对应（None = 未命名）。
+
+    分子量只在**相邻两条 marker 带之间**按 log10(MW) 线性插值（mw_report._log_at）：标记点上的值就是标签值，
+    点之间按这条胶的局部斜率走。**不做全局拟合**（Tris-Tricine 上直线拟合会把 250 kD 压低四成、10 kD 抬高四成）。
+    超出 marker 范围的带记 mw_kda=None + extrapolated=True，不给数字。
+    """
     w, h, gray = gel_gray(png)
     ppc = w / float(model["gel"]["width_cm"])
     if abs(h / ppc - model["gel"]["height_cm"]) > max(0.02, 2.0 / ppc):
@@ -178,10 +183,9 @@ def analyze(model, png, lane_names, method="logfit"):
     top = max(0.0, model["window"]["top_cm"])
     bottom = min(model["gel"]["height_cm"], model["window"]["bottom_cm"])
     pairs = [(b["y_cm"], b["mw"]) for b in model["bands"]]
-    cal = build_cal(pairs)
-    if cal["fit"] is None:
+    if len(pairs) < 3:
         raise RuntimeError("marker 条带线不足 3 条，无法标定")
-    a, b, r2 = cal["fit"]
+    cal = build_cal(pairs)
     lanes, notes = [], []
     for i, ln in enumerate(model["lanes"], 1):
         ys, gs = lane_profile(gray, w, h, ppc, ln["left_cm"], ln["right_cm"], top, bottom)
@@ -190,7 +194,7 @@ def analyze(model, png, lane_names, method="logfit"):
         cx = (ln["left_cm"] + ln["right_cm"]) / 2.0
         bands = []
         for bd in called:
-            mw, ex = estimate(bd["y_cm"], cx, [(cx, cal)], method)
+            mw, ex = estimate(bd["y_cm"], cx, [(cx, cal)])
             bands.append(dict(bd, mw_kda=None if mw is None else round(mw, 2), extrapolated=bool(ex)))
         if bands:
             max(bands, key=lambda x: x["prominence"])["strongest"] = True
@@ -211,10 +215,8 @@ def analyze(model, png, lane_names, method="logfit"):
         "gel": {"width_cm": model["gel"]["width_cm"], "height_cm": model["gel"]["height_cm"],
                 "px_per_cm": round(ppc, 3)},
         "window": {"top_cm": round(top, 4), "bottom_cm": round(bottom, 4)},
-        "calibration": {"method": method, "marker_lane": model["marker_lane"],
-                        "points": [[round(y, 4), m] for y, m in cal["pairs"]],
-                        "fit": {"log10_mw": "a + b*y", "a": round(a, 6), "b": round(b, 6)},
-                        "r2": round(r2, 4)},
+        "calibration": {"method": "interp", "marker_lane": model["marker_lane"],
+                        "points": [[round(y, 4), m] for y, m in cal["pairs"]]},
         "params": {"base_half_cm": BASE_HALF_CM, "smooth_cm": SMOOTH_CM, "min_sep_cm": MIN_SEP_CM,
                    "k_noise": K_NOISE},
         "lanes": lanes, "notes": notes}

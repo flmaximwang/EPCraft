@@ -134,15 +134,15 @@ The same code runs in `render` (on detected geometry) and in `sync` (on the user
 
 1. **Profile per lane:** for every row y between `top` and `bottom`, the mean grey over x ∈ [L, R] of the embedded gel image (the image used for the figure, not the photo). Also an `ink = baseline − gray` curve, where `baseline` is the stage-3 top-hat (a sliding mean, half-window 0.30 cm, expressed in cm so it doesn't depend on resolution). Store `gray`, `baseline` and `ink` raw. V4 tried a morphological closing instead and rejected it: it turned smooth texture into a sawtooth and called bands on flat lanes.
 2. **Bands per lane:** local darkenings of the lightly smoothed **raw grey** profile. **Local prominence** is how much darker the band is than the lighter of its two flanks within 0.15 cm. Not measured on `ink`: the sliding-mean baseline sags at strong bands, which leaves negative lobes beside them and turns the flat background between two strong bands into a ghost peak (a synthetic 4-band ladder gave 7 calls on `ink` and exactly 4 on raw grey). Not height above zero either: a faint band beside a strong one is negative on `ink`. A band is called when that prominence is ≥ 4 × the lane's **background** noise (MAD of the smoothed ink, iteratively excluding band rows and lobes). There is no absolute ink floor like `min_loose_ink=6`, so faint lanes still get their peaks. Each band reports prominence, SNR and width; the curve is the user's check. On IMG_1496 this calls 11/11 marker bands, finds the faint 3–4-grey-level sample bands, and calls nothing on empty lanes.
-3. **Calibration:** log-linear (as today) on the `band <MW>` lines' y; report R².
-4. **MW per band**, with extrapolated bands flagged as today.
+3. **Calibration:** two-point interpolation only — inside the span between two neighbouring `band <MW>` lines, `log10(MW)` is linearly interpolated **between those two points**. A global fit (`log10(MW) = a + b·y` least squares) is forbidden: on Tris-Tricine gels it is systematically off (it pushes 250 kD down ~40 % and 10 kD up ~30 %) and it does not even pass through the marker values. The calibration stores the points only — no fit coefficients, no R².
+4. **MW per band**; a band whose y falls outside the marker span gets no number (`mw_kda: null`, `extrapolated: true`) — never extrapolate.
 
 `fig.mw.json` (v2):
 
 ```json
 {"version": 2, "units": {"x": "cm from gel-face left", "y": "cm from gel-face top", "gray": "0-255 (lower = darker)", "ink": "baseline - gray"},
  "window": {"top_cm": 0.0, "bottom_cm": 5.9},
- "calibration": {"method": "logfit", "marker_lane": 1, "points": [[0.42, 250], ...], "r2": 0.99},
+ "calibration": {"method": "interp", "marker_lane": 1, "points": [[0.42, 250], ...]},
  "lanes": [{"lane": 1, "label": "M", "trimmed": false, "left_cm": 0.31, "right_cm": 0.74,
             "profile": {"y_cm": [...], "gray": [...], "ink": [...]},
             "bands": [{"y_cm": 2.1, "mw_kda": 23.5, "prominence": 4.1, "extrapolated": false}]}]}
