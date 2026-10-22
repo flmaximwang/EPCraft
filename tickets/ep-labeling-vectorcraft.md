@@ -19,7 +19,8 @@ V0 ─┬─ V1 ── V3 ─┬─ V4 ─┬─ V5 ── V6 ── V7 ── V
 - Commit `templates/kinds.vectorcraft` (app-saved, one object per kind) as the writer's base.
 - Done when: every question has a measured answer with the exact JSON request/response, and the spec §5/§6 is corrected where reality differs.
 
-## V1 — `.vectorcraft` writer and reader
+## V1 — `.vectorcraft` writer and reader — DONE 2026-10-22
+- Close-out: `scripts/vc_file.py`; selftest 51–54 (round trip, three encodings, field completeness against the template, write gates). Manual: a `vc_file`-written three-artboard document opened in VectorCraft 0.14.0 with `warnings: []` and no dialog, with layer flags as written. Figure export was 1083 × 833 px at 300 dpi. An app-saved copy read back with identical names, lines, label style and image bytes.
 - Depends on V0.
 - New `vc_file.py`: `write(doc_model, images, path)` (inline base64, objects deep-copied from `templates/kinds.vectorcraft`) and `read(path)` accepting inline, `\0VCBLOBS\0` and gzip; id allocation and `next_id`; helpers for artboard, layer, line, point text, embedded image with `xf`, clipped image.
 - Done when: `selftest` round-trips a synthetic document (write → read → same names/geometry/blob bytes); the written file opens in VectorCraft without dialogs (manual) and looks as built.

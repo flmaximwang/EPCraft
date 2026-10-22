@@ -4,6 +4,8 @@
 import ast
 import base64
 import contextlib
+import copy
+import gzip
 import io
 import json
 import os
@@ -31,6 +33,7 @@ from scene import (build as scene_build, item_box_cm, load as scene_load,
 from scene_png import page_px, write_png as scene_png_write
 from scene_svg import baseline_offset_px, svg_string, write_svg
 from text_layout import annotate_cmd, pick_font, text_extent
+import vc_file
 
 
 def test_import_direction():
@@ -1071,6 +1074,110 @@ def selftest():
             assert worst <= 0.03, worst
         ok += 1
 
+    # 51) .vectorcraft 往返（V1）：三画板、四图层（含隐藏+锁定+不打印）、两条线、两段文字、
+    #     同一张图被两个对象引用（其中一个在剪切组里）→ write → read：名字/旗标/几何/字节都不变，
+    #     图片只存一份，next_id 大于所有 id，全文没有 link 键（内嵌，不链接）。
+    with tempfile.TemporaryDirectory() as td:
+        doc, png = _synth_vc_doc()
+        path = vc_file.write(doc, os.path.join(td, "t.vectorcraft"))
+        top, blobs = vc_file.read(path)
+        d = top["document"]
+        assert [a["name"] for a in d["artboards"]] == ["Figure", "Workbench", "Profiles"], d["artboards"]
+        assert d["artboards"][1]["rect"] == {"x0": 340.0, "y0": 0.0, "x1": 640.0, "y1": 200.0}
+        assert [l["name"] for l in d["layers"]] == ["gel", "lanes", "labels", "ep-meta"]
+        assert vc_file.layer_flags(vc_file.layer_by_name(d, "gel")) == (True, True, True)
+        assert vc_file.layer_flags(vc_file.layer_by_name(d, "lanes")) == (True, False, False)
+        assert vc_file.layer_flags(vc_file.layer_by_name(d, "ep-meta")) == (False, True, False)
+        lanes = vc_file.lay_children(vc_file.layer_by_name(d, "lanes"))
+        assert [vc_file.line_ends(n) for n in lanes] == [((385.0, 30.0), (385.0, 180.0)),
+                                                         ((400.0, 30.0), (400.0, 180.0))]
+        assert all(n["kind"]["live"]["a"]["x"] == vc_file.line_ends(n)[0][0] for n in lanes)
+        lab = vc_file.text_info(vc_file.lay_children(vc_file.layer_by_name(d, "labels"))[0])
+        assert lab == {"text": "M", "x": 52.0, "y": 25.0, "font": "Arial", "size": 8.0,
+                       "color": "#ff0000", "justify": "Center"}, lab
+        meta = vc_file.text_info(vc_file.lay_children(vc_file.layer_by_name(d, "ep-meta"))[0])
+        assert json.loads(meta["text"]) == {"skill": "ep-labeling", "px_per_cm": 47.2}, meta
+        imgs = [n for _l, n in vc_file.walk(d) if n["kind"]["type"] == "image"]
+        assert len(imgs) == 2 and len({n["kind"]["key"] for n in imgs}) == 1, imgs
+        assert list(blobs) == [imgs[0]["kind"]["key"]] and blobs[imgs[0]["kind"]["key"]] == png
+        grp = vc_file.lay_children(vc_file.layer_by_name(d, "gel"))[0]
+        assert grp["name"] == "gel seg 1" and grp["kind"]["clip"] is True
+        assert grp["kind"]["children"][0]["kind"]["clipping"] is True
+        ids = [n["id"] for _l, n in vc_file.walk(d)] + [l["id"] for l in d["layers"]]
+        assert len(ids) == len(set(ids)) and d["next_id"] > max(ids), (ids, d["next_id"])
+        assert "link" not in set(_walk_keys(top)), "内嵌图不该带 link"
+        assert not os.path.exists(path + ".tmp"), "原子写留下了临时文件"
+    ok += 1
+
+    # 52) 读三种编码（V1）：同一份内容分别存成 inline / \0VCBLOBS\0 容器 / gzip → loads 全相等；
+    #     blob 区间越界要报错，不是静默截断。
+    raw = vc_file.dumps(doc)
+    top_i, blobs_i = vc_file.loads(raw)
+    blob_top = json.loads(raw.decode("utf-8"))
+    tail, off = b"", 0
+    for k in sorted(blob_top["images"]):
+        b = base64.b64decode(blob_top["images"][k].pop("data"))
+        blob_top["images"][k]["blob"] = [off, len(b)]
+        tail += b
+        off += len(b)
+    blob_raw = json.dumps(blob_top).encode() + b"\n" + vc_file.BLOB_MARK + tail
+    for enc, r in (("blobs", blob_raw), ("gzip", gzip.compress(raw)), ("gzip+blobs", gzip.compress(blob_raw))):
+        t2, b2 = vc_file.loads(r, enc)
+        assert t2["document"] == top_i["document"], enc
+        assert b2 == blobs_i, enc
+    k0 = sorted(blob_top["images"])[0]
+    blob_top["images"][k0]["blob"] = [0, len(tail) + 1]
+    try:
+        vc_file.loads(json.dumps(blob_top).encode() + b"\n" + vc_file.BLOB_MARK + tail)
+        raise AssertionError("blob 越界没报错")
+    except RuntimeError as e:
+        assert "超出" in str(e), e
+    ok += 1
+
+    # 53) 字段齐全（V1，防 app 的严格加载器）：写出的每种对象的键路径 ⊇ 模板里同种对象的键路径
+    #     （缺一个字段 app 就整份拒开，见 references/vectorcraft.md §1）。
+    tpl = vc_file._template(vc_file.TEMPLATE)
+    d = top_i["document"]
+    lanes = vc_file.lay_children(vc_file.layer_by_name(d, "lanes"))
+    pairs = [("line", lanes[0], tpl["line"]),
+             ("text", vc_file.lay_children(vc_file.layer_by_name(d, "labels"))[0], tpl["text"]),
+             ("clip", vc_file.lay_children(vc_file.layer_by_name(d, "gel"))[0], tpl["clip"]),
+             ("artboard", d["artboards"][0], tpl["artboard"])]
+    lay_w = dict(vc_file.layer_by_name(d, "labels"), kind=dict(vc_file.layer_by_name(d, "labels")["kind"], children=[]))
+    pairs.append(("layer", lay_w, tpl["layer"]))
+    for what, got, want in pairs:
+        miss = _key_paths(want) - _key_paths(got)
+        miss = {m for m in miss if not m.startswith(("kind.children.", "kind.para.justify_auto"))}
+        assert not miss, ("%s 比模板少了字段" % what, sorted(miss))
+    assert set(d) >= set(tpl["document"]) - {"last_view", "layers_open"}, \
+        sorted(set(tpl["document"]) - set(d))
+    ok += 1
+
+    # 54) 写入闸（V1）：重复 id、引用了没有字节的图、非 PNG、非法 justify、越界颜色都必须报错。
+    def raises(fn, frag):
+        try:
+            fn()
+        except RuntimeError as e:
+            assert frag in str(e), (frag, str(e))
+            return True
+        return False
+    bad = vc_file.new_doc("bad")
+    lay = vc_file.add_layer(bad, "x")
+    n = vc_file.line(bad, "a", (0, 0), (1, 1))
+    vc_file.lay_children(lay).extend([n, copy.deepcopy(n)])
+    assert raises(lambda: vc_file.dumps(bad), "id 重复"), "重复 id 没报错"
+    bad2 = vc_file.new_doc("bad2")
+    lay2 = vc_file.add_layer(bad2, "x")
+    vc_file.lay_children(lay2).append({"id": 99, "name": "i", "kind": {"type": "image", "key": "imgnope",
+                                                                      "width": 1, "height": 1,
+                                                                      "xf": [1, 0, 0, 1, 0, 0]}})
+    assert raises(lambda: vc_file.dumps(bad2), "没有字节"), "悬空图片没报错"
+    assert raises(lambda: vc_file.add_image(bad2, b"GIF89a...."), "不是 PNG")
+    assert raises(lambda: vc_file.text(bad2, "t", 0, 0, "x", justify="middle"), "justify")
+    assert raises(lambda: vc_file.line(bad2, "l", (0, 0), (1, 1), rgb=(0, 0, 255)), "0–1")
+    assert raises(lambda: vc_file.loads(b'{"format": "svg"}'), "不是 .vectorcraft")
+    ok += 1
+
     print("selftest %d/%d 通过" % (ok, ok))
     return 0
 
@@ -1465,3 +1572,54 @@ def _parse_ppm_for_test(d):
         toks.append(d[i:j])
         i = j
     return int(toks[1]), int(toks[2]), d[i + 1 :]
+
+
+def _tiny_png(w, h, rgb=(128, 128, 128)):
+    """stdlib 造一张纯色 RGB PNG（selftest 专用，不依赖 magick）。"""
+    import struct
+    import zlib
+
+    def chunk(tag, body):
+        return (struct.pack(">I", len(body)) + tag + body
+                + struct.pack(">I", zlib.crc32(tag + body) & 0xffffffff))
+    rows = b"".join(b"\0" + bytes(rgb) * w for _ in range(h))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+
+def _synth_vc_doc():
+    """selftest 用的 .vectorcraft builder：spec §4 的三画板 + 四图层缩影。返回 (doc, png 字节)。"""
+    doc = vc_file.new_doc("selftest")
+    vc_file.add_artboard(doc, "Figure", 0, 0, 260, 200)
+    vc_file.add_artboard(doc, "Workbench", 340, 0, 300, 200)
+    vc_file.add_artboard(doc, "Profiles", 680, 0, 260, 200)
+    png = _tiny_png(40, 30)
+    key, w, h = vc_file.add_image(doc, png)
+    gel = vc_file.add_layer(doc, "gel", locked=True)
+    seg = vc_file.clip(doc, "gel seg 1", (30, 30, 100, 150),
+                       vc_file.image(doc, "gel", key, w, h, 30, 30, 5.0))
+    vc_file.lay_children(gel).extend([seg, vc_file.image(doc, "gel", key, w, h, 370, 30, 5.0)])
+    lanes = vc_file.add_layer(doc, "lanes", printable=False, color=1)
+    vc_file.lay_children(lanes).extend([vc_file.line(doc, "lane", (385, 30), (385, 180), (0, .7, 1)),
+                                        vc_file.line(doc, "lane", (400, 30), (400, 180), (0, .7, 1))])
+    labels = vc_file.add_layer(doc, "labels", color=2)
+    vc_file.lay_children(labels).append(vc_file.text(doc, "label lane 1", 52, 25, "M", rgb=(1, 0, 0)))
+    meta = vc_file.add_layer(doc, "ep-meta", printable=False, visible=False, locked=True, color=3)
+    vc_file.lay_children(meta).append(vc_file.text(
+        doc, "ep-meta", 340, 220, json.dumps({"skill": "ep-labeling", "px_per_cm": 47.2}),
+        size=4, justify="Left"))
+    return doc, png
+
+
+def _key_paths(o, pre=""):
+    """嵌套 dict/list 的键路径集合（list 下标统一记成 *）。"""
+    out = set()
+    if isinstance(o, dict):
+        for k, v in o.items():
+            p = pre + k
+            out.add(p)
+            out |= _key_paths(v, p + ".")
+    elif isinstance(o, list):
+        for v in o:
+            out |= _key_paths(v, pre + "*.")
+    return out
