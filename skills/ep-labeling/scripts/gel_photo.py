@@ -300,6 +300,8 @@ def cmd_sync(args):
     for n in notes:
         print("[i] %s" % n)
     old = dict(model["meta"])
+    for legacy in ("r2",):                      # 旧文档的 ep-meta 里有全局拟合的 R²：顺手清掉
+        model["meta"].pop(legacy, None)
     _top, blobs = vc_file.read(path)                     # 胶面图从磁盘上那份读（gel 层锁定，图不会变）
     key = next(n for n in vc_file.lay_children(vc_file.layer_by_name(dj, "gel"))
                if n.get("name") == "gel")["kind"]["key"]
