@@ -115,7 +115,23 @@ V0 ─┬─ V1 ── V3 ─┬─ V4 ─┬─ V5 ── V6 ── V7 ── V
 - Overwrite guard per V-D4.
 - Done when: the reference photo and the five DGC photos each give exactly three files; the documents open cleanly with the layers in §4.2; `fig.png` has the right size and dpi; the `selftest` count is updated.
 
-## V7 — `sync`
+## V7 — `sync` — DONE 2026-10-22
+- **Executor (subagent, branch `refs/heads/worktree-agent-a402e487170abb8cb`, merged):** `scripts/sync_exec.py` `apply_ops_live` runs every `plan_sync` op kind through the control port inside one `ep-labeling sync` undo group. `scripts/selftest_sync.py` runs 7 fake-port checks, hooked into the main selftest. Its live check (its own instance on port 7798) covered:
+  - the round trip, followed by a second plan with 0 ops;
+  - an injected failure, after which the document was byte-identical and the history had no step;
+  - one ⌘Z undoing the sync exactly, and redo restoring it.
+- **Command:** `gel_photo.py sync fig.vectorcraft [--port] [--dry-run]` runs these steps:
+  1. Attach to the instance (launching it if needed) and activate or open the document.
+  2. Read `document.json` → `workbench.from_document`. If the Workbench can't be read, it prints every fix needed and changes nothing.
+  3. Run the analysis on the gel image read from the saved file, then `plan_sync` → `apply_ops_live`.
+  4. Save, export `fig.png` at the dpi from ep-meta, and rewrite `fig.mw.json` with the current label texts as lane names.
+  5. Print what changed (moved, new, deleted and trimmed lanes, band lines moved or deleted, R² before → after) and ask for names of new "?" lanes.
+- **Live acceptance (spec §11),** in the user's instance on port 7797, with `~/Downloads/DGC/v6/IMG_1496.vectorcraft`. Edits: lane 3 dragged +0.15 cm, lane 14 moved to `trimmed`, `band 35` deleted, lane-2 label renamed "WT" and coloured red.
+  - The sync summary reported exactly those edits, and R² went 0.9470 → 0.9483.
+  - The update was one undo step (artboard 1, delete 136, create 133, move 3, set_text 1, stroke 2, reshape 1), in about 9 s.
+  - "WT" kept its text and red (#d01010). Label "3" re-centred on the moved lane. Lane 14's label and the 35 kD label were removed, and the Figure split into `gel seg 1` and `gel seg 2` with a splice gap.
+  - A second `sync` reported 0 changes.
+- Fixed during the live check: the report notes listed every lane as unnamed (they came from the pre-relabel analysis).
 - Depends on V6.
 - `sync fig.vectorcraft`: attach → `inspect` → model (validate; on error, change nothing and print the fixes) → analysis → `plan_sync` → execute ops → save → export PNG → rewrite `fig.mw.json` → print the diff summary. A lane label created for a new lane says `?` and the agent asks for its name.
 - Done when: the live checklist in spec §11 passes and is recorded; a second `sync` is a no-op; the validation errors are reproduced live once each.

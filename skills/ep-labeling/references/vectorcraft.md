@@ -71,6 +71,17 @@ A running instance **without** `--control` can't be reached. Launch with `Vector
 3. **Save can be read half-written.** `document.save` returned, and one read straight after it hit a truncated file (`Expecting ',' … char 30695`), though another returned complete in 10 ms. Poll until the file is newer than the request **and** parses.
 4. **Default font** is "Source Sans 3". Always pass `font:"Arial"` (and set `font_family` in the writer).
 
+### More pitfalls (measured in V7 with the live executor, `scripts/sync_exec.py`)
+
+5. **Locked layers block creation only.** Objects in a locked layer still accept `edit.clear`, `object.move` (including an image inside a clip group in the locked `gel`), `object.setProps`, `paint.setStroke`, `path.setAnchors` and `text.setText`. Creation is what fails: with a locked current layer, `text.create` silently put the object in the previously current layer, the same as with a hidden one. `sync_exec` therefore unlocks/shows only the target layers of `create` ops, relocks them at the end (also on error), and then checks each new object's layer once (with a `layer.move` fallback).
+6. **Painting by id also changes the defaults for new art.** `paint.setStroke` / `paint.setFill` / `stroke.set` with `ids` also change the default paint, and an undo-group cancel doesn't restore it. Calling the same commands with nothing selected restores the defaults without adding history. `document.inspect` reports `paint` and `currentLayer`, which is enough to restore both.
+7. **`layer.setCurrent` is not undoable.** `layer.setProps {locked}` inside an undo group *is* part of the group.
+8. **`object.transform {ids, matrix, copy:true}` premultiplies** (new xf = matrix ∘ old xf). It works on a locked layer's image and returns the copy's id; the copy shares the same `images` key. This is how a Figure segment gets its own instance of the gel image.
+9. **`object.clippingMask.make {ids:[rect, img]}` returns the group id.** The clip path's paint becomes none, matching the template's clip structure.
+10. **Colours and point text.** `color` accepts `[r,g,b]` (0–1) or `"#rrggbb"`. `text.create {justify:"center"}` puts the `xf` translation exactly at (x, y).
+11. **Bad ids fail cleanly.** A non-existent id fails with `no such object id N`, which aborts the undo group cleanly.
+12. **Speed.** A sync of about 260 ops (mostly rebuilding the Profiles and analysis layers) takes 6–9 s, at one connection per call.
+
 ## 3. Export
 
 ```json

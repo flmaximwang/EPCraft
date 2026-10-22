@@ -1093,6 +1093,11 @@ def selftest():
         assert ("[!] scale" in buf.getvalue()) == warn, (pitch, buf.getvalue())
     ok += 1
 
+    # 75+) 活文档执行器（V7，sync_exec；假控制口，不开 app）：每种 op 的命令序列、锁定层先解锁后锁回、
+    #      新对象起名、剪切组、失败 → 撤销组 cancel 并抛原错、收尾恢复当前层与默认颜色。
+    import selftest_sync
+    ok += selftest_sync.run()
+
     print("selftest %d/%d 通过" % (ok, ok))
     return 0
 

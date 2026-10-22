@@ -301,7 +301,11 @@ def cmd_sync(args):
     report = profiles.analyze(model, png, [None] * len(model["lanes"]))
     model["meta"].update(_meta_state(model, report))
     ops, meta = figure.plan_sync(dj, model, report, layout=layout)
-    report = dict(report, lanes=[dict(ln, label=meta["lane_names"][ln["lane"] - 1]) for ln in report["lanes"]])
+    names = meta["lane_names"]
+    report = dict(report, lanes=[dict(ln, label=names[ln["lane"] - 1]) for ln in report["lanes"]],
+                  notes=[n for n in report["notes"] if not n.endswith("还没有名字")]
+                  + ["泳道 %d 还没有名字" % ln["lane"] for ln in report["lanes"]
+                     if names[ln["lane"] - 1] is None and not ln["trimmed"]])
     for line in _summary(old, model, report):
         print("[i] %s" % line)
     if args.dry_run:
@@ -309,7 +313,7 @@ def cmd_sync(args):
         return 0
     if ops:
         done = sync_exec.apply_ops_live(client, ops, dj)
-        print("[i] 已更新：%s（一个撤销步「ep-labeling sync」）" % (done,))
+        print("[i] 已更新：%s（一个撤销步「ep-labeling sync」，⌘Z 可整体撤回）" % sync_exec.describe(done))
     else:
         print("[i] 文档已经是最新的（0 个改动）")
     client.save(path)
