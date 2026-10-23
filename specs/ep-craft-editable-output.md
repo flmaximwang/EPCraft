@@ -1,8 +1,8 @@
-> **Superseded by `specs/ep-labeling-vectorcraft.md` (2026-10-22).** The scene file, SVG writer, HTML editor and `export` described here were removed in V6; kept for history only.
+> **Superseded by `specs/ep-craft-vectorcraft.md` (2026-10-22).** The scene file, SVG writer, HTML editor and `export` described here were removed in V6; kept for history only.
 
-# Spec: ep-labeling — editable output (scene file, SVG, HTML editor)
+# Spec: ep-craft — editable output (scene file, SVG, HTML editor)
 
-Status: draft · Scope: `skills/ep-labeling` · Written 2026-10-20 · Builds on `specs/ep-labeling-gel-prior.md`
+Status: draft · Scope: `skills/ep-craft` · Written 2026-10-20 · Builds on `specs/ep-craft-gel-prior.md`
 
 ## 1. Problem
 
@@ -54,7 +54,7 @@ One JSON object. All lengths are in **cm** and all font sizes in **pt**, so the 
      "text": "250 kDa", "x_cm": 0.31, "y_cm": 0.98, "anchor": "right-middle",
      "size_pt": 8, "color": "#000000"}
   ],
-  "source": {"record": "fig.record.json", "written": "2026-10-20", "skill": "ep-labeling"}
+  "source": {"record": "fig.record.json", "written": "2026-10-20", "skill": "ep-craft"}
 }
 ```
 

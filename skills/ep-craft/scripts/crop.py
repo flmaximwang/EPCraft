@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Crop 画板：裁切框的几何、读回与重新裁切（spec ep-labeling-crop-artboard §4）。纯 stdlib + magick。
+"""Crop 画板：裁切框的几何、读回与重新裁切（spec ep-craft-crop-artboard §4）。纯 stdlib + magick。
 
 坐标口径（与 gel_photo 文件头一致）
     - 原图 px = **-auto-orient 之后**的像素（magick_io.identify / geometry.load_dims_after 量的就是它）。

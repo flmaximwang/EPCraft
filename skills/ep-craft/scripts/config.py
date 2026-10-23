@@ -76,7 +76,7 @@ GEL_ANCHORS = ("bottom", "top", "center")
 
 
 def load_gel_size(path):
-    """胶体物理尺寸预设 JSON（字段见 specs/ep-labeling-gel-prior.md §3）。
+    """胶体物理尺寸预设 JSON（字段见 specs/ep-craft-gel-prior.md §3）。
 
     必需：name / width_cm / height_cm / lane_count / lane_pitch_cm。
     加载时校验不变式 lane_count × lane_pitch_cm ≈ width_cm（容差 10%）。

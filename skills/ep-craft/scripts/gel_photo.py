@@ -206,7 +206,7 @@ def cmd_render(args):
     png, ga, stage1 = gel_face(args.image, preset, args, dpi)
     crop_spec, crop_meta = _crop_artboard(args, preset, stage1)
     lane_angle, marker_angle = window_deg(args.label_angle), window_deg(args.marker_label_angle)
-    meta = {"skill": "ep-labeling", "skill_version": SKILL_VERSION, "photo": os.path.abspath(args.image),
+    meta = {"skill": "ep-craft", "skill_version": SKILL_VERSION, "photo": os.path.abspath(args.image),
             "gel_preset": preset.get("name", ""), "marker_preset": mk_note, "dpi": dpi,
             "profiles_layout": args.profiles,
             "label_angle": {"lane": lane_angle, "marker": marker_angle},
@@ -342,7 +342,7 @@ def cmd_sync(args):
         return 0
     if ops:
         done = sync_exec.apply_ops_live(client, ops, dj)
-        print("[i] 已更新：%s（一个撤销步「ep-labeling sync」，⌘Z 可整体撤回）" % sync_exec.describe(done))
+        print("[i] 已更新：%s（一个撤销步「ep-craft sync」，⌘Z 可整体撤回）" % sync_exec.describe(done))
     else:
         print("[i] 文档已经是最新的（0 个改动）")
     client.save(path)

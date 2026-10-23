@@ -95,7 +95,7 @@ A running instance **without** `--control` can't be reached. Launch with `Vector
 | file info | `file.info {description?, keywords?}` | **copied into exported PNGs** (tEXt), see §4. |
 | rotate | `object.rotate {ids, angle, origin}` | `angle` = degrees, counter-clockwise, **relative**; `origin` = the anchor keeps the anchor fixed. Measured: `angle:-90` turned a 90° label back to `[1,0,0,1]`; `absolute:true` with `angle:0` was a **no-op** on that same label — never use `absolute` to set 0. |
 
-**Atomic sync:** `command.batch {label, commands:[{command, params}…]}` is all-or-nothing (a failing step left no change) and lands as **one** undo step. `edit.undoGroup.begin {label}` … `edit.undoGroup.end {cancel?}` does the same for steps that need results from earlier steps (e.g. a create, then its id); `cancel:true` rolls back. `sync` uses one group labelled `ep-labeling sync`, so ⌘Z undoes the whole sync.
+**Atomic sync:** `command.batch {label, commands:[{command, params}…]}` is all-or-nothing (a failing step left no change) and lands as **one** undo step. `edit.undoGroup.begin {label}` … `edit.undoGroup.end {cancel?}` does the same for steps that need results from earlier steps (e.g. a create, then its id); `cancel:true` rolls back. `sync` uses one group labelled `ep-craft sync`, so ⌘Z undoes the whole sync.
 
 ### Pitfalls (measured)
 

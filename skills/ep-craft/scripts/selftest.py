@@ -413,7 +413,7 @@ def selftest():
         assert lab == {"text": "M", "x": 52.0, "y": 25.0, "angle": 0.0, "font": "Arial", "size": 8.0,
                        "color": "#ff0000", "justify": "Center"}, lab
         meta = vc_file.text_info(vc_file.lay_children(vc_file.layer_by_name(d, "ep-meta"))[0])
-        assert json.loads(meta["text"]) == {"skill": "ep-labeling", "px_per_cm": 47.2}, meta
+        assert json.loads(meta["text"]) == {"skill": "ep-craft", "px_per_cm": 47.2}, meta
         imgs = [n for _l, n in vc_file.walk(d) if n["kind"]["type"] == "image"]
         assert len(imgs) == 2 and len({n["kind"]["key"] for n in imgs}) == 1, imgs
         assert list(blobs) == [imgs[0]["kind"]["key"]] and blobs[imgs[0]["kind"]["key"]] == png
@@ -676,9 +676,9 @@ def selftest():
         c = vc_control.Client(fv.port, timeout=5)
         cmds = lambda: [(r["params"]["command"], r["params"]["params"]) for r in fv.log
                         if r["method"] == "engine.execute"]
-        with c.undo_group("ep-labeling sync"):
+        with c.undo_group("ep-craft sync"):
             c.execute("text.setText", {"id": 1, "text": "A"})
-        assert cmds() == [("edit.undoGroup.begin", {"label": "ep-labeling sync"}),
+        assert cmds() == [("edit.undoGroup.begin", {"label": "ep-craft sync"}),
                           ("text.setText", {"id": 1, "text": "A"}),
                           ("edit.undoGroup.end", {})], cmds()
         fv.log.clear()
@@ -733,7 +733,7 @@ def selftest():
     _preset, rec = _synth_record()
     names = ["M"] + [str(i) for i in range(1, 15)]
     mdl = workbench.from_record(rec, names, ["250 kD", "100 kD", "50 kD"], 1, trim=[14, 15],
-                                meta={"skill": "ep-labeling"})
+                                meta={"skill": "ep-craft"})
     assert len(mdl["lanes"]) == 15 and mdl["marker_lane"] == 1
     assert [ln["trimmed"] for ln in mdl["lanes"]][-3:] == [False, True, True]
     xs_r = [src["x_cm"] for src in rec["lanes"]]
@@ -1026,7 +1026,7 @@ def selftest():
         png9 = open(gel9, "rb").read()
         names9 = ["M"] + [""] * 14
         m9, sd9 = workbench.from_image(png9, 8.6, 6.25, 15, 0.565, names9, ["100", "50", "25", "10"], 1,
-                                       meta={"skill": "ep-labeling"})
+                                       meta={"skill": "ep-craft"})
         assert sd9["source"] == "wells" and m9["meta"]["seed"]["source"] == "wells", sd9
         assert [b["mw"] for b in m9["bands"]] == [100.0, 50.0, 25.0, 10.0]
         assert all(abs(b["y_cm"] - y) < 0.02 for b, y in zip(m9["bands"], rows_cm)), m9["bands"]
@@ -1060,7 +1060,7 @@ def selftest():
         png5 = open(gp, "rb").read()
         names5 = ["M", "A", "B"] + [""] * 9 + ["X", "Y", "Z"]
         mk5 = ["100 kD", "70 kD", "50 kD", "35 kD", "10 kD"]
-        m5, _sd = workbench.from_image(png5, 8.6, 6.25, 15, 0.52, names5, mk5, 1, meta={"skill": "ep-labeling"})
+        m5, _sd = workbench.from_image(png5, 8.6, 6.25, 15, 0.52, names5, mk5, 1, meta={"skill": "ep-craft"})
         rep5 = profiles.analyze(m5, png5, names5)
         for lay in ("strips", "stack"):
             doc5 = figure.build_document(m5, rep5, png5, "t", layout=lay)
@@ -1249,7 +1249,7 @@ def selftest():
         png8 = open(gp, "rb").read()
         m8, _sd = workbench.from_image(png8, 8.6, 6.25, 15, 0.52, ["M"] + [""] * 14, ["100", "50", "25", "10"], 1,
                                        marker_rows_cm=[1.29, 1.97, 2.82, 3.92],   # 本测只验高的口径，不验叫带
-                                       meta={"skill": "ep-labeling"})
+                                       meta={"skill": "ep-craft"})
         assert abs(m8["gel"]["height_cm"] - 738 * 8.6 / 1016) < 1e-9, m8["gel"]
         rep8 = profiles.analyze(m8, png8, ["M"] + [""] * 14)
         d8 = vc_file.loads(vc_file.dumps(figure.build_document(m8, rep8, png8, "t")))[0]["document"]
@@ -1327,7 +1327,7 @@ def selftest():
         names_c = ["M", "A", "B"] + [""] * 9 + ["X", "Y", "Z"]
         mk_c = ["100 kD", "70 kD", "50 kD", "35 kD", "10 kD"]
         m_c, _sd = workbench.from_image(png_c, 8.6, 6.25, 15, 0.52, names_c, mk_c, 1,
-                                        meta={"skill": "ep-labeling", "label_angle": {"lane": 90.0, "marker": 90.0}})
+                                        meta={"skill": "ep-craft", "label_angle": {"lane": 90.0, "marker": 90.0}})
         rep_c = profiles.analyze(m_c, png_c, names_c)
         d_c = vc_file.loads(vc_file.dumps(figure.build_document(m_c, rep_c, png_c, "t")))[0]["document"]
         lab_c = {n["name"]: vc_file.text_info(n) for n in vc_file.lay_children(vc_file.layer_by_name(d_c, "labels"))}
@@ -1350,7 +1350,7 @@ def selftest():
         assert figure.plan_sync(d_c, m_c, rep_c)[0] == [], "竖排 render 完第一次 sync 却有改动"
 
         # (c) sync：用户在 app 里把 label lane 2 转 90° → 只挪位置（不改角度），角度记进 ep-meta
-        m0, _sd = workbench.from_image(png_c, 8.6, 6.25, 15, 0.52, names_c, mk_c, 1, meta={"skill": "ep-labeling"})
+        m0, _sd = workbench.from_image(png_c, 8.6, 6.25, 15, 0.52, names_c, mk_c, 1, meta={"skill": "ep-craft"})
         rep0 = profiles.analyze(m0, png_c, names_c)
         d_u = vc_file.loads(vc_file.dumps(figure.build_document(m0, rep0, png_c, "t")))[0]["document"]
         top_u = {"format": "vectorcraft", "version": 4, "document": d_u, "images": {}}
@@ -1384,7 +1384,7 @@ def selftest():
             (["M", "A", ""] + [""] * 12, [None, 90.0, None] + [None] * 12)
         m_cfg, _sd = workbench.from_image(png_c, 8.6, 6.25, 15, 0.52, ["M", "A"] + [""] * 13,
                                           [{"text": "100 kD", "angle": -90}, "10 kD", "5 kD"], 1,
-                                          marker_rows_cm=rows_c[:3], meta={"skill": "ep-labeling"})
+                                          marker_rows_cm=rows_c[:3], meta={"skill": "ep-craft"})
         assert m_cfg["meta"]["marker_labels"][0]["angle"] == -90.0 and "angle" not in m_cfg["meta"]["marker_labels"][1], \
             m_cfg["meta"]["marker_labels"]
     ok += 1
@@ -1496,7 +1496,7 @@ def _synth_vc_doc():
     vc_file.lay_children(labels).append(vc_file.text(doc, "label lane 1", 52, 25, "M", rgb=(1, 0, 0)))
     meta = vc_file.add_layer(doc, "ep-meta", printable=False, visible=False, locked=True, color=3)
     vc_file.lay_children(meta).append(vc_file.text(
-        doc, "ep-meta", 340, 220, json.dumps({"skill": "ep-labeling", "px_per_cm": 47.2}),
+        doc, "ep-meta", 340, 220, json.dumps({"skill": "ep-craft", "px_per_cm": 47.2}),
         size=4, justify="Left"))
     return doc, png
 

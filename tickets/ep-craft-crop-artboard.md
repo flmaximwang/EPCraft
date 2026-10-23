@@ -1,6 +1,6 @@
-# Tickets: ep-labeling Crop artboard
+# Tickets: ep-craft Crop artboard
 
-Spec: `specs/ep-labeling-crop-artboard.md`. Each ticket keeps `python3 scripts/gel_photo.py selftest` green. Agents share one checkout and own disjoint files (below); nobody commits.
+Spec: `specs/ep-craft-crop-artboard.md`. Each ticket keeps `python3 scripts/gel_photo.py selftest` green. Agents share one checkout and own disjoint files (below); nobody commits.
 
 ```
 wave 1:  C1 crop.py ─┐   C2 vc_file ─┐   C5 docs (from spec)

@@ -1,6 +1,6 @@
-# Spec: ep-labeling — gel preset as a mandatory prior
+# Spec: ep-craft — gel preset as a mandatory prior
 
-Status: draft · Scope: `skills/ep-labeling` · Written 2026-10-20
+Status: draft · Scope: `skills/ep-craft` · Written 2026-10-20
 
 ## 1. Problem
 

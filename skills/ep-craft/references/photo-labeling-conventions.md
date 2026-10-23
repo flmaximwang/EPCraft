@@ -1,7 +1,7 @@
 # 照片标注：配置、文档结构、分析、sync
 
-权威设计在 `specs/ep-labeling-vectorcraft.md`；VectorCraft 文件格式与控制口命令（实测）在 `references/vectorcraft.md`。
-本文写的是**现在代码实际怎么做**，数字来自 `tickets/ep-labeling-vectorcraft.md` 各张票的收尾记录。
+权威设计在 `specs/ep-craft-vectorcraft.md`；VectorCraft 文件格式与控制口命令（实测）在 `references/vectorcraft.md`。
+本文写的是**现在代码实际怎么做**，数字来自 `tickets/ep-craft-vectorcraft.md` 各张票的收尾记录。
 
 ## 1. 两个 JSON —— 字段表
 
@@ -298,7 +298,7 @@ python3 scripts/gel_photo.py sync fig.vectorcraft [--port 7797] [--dry-run] [--d
 4. 在胶面图上重算剖面、条带、标定（§7）→ `plan_sync` 算出最少的操作。重裁过就在最前面加一个 `relink` 操作
    （Workbench 的 `gel` 图 + 每个 Figure `gel seg k` 里的图）：写临时 PNG → `links.relink {ids, path, preserve:"transforms"}`
    → `links.embed {ids}`，临时文件在撤销组结束后删掉；`ep-meta.crop.frame_px` 改成新框。
-5. 全部操作在**一个**撤销组 `ep-labeling sync` 里执行（⌘Z 一次撤回整个 sync，含重裁；中途出错整组回滚）。
+5. 全部操作在**一个**撤销组 `ep-craft sync` 里执行（⌘Z 一次撤回整个 sync，含重裁；中途出错整组回滚）。
 6. 存盘（轮询到文件比请求新且能解析），按 `ep-meta` 里的 dpi 重新导出 `fig.png`，重写 `fig.mw.json`（泳道名取当前标签文字）。
 7. 打印改动摘要，例如 `泳道移动：3 +0.15 cm`、`trimmed（不进 Figure）：[14]`、`marker 线：band 35 删除`、
    `裁切框：转 +0.40°，移 +0.05/−0.10 cm，宽 ×1.020（重新裁了胶面图）`（cm = 旧比例下的胶面 cm；框没动就没有这行），

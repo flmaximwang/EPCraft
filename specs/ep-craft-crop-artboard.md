@@ -1,6 +1,6 @@
-# Spec: ep-labeling — Crop artboard (adjust the crop frame in VectorCraft)
+# Spec: ep-craft — Crop artboard (adjust the crop frame in VectorCraft)
 
-Status: agreed · Scope: `skills/ep-labeling` · Written 2026-10-23 · Builds on `specs/ep-labeling-vectorcraft.md`
+Status: agreed · Scope: `skills/ep-craft` · Written 2026-10-23 · Builds on `specs/ep-craft-vectorcraft.md`
 
 ## 1. Problem
 
@@ -91,7 +91,7 @@ Order inside `cmd_sync` (new steps in bold):
 2. **`crop.read_frame`** → errors join the Workbench error list (one message, nothing changed; header stays `Workbench 有 N 处要改（什么都没动）`, Crop items prefixed `Crop：`).
 3. **If the frame changed** (`frame_delta` not `None`): `ep-meta.photo` must exist and its `photo_sha1` must match, else error `照片 <path> 找不到 / 换过了 —— 把原照片放回去，或重新 render` (nothing changed). Re-crop with `crop_face` at the meta dpi → the new gel PNG is the one analysed (instead of the embedded one). Same pixel size as before (width_cm, height_cm, dpi unchanged).
 4. analyse, `plan_sync` as today.
-5. **Prepend op `{"op": "relink", "ids": [Workbench gel image + every Figure gel-seg image], "png": <bytes>}`**. `sync_exec` writes the PNG to a temp file, runs `links.relink {ids, path, preserve:"transforms"}` then `links.embed {ids}` inside the same `ep-labeling sync` undo group, deletes the temp file after the group. Any later op that creates a gel segment must use the **new** image key (re-read it after the embed, or create segments by `object.transform copy:true` of the Workbench image as today — verify which `plan_sync` does).
+5. **Prepend op `{"op": "relink", "ids": [Workbench gel image + every Figure gel-seg image], "png": <bytes>}`**. `sync_exec` writes the PNG to a temp file, runs `links.relink {ids, path, preserve:"transforms"}` then `links.embed {ids}` inside the same `ep-craft sync` undo group, deletes the temp file after the group. Any later op that creates a gel segment must use the **new** image key (re-read it after the embed, or create segments by `object.transform copy:true` of the Workbench image as today — verify which `plan_sync` does).
 6. `ep-meta.crop.frame_px` ← the new frame (written by the existing ep-meta update).
 7. Summary line: `裁切框：转 +0.40°，移 +0.05/−0.10 cm，宽 ×1.020（重新裁了胶面图）`. Without a change, no line.
 

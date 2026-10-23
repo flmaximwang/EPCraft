@@ -1,5 +1,5 @@
 ---
-name: ep-labeling
+name: ep-craft
 description: Use when labeling an electrophoresis gel photo (SDS-PAGE, agarose). Crops, straightens and rescales the gel to real size, seeds lanes from the wells and marker lines from the ladder, and writes an editable VectorCraft document (fig.vectorcraft), the figure PNG exported from it, and a MW report with raw per-lane profiles. The user corrects lanes and bands by hand in VectorCraft; `sync` follows the correction.
 compatibility: macOS; python3 (stdlib only), ImageMagick 7 (`magick`), VectorCraft 0.14.x (driven through its `--control` port; the skill launches it)
 ---
@@ -65,7 +65,7 @@ Turn a phone photo of a gel into a labeled figure at true physical size. Detecti
    - on the **Figure**, freely change label text, font, size, colour and angle (rotate a label), and add free text in `labels`;
    - on **Crop**, move / rotate / Shift-scale the green `crop` frame over the photo to fix the gel-face crop (aspect stays the preset's; Workbench lines keep their gel-face cm).
    Then tell the agent "I edited it".
-8. **Sync** when the user says they edited: `python3 scripts/gel_photo.py sync fig.vectorcraft` (`--dry-run` to preview). It reads the live document (no need to save first), re-crops the gel face from the full-resolution photo at `ep-meta.photo` if the `crop` frame moved (pixels swapped in place), recomputes profiles, bands and MW, updates the Figure, labels and curves in **one undo step** (`ep-labeling sync`), saves, re-exports `fig.png` and `fig.mw.json`, and prints what changed. Running it twice changes nothing. **Never re-render to fix lanes or bands**; a re-render starts a fresh document and loses the user's edits. Re-render only for a new photo, a different gel or marker preset (crop/angle fixes go through `Crop` + `sync`).
+8. **Sync** when the user says they edited: `python3 scripts/gel_photo.py sync fig.vectorcraft` (`--dry-run` to preview). It reads the live document (no need to save first), re-crops the gel face from the full-resolution photo at `ep-meta.photo` if the `crop` frame moved (pixels swapped in place), recomputes profiles, bands and MW, updates the Figure, labels and curves in **one undo step** (`ep-craft sync`), saves, re-exports `fig.png` and `fig.mw.json`, and prints what changed. Running it twice changes nothing. **Never re-render to fix lanes or bands**; a re-render starts a fresh document and loses the user's edits. Re-render only for a new photo, a different gel or marker preset (crop/angle fixes go through `Crop` + `sync`).
 9. **Text-only or angle-only requests** ("rename lane 3 to WT", "rotate the lane names 90°"): set the label text or rotation through the control port (recipes: conventions §9c), or ask the user to do it on the Figure; then `sync` to re-export. Labels keep their user text, font, size, colour and **angle**; only their position (the anchor) is the agent's — `sync` reads the angle back and re-anchors, it never rewrites it.
 10. **New lanes come back as "?"**: `sync` prints `[?] 泳道 [n] 还没有名字`. Ask the user for the names, set them (step 9), `sync` again.
 

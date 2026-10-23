@@ -17,7 +17,7 @@
     backfill  → 旧文档补 Crop 画板：artboard.new、图层 photo / crop（layer.new）、file.place 预览 JPEG
                 并 object.transform 到位、shape.rectangle 裁切框（起名、描边），最后锁 photo 层
 
-整次 sync 在**一个**撤销组 `ep-labeling sync` 里（vc_control.Client.undo_group）：任何一步失败 → cancel
+整次 sync 在**一个**撤销组 `ep-craft sync` 里（vc_control.Client.undo_group）：任何一步失败 → cancel
 回滚、原错抛出；成功 → 用户一次 ⌘Z 撤掉整次 sync。
 
 实测（VectorCraft 0.14.0，见 references/vectorcraft.md）决定的做法：
@@ -43,7 +43,7 @@ import vc_control
 import vc_file
 
 
-LABEL = "ep-labeling sync"
+LABEL = "ep-craft sync"
 OP_KINDS = ("relink", "artboard", "delete", "create", "move", "rename", "set_text", "stroke", "reshape", "backfill")
 CROP_RGB, CROP_W = (0.0, 0.75, 0.25), 0.75           # 裁切框：绿、0.75 pt、无填充（与 render 写的一致）
 

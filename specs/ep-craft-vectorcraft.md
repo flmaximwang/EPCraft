@@ -1,6 +1,6 @@
-# Spec: ep-labeling — VectorCraft as the editing surface
+# Spec: ep-craft — VectorCraft as the editing surface
 
-Status: draft, 2026-10-22. Supersedes `specs/ep-labeling-editable-output.md` (the HTML editor, SVG writer and `export` go away). Builds on `specs/ep-labeling-gel-prior.md` (gel preset, frozen stages, record coordinates).
+Status: draft, 2026-10-22. Supersedes `specs/ep-craft-editable-output.md` (the HTML editor, SVG writer and `export` go away). Builds on `specs/ep-craft-gel-prior.md` (gel preset, frozen stages, record coordinates).
 
 ## 0. Why
 
@@ -124,7 +124,7 @@ Measured in V0; full details in `references/vectorcraft.md`. The writer emits th
 
 - Attach to the instance on `--port` (default 7797). If none is listening, launch `VectorCraft --control <port> fig.vectorcraft` and remember that we started it. A running instance without `--control` can't be reached: tell the user to save, quit and let the skill relaunch it.
 - Call `ui.inspect` after opening and cancel any dialog (missing links, …).
-- `sync` reads with `document.json` (exact geometry, names, text style). It writes with `object.move`, `path.setAnchors`, `text.setText`, `object.setProps`, `edit.clear`, `artboard.setProps`, `layer.move` and creates (then names) new objects. Everything runs inside one `edit.undoGroup` labelled `ep-labeling sync`, so one ⌘Z undoes a sync, and a failure is rolled back with `cancel`. The command list and the pitfalls are in `references/vectorcraft.md`.
+- `sync` reads with `document.json` (exact geometry, names, text style). It writes with `object.move`, `path.setAnchors`, `text.setText`, `object.setProps`, `edit.clear`, `artboard.setProps`, `layer.move` and creates (then names) new objects. Everything runs inside one `edit.undoGroup` labelled `ep-craft sync`, so one ⌘Z undoes a sync, and a failure is rolled back with `cancel`. The command list and the pitfalls are in `references/vectorcraft.md`.
 - Save with `document.save`, then poll until the file is newer than the request **and** parses (V0 caught one half-written read); time out after 60 s. Export with `document.export {artboard: 0, ppi: dpi}`: one artboard, with pHYs written by the app.
 - Fonts: text items are created at their nominal size, never scaled (a scaled text box renders at the scaled size while the panel still shows the nominal one). The default font is Arial.
 

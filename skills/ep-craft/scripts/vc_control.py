@@ -194,13 +194,13 @@ class Client:
                           % (w, h, ab.get("name"), dpi, ew, eh))
         return w, h, got
 
-    def batch(self, commands, label="ep-labeling"):
+    def batch(self, commands, label="ep-craft"):
         """command.batch：全有或全无、一个撤销步。commands = [(command, params), …]。"""
         return self.execute("command.batch", {"label": label, "commands": [
             {"command": c, "params": p or {}} for c, p in commands]})
 
     @contextlib.contextmanager
-    def undo_group(self, label="ep-labeling sync"):
+    def undo_group(self, label="ep-craft sync"):
         """with 块里的编辑并成一个撤销步；块里抛错 → cancel（回滚）再把错抛出去。"""
         self.execute("edit.undoGroup.begin", {"label": label})
         try:

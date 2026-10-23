@@ -198,7 +198,7 @@ def _fake(**kw):
 def run():
     ok = 0
 
-    # 1) 非新建的 op：每种一条命令、参数与 apply_ops_json 同义；全在一个 `ep-labeling sync` 撤销组里；
+    # 1) 非新建的 op：每种一条命令、参数与 apply_ops_json 同义；全在一个 `ep-craft sync` 撤销组里；
     #    不碰图层锁；返回每种的条数；收尾清选择、恢复当前层（7）。
     fa = _fake()
     try:
@@ -215,7 +215,7 @@ def run():
             "artboard": 1, "delete": 1, "move": 1, "rename": 1, "set_text": 1, "stroke": 1, "reshape": 1}, s
         assert sync_exec.describe(s) == "artboard 1, delete 1, move 1, rename 1, set_text 1, stroke 1, reshape 1"
         assert fa.log[0][0] == "document.inspect"
-        assert fa.log[1] == ("edit.undoGroup.begin", {"label": "ep-labeling sync"}), fa.log[1]
+        assert fa.log[1] == ("edit.undoGroup.begin", {"label": "ep-craft sync"}), fa.log[1]
         assert fa.between_group() == [
             ("artboard.setProps", {"index": 0, "x": 0.0, "y": 271.0, "width": 300.5, "height": 210.0, "moveArt": False}),
             ("edit.clear", {"ids": [63]}),

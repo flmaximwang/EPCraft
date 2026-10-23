@@ -1,6 +1,6 @@
-# Tickets: ep-labeling VectorCraft output
+# Tickets: ep-craft VectorCraft output
 
-Spec: `specs/ep-labeling-vectorcraft.md`. Order = dependency order. Each ticket must keep `selftest` green. Tests that need the app are a manual checklist in the ticket close-out; `selftest` never needs VectorCraft.
+Spec: `specs/ep-craft-vectorcraft.md`. Order = dependency order. Each ticket must keep `selftest` green. Tests that need the app are a manual checklist in the ticket close-out; `selftest` never needs VectorCraft.
 
 ```
 V0 ─┬─ V1 ── V3 ─┬─ V4 ─┬─ V5 ── V6 ── V7 ── V9
@@ -31,11 +31,11 @@ V0 ─┬─ V1 ── V3 ─┬─ V4 ─┬─ V5 ── V6 ── V7 ── V
   - `connect` launched the app with `--control` in 0.5 s.
   - Figure export at 300 dpi was 1083 × 833 px with pHYs 300; Workbench at 150 dpi was 625 × 417.
   - `save` waited for a complete, parseable file.
-  - An undo group rolled back on error; a successful group was one history step (`ep-labeling sync`) undone by one `edit.undo`.
+  - An undo group rolled back on error; a successful group was one history step (`ep-craft sync`) undone by one `edit.undo`.
   - A batch with a failing step changed nothing.
   - With the app opened normally (no `--control`), `connect` and `doctor` both said to save and quit.
 - Depends on V0.
-- New `vc_control.py`: attach or launch (remember ownership), dialog clearing, `inspect()`, `execute(cmd, params)`, `save()` (poll until newer **and** parses), `export_png(path, artboard, dpi)` via `document.export {artboard, ppi}` (pHYs comes from the app), and an undo-group context manager (`ep-labeling sync`, cancel on error). Timeouts and clear errors ("instance without --control — save, quit, re-run").
+- New `vc_control.py`: attach or launch (remember ownership), dialog clearing, `inspect()`, `execute(cmd, params)`, `save()` (poll until newer **and** parses), `export_png(path, artboard, dpi)` via `document.export {artboard, ppi}` (pHYs comes from the app), and an undo-group context manager (`ep-craft sync`, cancel on error). Timeouts and clear errors ("instance without --control — save, quit, re-run").
 - `doctor` checks that VectorCraft.app is present and its version (warn ≠ 0.14.x).
 - Done when: unit tests run against a fake line-JSON TCP server in `selftest`; the manual check exports a PNG of the right physical size with pHYs = dpi.
 
@@ -116,7 +116,7 @@ V0 ─┬─ V1 ── V3 ─┬─ V4 ─┬─ V5 ── V6 ── V7 ── V
 - Done when: the reference photo and the five DGC photos each give exactly three files; the documents open cleanly with the layers in §4.2; `fig.png` has the right size and dpi; the `selftest` count is updated.
 
 ## V7 — `sync` — DONE 2026-10-22
-- **Executor (subagent, branch `refs/heads/worktree-agent-a402e487170abb8cb`, merged):** `scripts/sync_exec.py` `apply_ops_live` runs every `plan_sync` op kind through the control port inside one `ep-labeling sync` undo group. `scripts/selftest_sync.py` runs 7 fake-port checks, hooked into the main selftest. Its live check (its own instance on port 7798) covered:
+- **Executor (subagent, branch `refs/heads/worktree-agent-a402e487170abb8cb`, merged):** `scripts/sync_exec.py` `apply_ops_live` runs every `plan_sync` op kind through the control port inside one `ep-craft sync` undo group. `scripts/selftest_sync.py` runs 7 fake-port checks, hooked into the main selftest. Its live check (its own instance on port 7798) covered:
   - the round trip, followed by a second plan with 0 ops;
   - an injected failure, after which the document was byte-identical and the history had no step;
   - one ⌘Z undoing the sync exactly, and redo restoring it.
@@ -155,13 +155,13 @@ V0 ─┬─ V1 ── V3 ─┬─ V4 ─┬─ V5 ── V6 ── V7 ── V
   - `references/photo-labeling-conventions.md` rewritten: live config fields only (`marker_lanes` = candidate ladder wells), stage 1, document structure and ownership (spec §4), Workbench reading rules and every validation message, the well-anchored seed (V8 numbers), band calling and calibration (V4/V8), `fig.mw.json` v2, Figure/Profiles layout, `sync` semantics and a label-text recipe through the port, and a removed → replacement table.
   - `references/special-cases-and-pitfalls.md`: kept `rows: 2`, `--gel-lanes` and the stage-1/IM7 pitfalls; added the damaged gel edge, wells cut off, the 0.565 → 0.52 pitch history and the stale-installed-copy lesson; dropped the pitfalls of removed features.
   - `test-prompts.json` 0.5.0: 31 cases. Old export/scene routes are replaced, and new cases cover move-a-lane → `sync`, rename → label text + `sync`, drop lanes → `trimmed`/`--trim-lanes`, a missing 35 kD band → delete `band 35` + `sync`, an added lane → `sync` and ask for the `?` name, plus no `--control`, re-render overwrite and a stale-copy report.
-  - `specs/ep-labeling-editable-output.md` is marked superseded.
+  - `specs/ep-craft-editable-output.md` is marked superseded.
 - `selftest` is 49/49. Docs don't hard-code the count. `env_check.py`'s doctor line still says "16 项" (stale, code).
 - Depends on V6, V7.
 - `SKILL.md`: the deliverables are `fig.vectorcraft` + `fig.png` (+ `fig.mw.json`); the user's loop is "open in VectorCraft, fix the lines on the Workbench, tell the agent to sync"; text-only changes go through the control port, then `sync`; never re-render to fix lanes or bands. Keep the user's pending wording change on the ask-up-front step.
 - References: replace the scene/editor/SVG sections with the document structure (spec §4), ownership, sync errors and `fig.mw.json` v2; link `references/vectorcraft.md`.
 - `test-prompts.json`: "lane 3 is off, I moved it — update" → `sync`; "rename lane 2 to WT" → control port + `sync`; "drop lanes 1–2" → move to `trimmed` or `--trim-lanes`; "the 35 kD band isn't there" → delete `band 35` + `sync`.
-- Mark `specs/ep-labeling-editable-output.md` as superseded.
+- Mark `specs/ep-craft-editable-output.md` as superseded.
 - Done when: no doc mentions `fig.html`, `export`, `--svg`, `--debug PNG` or `--record` except as removed; the `selftest` count is consistent everywhere.
 
 ## Follow-ups closed after V9 (2026-10-22)
