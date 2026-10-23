@@ -33,9 +33,9 @@ Turn a phone photo of a gel into a labeled figure at true physical size. Detecti
 | `references/special-cases-and-pitfalls.md` | Close band pairs, cropped photos, damaged gel edge, wells cut off, history. Read when a checkpoint fires. |
 | `references/vectorcraft.md` | VectorCraft 0.14 file format and control-port commands (measured). Read before touching the document through the port. |
 
-## Constraints
+## Hard rules
 
-- 
+- WARNING! You can only look at photos after all scripts fail! You can only look at photos after all script fail! You can only look at photos after all script fail!
 
 ## Workflow
 
