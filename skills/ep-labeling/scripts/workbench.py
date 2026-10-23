@@ -419,52 +419,17 @@ def validate(model, structural_only=False):
 # ---------------------------------------------------------------- 泳道名跟着泳道走
 
 def match_lanes(prev_centres, new_centres, tol=None):
-    """新泳道 → 旧泳道下标（0 起）或 None。一对一、**保序**、按距离配。
+    """新泳道 → 旧泳道下标（0 起）或 None：**只按从左往右的序号**，不看位置、不设容差。
 
-    用来让用户改过的泳道名、标签跟着泳道走：增删泳道之后，名字不会顺移到邻道上。
-
-    V10（Issue #1）：旧实现有两个毛病 ——
-      a) 容差是「半个孔距」（0.52 cm 的胶上 tol=0.26），而**半个孔距正好是最常见的合法编辑量**
-         （把最外侧那条线拖到胶边，泳道中心实测挪 0.2651 cm）；差 0.005 cm 就判成「新泳道」，
-         旧道被删、名字变 `?`，还 create+delete 翻掉对象 id。
-      b) 就近贪心、不看顺序：整体平移时可能把相邻道配反。
-    现在：容差放宽到 0.75 × 上一次孔距中位数（容纳拖边，又小于一个孔距、不会配到邻道）；
-    配对用**保序** DP —— 只允许 i、j 各自单调增（泳道按 x 排序，交叉配对没有物理意义），
-    优先配对数最多、其次总位移最小；容差外配不上的新道 → None（agent 去问名字）。
+    用户的语义是「名字属于第几个格子」：第 i 条新泳道就是第 i 条旧泳道，多出来的（序号超出旧道数）
+    → None（agent 去问名字）。所以拖线、调宽窄、把最外侧那条线拖到胶边（泳道中心挪半个孔距）都
+    不动名字；删掉一条分隔线时，它右边那些格子的名字整体前移一格。
+    `tol` 只为兼容旧调用保留，已不再使用。Issue #1 里「半个孔距被判成新道」的根因就是容差本身，
+    这里把容差整个去掉。
     """
-    prev = [float(x) for x in prev_centres]
-    new = [float(x) for x in new_centres]
-    if not new:
-        return []
-    if not prev:
-        return [None] * len(new)
-    gaps = sorted(b - a for a, b in zip(prev, prev[1:]))
-    if tol is None:
-        tol = 0.75 * gaps[len(gaps) // 2] if gaps else float("inf")
-    n, m = len(prev), len(new)
-    score = [[(0, 0.0)] * (n + 1) for _ in range(m + 1)]     # (配对数, −总位移)，比大小即可
-    take = [[False] * (n + 1) for _ in range(m + 1)]
-    for j in range(1, m + 1):
-        for i in range(1, n + 1):
-            best = max(score[j - 1][i], score[j][i - 1])
-            d = abs(new[j - 1] - prev[i - 1])
-            if d <= tol:
-                pairs, neg = score[j - 1][i - 1]
-                cand = (pairs + 1, neg - d)
-                if cand > best:
-                    best, take[j][i] = cand, True
-            score[j][i] = best
-    out: list = [None] * m
-    j, i = m, n
-    while j and i:
-        if take[j][i]:
-            out[j - 1] = i - 1
-            j, i = j - 1, i - 1
-        elif score[j - 1][i] >= score[j][i - 1]:
-            j -= 1
-        else:
-            i -= 1
-    return out
+    prev = list(prev_centres)
+    new = list(new_centres)
+    return [i if i < len(prev) else None for i in range(len(new))]
 
 
 def centres(model):

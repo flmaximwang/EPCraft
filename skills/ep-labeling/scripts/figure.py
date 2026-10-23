@@ -441,7 +441,7 @@ def plan_sync(document, model, report, layout=None, measure_fn=None, tol=0.01):
     px = (gel_img["kind"]["width"], gel_img["kind"]["height"])
     wb = wb_frame(document)
 
-    # ---- 标签：旧泳道号 → 新泳道号（按 ep-meta 里上次的中心就近配），用户文字带过去
+    # ---- 标签：旧泳道号 → 新泳道号（名字按从左往右的序号搬：第 i 格 ↔ 第 i 格，不看位置）
     old_meta = model["meta"]
     prev = old_meta.get("prev_centres_cm") or []
     new_c = workbench.centres(model)

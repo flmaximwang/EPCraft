@@ -806,16 +806,17 @@ def selftest():
         assert "分子量不更小" in str(e) and "至少要 3 条" in str(e), e
     ok += 1
 
-    # 64) 泳道名跟着泳道走（V3）：中间插一条 → 原名不顺移；删一条 → 其余原名不变；
-    #     小挪动（< 半个中心距）仍配上；挪太远 → 当成新泳道（None，agent 去问名字）。
+    # 64) 泳道名按**序号**跟着泳道走（V11）：第 i 格的标签属于第 i 格，不做位置/容差配对 ——
+    #     拖线、调宽窄、把某条线拖到胶边都不改名字；中间插一条 → 后面的名字整体后移一格，
+    #     多出来的最后一格是 None；删一条 → 后面的名字前移一格，尾巴的名字消失。
     prev = [0.5, 1.0, 1.5, 2.0, 2.5]
     nm = ["M", "A", "B", "C", "D"]
-    assert workbench.match_lanes(prev, [0.5, 1.0, 1.25, 1.5, 2.0, 2.5]) == [0, 1, None, 2, 3, 4]
-    assert workbench.match_lanes(prev, [0.5, 1.0, 2.0, 2.5]) == [0, 1, 3, 4]
+    assert workbench.match_lanes(prev, [0.5, 1.0, 1.25, 1.5, 2.0, 2.5]) == [0, 1, 2, 3, 4, None]
+    assert workbench.match_lanes(prev, [0.5, 1.0, 2.0, 2.5]) == [0, 1, 2, 3]
     assert workbench.match_lanes(prev, [0.6, 1.1, 1.4, 2.0, 2.5]) == [0, 1, 2, 3, 4]
-    assert workbench.match_lanes(prev, [0.5, 1.0, 1.5, 2.0, 3.4]) == [0, 1, 2, 3, None]
+    assert workbench.match_lanes(prev, [0.5, 1.0, 1.5, 2.0, 3.4]) == [0, 1, 2, 3, 4]
     fake = {"lanes": [{"left_cm": c - 0.1, "right_cm": c + 0.1} for c in (0.5, 1.0, 1.25, 1.5, 2.0, 2.5)]}
-    assert workbench.lane_names_after(fake, prev, nm) == ["M", "A", None, "B", "C", "D"]
+    assert workbench.lane_names_after(fake, prev, nm) == ["M", "A", "B", "C", "D", None]
     ok += 1
 
     # 65) 剖面像素口径（V4）：只取「中心落在 [L, R] / [top, bottom] 里」的像素做平均；
@@ -1072,12 +1073,12 @@ def selftest():
     labs7 = {n["name"]: n for n in vc_file.lay_children(L7["labels"])}
     assert labs7["label lane 2"]["kind"]["runs"][0]["text"] == "WT"
     assert labs7["label lane 2"]["kind"]["runs"][0]["style"] == wt_style, "用户改的样式被动了"
-    assert vc_file.text_info(labs7["label lane 5"])["text"] == "?", "新泳道没得到 ? 标签"
-    assert "label lane 14" in labs7 and vc_file.text_info(labs7["label lane 14"])["text"] == "X"   # 原 13 → 14
+    assert vc_file.text_info(labs7["label lane 16"])["text"] == "?", "多出来的最后一格没得到 ? 标签"
+    assert vc_file.text_info(labs7["label lane 13"])["text"] == "X"   # 名字按序号留在第 13 格
+    assert vc_file.text_info(labs7["label lane 14"])["text"] == "Y"
     assert "label lane 15" not in labs7, "trimmed 的泳道标签没删"
-    assert vc_file.text_info(labs7["label lane 16"])["text"] == "Z"
     assert "label band 50" not in labs7 and "label band 35" in labs7
-    assert meta6["lane_names"][1] == "WT" and meta6["lane_names"][4] is None
+    assert meta6["lane_names"][1] == "WT" and meta6["lane_names"][15] is None
     segs7 = sorted(n["name"] for n in vc_file.lay_children(L7["gel"]) if n["name"].startswith("gel seg"))
     assert segs7 == ["gel seg 1", "gel seg 2"], segs7
     for n in vc_file.lay_children(L7["trimmed"]):
@@ -1265,26 +1266,18 @@ def selftest():
             m_cfg["meta"]["marker_labels"]
     ok += 1
 
-    # 80) 泳道匹配（V10，Issue #1）：道数不变 → 按顺序一一对应。把最外侧那条线拖到胶边，泳道中心挪
-    #     0.2651 cm（0.52 cm 胶的半个孔距，比旧 tol=0.26 多 0.005 cm）也不再判成新泳道 —— 名字不变 `?`、
-    #     不 create+delete。道数变了 → 保序 DP：容差 0.75 × 孔距，配不上的新道给 None，且不许交叉配对。
+    # 80) 泳道匹配 = 从左往右数（V11，Issue #1 的最终口径）：第 i 条新泳道就是第 i 条旧泳道，不看距离、
+    #     不设容差 —— 把最外侧那条线拖到胶边（中心 0.660 → 0.3949，正好半个孔距）名字不变；
+    #     删一条 → 后面的名字前移；多一条 → 尾巴是 None；`tol` 参数已无效。
     prev15 = [0.660 + 0.520 * k for k in range(15)]
     assert workbench.match_lanes(prev15, prev15) == list(range(15))
     moved = [0.3949] + prev15[1:]                          # 第 1 条线拖到胶边：中心 0.660 → 0.3949
-    assert workbench.match_lanes(prev15, moved) == list(range(15)), "道数不变时把拖边判成了新泳道"
-    dropped = prev15[1:]                                   # 删掉第 1 道（15 → 14）
-    assert workbench.match_lanes(prev15, dropped) == list(range(1, 15))
-    shifted = [p + 0.20 for p in prev15[2:]]               # 删两道 + 整体平移 0.2 cm
-    assert workbench.match_lanes(prev15, shifted) == list(range(2, 15))
-    ins = prev15[:7] + [(prev15[6] + prev15[7]) / 2.0] + prev15[7:]   # 中间插一道（15 → 16）
-    m4 = workbench.match_lanes(prev15, ins)
-    assert m4[7] is None and m4[:7] == list(range(7)) and m4[8:] == list(range(7, 15)), m4
+    assert workbench.match_lanes(prev15, moved) == list(range(15)), "拖边把名字弄丢了"
+    assert workbench.match_lanes(prev15, prev15[1:]) == list(range(14))            # 删第 1 道 → 前移
+    assert workbench.match_lanes(prev15, prev15 + [prev15[-1] + 0.52]) == list(range(15)) + [None]
     assert workbench.match_lanes([], [1.0, 2.0]) == [None, None]
     assert workbench.match_lanes([0.0, 1.0], []) == []
-    assert workbench.match_lanes([0.0, 1.0], [0.90], tol=0.05) == [None]     # 容差可覆盖
-    assert workbench.match_lanes([0.0], [5.0, 9.0]) == [0, None]             # 单道：顺序仍成立
-    # 同一条链路的另一种入口：lane_names_after() 用它搬名字 —— 第 1 道中心 0.660 → 0.3949 时
-    # 名字必须原样留在原位（这就是 Issue #1 里名字变 `?` 的那一步）。
+    assert workbench.match_lanes([0.0, 1.0], [0.90], tol=0.05) == [0]             # tol 不再起作用
     names15 = ["M"] + ["L%d" % i for i in range(1, 15)]
     fake_m = {"lanes": [{"left_cm": 0.0, "right_cm": 0.7898, "trimmed": False}]
                         + [{"left_cm": prev15[i] - 0.26, "right_cm": prev15[i] + 0.26, "trimmed": False}
