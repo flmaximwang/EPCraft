@@ -27,12 +27,18 @@ _EXTENT = {}
 
 
 def text_extent(font, px, text):
-    """文字的真实包围盒（px）—— 对齐用，别拿「0.55 em × 字数」估。"""
+    """文字的真实包围盒（px，= pt：density 钉在 72）—— 对齐用，别拿「0.55 em × 字数」估。
+
+    命令形状有讲究（IM 7.1.1 实测）：`label:` 必须带一个输出（`info:`）才成图，`-format` 要放在它后面；
+    写成 `-format "%w %h" label:ABCD` 会报 `no images for write '-write' 'label:ABCD'`，异常被这里
+    catch 之后悄悄用兜底估算顶替 —— 估出来的宽度不含窄字符（l、t、/）的字宽，标签就会偏。
+    `-density 72` 也必须给：`label:` 的像素尺寸跟着图像密度走，300 dpi 下同一串 100 pt 的字量出 4.16 倍宽。
+    """
     key = (font, px, text)
     if key in _EXTENT:
         return _EXTENT[key]
-    cmd = [MAGICK, "-font", font or "Arial", "-pointsize", str(int(px)), "-format", "%w %h",
-           "label:" + text]
+    cmd = [MAGICK, "-density", "72", "-font", font or "Arial", "-pointsize", str(int(px)),
+           "label:" + text, "-format", "%w %h", "info:"]
     try:
         wd, ht = _run(cmd, False).split()
         _EXTENT[key] = (int(wd), int(ht))

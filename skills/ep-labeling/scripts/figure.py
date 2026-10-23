@@ -113,6 +113,7 @@ def targets(model, report, gel_key, gel_px, wb, labels=None, layout=None, measur
         fallback = lane_angles[i - 1] if i - 1 < len(lane_angles) else lane_default
         angle = _label_angle(cur, fallback)
         lane_items.append({"name": nm, "text": text, "size": size, "angle": angle, "x_cm": fig_x_cm(i),
+                           "justify": "Center",
                            "box": box_offsets(measure_fn(text, size)[0], size, angle, "Center")})
 
     ml = model["marker_lane"]
@@ -187,7 +188,7 @@ def targets(model, report, gel_key, gel_px, wb, labels=None, layout=None, measur
                       "px": tuple(gel_px)})
     for it in lane_items:
         specs.append({"kind": "text", "layer": "labels", "name": it["name"], "text": it["text"],
-                      "size": it["size"], "angle": it["angle"], "justify": "Center", "rgb": (0, 0, 0),
+                      "size": it["size"], "angle": it["angle"], "justify": it["justify"], "rgb": (0, 0, 0),
                       "x": gx + it["anchor_cm"][0] * PT, "y": gy + it["anchor_cm"][1] * PT})
     for it in marker_items:
         specs.append({"kind": "text", "layer": "labels", "name": it["name"], "text": it["text"],
