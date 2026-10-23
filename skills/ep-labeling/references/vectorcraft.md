@@ -31,6 +31,26 @@ Object kinds we use (`document.layers[].kind.children[]`):
 
 `next_id` must exceed every id used. Units are `"Points"`, and 1 cm = 72/2.54 pt.
 
+### Point-text rotation (V9 measurements)
+
+The point-text `xf` is a plain affine in the text's own frame: `u` = advance direction, `v` = up from the baseline;
+`x' = a·u + c·v + e`, `y' = b·u + d·v + f`. The translation part is the anchor, and rotation happens **about the anchor**:
+
+| `xf` linear part | looks like |
+|---|---|
+| `[1, 0, 0, 1]` | upright |
+| `[0, −1, 1, 0]` | 90° counter-clockwise: reads bottom-to-top; for `justify:Center` the glyph column sits **left** of the anchor |
+| `[0, 1, −1, 0]` | 90° clockwise: reads top-to-bottom; column **right** of the anchor |
+
+Measured: a file written with `[0,−1,1,0,40,240]` opened with `warnings: []`, `document.json` returned the matrix
+unchanged, and the exported PNG put the ink exactly left of the anchor and upward from it. Angle convention used by the
+skill: **degrees, counter-clockwise**, `θ = atan2(−b, a)`, normalized to (−180, 180] (`vc_file.rot_xf` /
+`vc_file.angle_of_xf`). `object.rotate {angle}` uses the same direction.
+
+For layout the skill treats a label as an ink box: `u ∈ [0, w]` (shifted by `justify`), `v ∈ [−0.716·size, 0]`
+(cap height, no descender), rotated by the same matrix. The box is anchored (4 pt from the gel) and the page margins are
+measured from it, so any angle — not just multiples of 90° — lands correctly.
+
 ## 2. Control port
 
 Protocol: TCP, one JSON line per request `{"id":N,"method":M,"params":P}` → `{"ok":true,"result":…}` / `{"ok":false,"error":"…"}`. Top-level methods we use: `ui.inspect`, `engine.execute {command, params}`, `engine.commands` (1090 commands with parameter docs; grep it before guessing).
@@ -60,7 +80,8 @@ A running instance **without** `--control` can't be reached. Launch with `Vector
 | delete | `edit.clear {ids}` | |
 | artboard | `artboard.setProps {index, width?, height?, x?, y?, name?}`, `artboard.new {x,y,width,height,name}` | |
 | clip | `object.clippingMask.make {ids:[clipPath, image]}` | returns the group id |
-| file info | `file.info {description?, keywords?}` | **copied into exported PNGs** (tEXt), see §4 |
+| file info | `file.info {description?, keywords?}` | **copied into exported PNGs** (tEXt), see §4. |
+| rotate | `object.rotate {ids, angle, origin}` | `angle` = degrees, counter-clockwise, **relative**; `origin` = the anchor keeps the anchor fixed. Measured: `angle:-90` turned a 90° label back to `[1,0,0,1]`; `absolute:true` with `angle:0` was a **no-op** on that same label — never use `absolute` to set 0. |
 
 **Atomic sync:** `command.batch {label, commands:[{command, params}…]}` is all-or-nothing (a failing step left no change) and lands as **one** undo step. `edit.undoGroup.begin {label}` … `edit.undoGroup.end {cancel?}` does the same for steps that need results from earlier steps (e.g. a create, then its id); `cancel:true` rolls back. `sync` uses one group labelled `ep-labeling sync`, so ⌘Z undoes the whole sync.
 
@@ -81,6 +102,7 @@ A running instance **without** `--control` can't be reached. Launch with `Vector
 10. **Colours and point text.** `color` accepts `[r,g,b]` (0–1) or `"#rrggbb"`. `text.create {justify:"center"}` puts the `xf` translation exactly at (x, y).
 11. **Bad ids fail cleanly.** A non-existent id fails with `no such object id N`, which aborts the undo group cleanly.
 12. **Speed.** A sync of about 260 ops (mostly rebuilding the Profiles and analysis layers) takes 6–9 s, at one connection per call.
+13. **`text.create` has no rotation.** Its params are `x, y, text, vertical, size, font, style, color, keepModel, area, placeholder, justify, leadingModel, charAlign` — no angle, no `xf`. A rotated label is created upright, then turned with `object.rotate {ids, angle, origin:[x, y]}` (relative, CCW). `absolute:true` with `angle:0` did **nothing** to an already rotated label; to set it back to horizontal rotate −90.
 
 ## 3. Export
 

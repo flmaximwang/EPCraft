@@ -28,7 +28,7 @@ import json
 import vc_file
 import workbench
 from lane_select import layout as strips_layout, strips as lane_strips
-from text_layout import pick_font, text_extent
+from text_layout import CAP as TEXT_CAP, box_offsets, anchor_for, pick_font, text_extent, window_deg
 
 
 PT = vc_file.PT_PER_CM
@@ -37,7 +37,7 @@ PAD_CM = 0.17            # 文字越界之外再留的白（旧口径 margin × 
 SPLICE_GAP_CM = 0.15     # 不连续的保留段之间留白（拼缝披露，gel-prior §6b；与 --splice-gap-cm 默认一致）
 LANE_SIZE, LANE_GAP_PT = 8.0, 4.0
 MARKER_SIZE, MARKER_GAP_PT = 8.0, 4.0
-CAP = 0.716              # Arial 大写字高 / 字号：把「框的竖直中心」换成点文字的基线
+CAP = TEXT_CAP           # Arial 大写字高 / 字号（text_layout.CAP 的别名，测试与排字用）
 BOARD_GAP = 60.0         # 画板之间的间隔（pt）
 GREY = (0.6, 0.6, 0.6)
 UNNAMED = "?"            # 新泳道（用户加的线）的占位名：agent 去问名字；读回时仍算「没有名字」
@@ -93,56 +93,85 @@ def targets(model, report, gel_key, gel_px, wb, labels=None, layout=None, measur
                 return sg["dst_x0_cm"] + (x - sg["src_x0_cm"])
         return None
 
-    names = model["meta"].get("lane_names") or []
-    lane_items = []                                      # (名字, 文字, 字号, x_cm)
+    meta = model["meta"]
+    names = meta.get("lane_names") or []
+    defaults = meta.get("label_angle") or {}
+    lane_default = float(defaults.get("lane", 0.0) or 0.0)
+    marker_default = float(defaults.get("marker", 0.0) or 0.0)
+    lane_angles = meta.get("lane_angles") or []
+    lane_items = []                                      # {name, text, size, angle, x_cm, box}
     for i in kept:
         nm = "label lane %d" % i
-        text, size = labels.get(nm, (None, None))
-        if text is None:
+        cur = labels.get(nm)
+        if cur is not None:
+            text, size = cur["text"], cur["size"]
+        else:
             default = names[i - 1] if i - 1 < len(names) else None
             if default == "":
                 continue                                 # 空道：不写名字（与 lanes.json 的 "" 同义）
             text, size = (UNNAMED if default is None else default), LANE_SIZE
-        lane_items.append((nm, text, size, fig_x_cm(i)))
+        fallback = lane_angles[i - 1] if i - 1 < len(lane_angles) else lane_default
+        angle = _label_angle(cur, fallback)
+        lane_items.append({"name": nm, "text": text, "size": size, "angle": angle, "x_cm": fig_x_cm(i),
+                           "box": box_offsets(measure_fn(text, size)[0], size, angle, "Center")})
 
     ml = model["marker_lane"]
-    marker_items = []                                    # (名字, 文字, 字号, y_cm, 颜色)
+    marker_items = []                                    # {name, text, size, angle, y_cm, rgb}
     if not lanes[ml - 1]["trimmed"]:
         by_mw = {b["mw"]: b["y_cm"] for b in model["bands"]}
-        for e in model["meta"].get("marker_labels") or []:
+        for e in meta.get("marker_labels") or []:
             ys = [by_mw[m] for m in e["mws"] if m in by_mw]
             if not ys:
                 continue                                 # 这条标签的带线全被删了 → 标签也不要
             nm = "label band %s" % "/".join("%g" % m for m in e["mws"])
-            text, size = labels.get(nm, (e["text"], MARKER_SIZE))
-            marker_items.append((nm, text, size, sum(ys) / len(ys), _hex_rgb(e.get("color"))))
+            cur = labels.get(nm)
+            text, size = (cur["text"], cur["size"]) if cur is not None else (e["text"], MARKER_SIZE)
+            marker_items.append({"name": nm, "text": text, "size": size,
+                                 "angle": _label_angle(cur, e.get("angle", marker_default)),
+                                 "y_cm": sum(ys) / len(ys), "rgb": _hex_rgb(e.get("color"))})
         # 用户改名（band 35 → band 36）或新画的 band 线：配置里没有对应标签 → 给它一个默认的 "<MW> kD"，
         # 否则它照样参与标定、Figure 上却没有字（spec §2.6：改名就是改值）。
-        covered = {m for e in model["meta"].get("marker_labels") or [] for m in e["mws"]}
+        covered = {m for e in meta.get("marker_labels") or [] for m in e["mws"]}
         for b in model["bands"]:
             if b["mw"] in covered:
                 continue
             nm = "label band %g" % b["mw"]
-            text, size = labels.get(nm, ("%g kD" % b["mw"], MARKER_SIZE))
-            marker_items.append((nm, text, size, b["y_cm"], (0.0, 0.0, 0.0)))
-        marker_items.sort(key=lambda it: it[3])          # spread 要按 y 排好的顺序
+            cur = labels.get(nm)
+            text, size = (cur["text"], cur["size"]) if cur is not None else ("%g kD" % b["mw"], MARKER_SIZE)
+            marker_items.append({"name": nm, "text": text, "size": size,
+                                 "angle": _label_angle(cur, marker_default),
+                                 "y_cm": b["y_cm"], "rgb": (0.0, 0.0, 0.0)})
+        marker_items.sort(key=lambda it: it["y_cm"])      # spread 要按 y 排好的顺序
     left_side = (fig_x_cm(ml) or 0.0) < gel_w_cm / 2.0 if marker_items else True
+    justify = "Right" if left_side else "Left"
+    for it in marker_items:
+        it["box"] = box_offsets(measure_fn(it["text"], it["size"])[0], it["size"], it["angle"], justify)
 
-    # ---- 页边距（spec §4 页面规则：每边 max(最小留白, 文字越界 + pad)）
+    # ---- 标签落位：按**墨迹框**摆，角度只改框的形状；页边距也从框算
+    def overflow(box, ax, ay):
+        """框（相对锚点的 pt 偏移）放在胶面坐标系里 → 四边越界量（cm，0 = 没越界）。"""
+        x0, y0 = (ax + box[0]) / PT, (ay + box[1]) / PT
+        x1, y1 = (ax + box[2]) / PT, (ay + box[3]) / PT
+        return max(0.0, -x0), max(0.0, x1 - gel_w_cm), max(0.0, -y0), max(0.0, y1 - H)
+
     need = {"left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0}
-    for _nm, text, size, x in lane_items:
-        w, h = measure_fn(text, size)
-        need["top"] = max(need["top"], (h + LANE_GAP_PT) / PT)
-        need["left"] = max(need["left"], w / 2.0 / PT - x)
-        need["right"] = max(need["right"], x + w / 2.0 / PT - gel_w_cm)
-    ys_cm = [v / PT for v in spread([y * PT for _n, _t, _s, y, _c in marker_items],
-                                    [CAP * size for _n, _t, size, _y, _c in marker_items])]
-    for (_nm, text, size, _y, _c), y in zip(marker_items, ys_cm):
-        w, h = measure_fn(text, size)
-        need["left" if left_side else "right"] = max(need["left" if left_side else "right"],
-                                                    (w + MARKER_GAP_PT) / PT)
-        need["top"] = max(need["top"], h / 2.0 / PT - y)
-        need["bottom"] = max(need["bottom"], y + h / 2.0 / PT - H)
+
+    def grow(ax, ay, box):
+        l, r, t, b = overflow(box, ax, ay)
+        need["left"], need["right"] = max(need["left"], l), max(need["right"], r)
+        need["top"], need["bottom"] = max(need["top"], t), max(need["bottom"], b)
+
+    for it in lane_items:                                # 泳道名：框的下边离胶顶 LANE_GAP，左右居中在泳道上
+        ax, ay = anchor_for(it["box"], centre_x=it["x_cm"] * PT, bottom=-LANE_GAP_PT)
+        it["anchor_cm"] = (ax / PT, ay / PT)
+        grow(ax, ay, it["box"])
+    ys_pt = spread([it["y_cm"] * PT for it in marker_items],
+                   [it["box"][3] - it["box"][1] for it in marker_items])   # 挨得近的带：上下让开、保持顺序
+    for it, yc in zip(marker_items, ys_pt):              # marker 标签：框的竖直中心对准带，内侧边离胶 MARKER_GAP
+        inner = -MARKER_GAP_PT if left_side else gel_w_cm * PT + MARKER_GAP_PT
+        ax, ay = anchor_for(it["box"], centre_y=yc, inner=inner, side="left" if left_side else "right")
+        it["anchor_cm"] = (ax / PT, ay / PT)
+        grow(ax, ay, it["box"])
     mg = {k: max(MARGIN_MIN_CM, v + PAD_CM) if v > 0 else MARGIN_MIN_CM for k, v in need.items()}
     fx0 = wb["artboard"][0]
     fy0 = wb["artboard"][1] + wb["artboard"][3] + BOARD_GAP
@@ -156,16 +185,14 @@ def targets(model, report, gel_key, gel_px, wb, labels=None, layout=None, measur
         specs.append({"kind": "clip", "layer": "gel", "name": "gel seg %d" % k,
                       "rect": (x, gy, wcm * PT, H * PT), "image": (x - sg["src_x0_cm"] * PT, gy, s), "key": gel_key,
                       "px": tuple(gel_px)})
-    for nm, text, size, x in lane_items:
-        specs.append({"kind": "text", "layer": "labels", "name": nm, "text": text, "size": size,
-                      "x": gx + x * PT, "y": gy - LANE_GAP_PT, "justify": "Center", "rgb": (0, 0, 0)})
-    ys = spread([gy + y * PT for _n, _t, _s, y, _c in marker_items],
-                [CAP * size for _n, _t, size, _y, _c in marker_items])     # 挨得近的带：标签上下让开、保持顺序
-    for (nm, text, size, _y, rgb), yc in zip(marker_items, ys):
-        x = gx - MARKER_GAP_PT if left_side else gx + gel_w_cm * PT + MARKER_GAP_PT
-        specs.append({"kind": "text", "layer": "labels", "name": nm, "text": text, "size": size,
-                      "x": x, "y": yc + CAP * size / 2.0, "justify": "Right" if left_side else "Left",
-                      "rgb": rgb})
+    for it in lane_items:
+        specs.append({"kind": "text", "layer": "labels", "name": it["name"], "text": it["text"],
+                      "size": it["size"], "angle": it["angle"], "justify": "Center", "rgb": (0, 0, 0),
+                      "x": gx + it["anchor_cm"][0] * PT, "y": gy + it["anchor_cm"][1] * PT})
+    for it in marker_items:
+        specs.append({"kind": "text", "layer": "labels", "name": it["name"], "text": it["text"],
+                      "size": it["size"], "angle": it["angle"], "justify": justify, "rgb": it["rgb"],
+                      "x": gx + it["anchor_cm"][0] * PT, "y": gy + it["anchor_cm"][1] * PT})
 
     # ---- Workbench 上的分析层：泳道号、叫出来的带
     wgx, wgy = wb["gel_x"], wb["gel_y"]
@@ -318,6 +345,13 @@ def _hex_rgb(h):
     return tuple(int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
 
 
+def _label_angle(cur, fallback):
+    """标签的角度：文档里现有的（用户改过的）优先，没有才用配置/上次记下的。"""
+    if cur is not None and cur.get("angle") is not None:
+        return window_deg(cur["angle"])
+    return window_deg(fallback)
+
+
 # ---------------------------------------------------------------- 规格 → 文档节点
 
 def node(doc, spec):
@@ -325,7 +359,7 @@ def node(doc, spec):
     k = spec["kind"]
     if k == "text":
         return vc_file.text(doc, spec["name"], spec["x"], spec["y"], spec["text"], size=spec["size"],
-                            rgb=spec["rgb"], justify=spec["justify"])
+                            rgb=spec["rgb"], justify=spec["justify"], angle=spec.get("angle", 0.0))
     if k == "line":
         return vc_file.line(doc, spec["name"], spec["a"], spec["b"], spec["rgb"], spec["width"])
     if k == "polyline":
@@ -337,6 +371,35 @@ def node(doc, spec):
     raise RuntimeError("未知规格 kind=%r" % k)
 
 
+def _meta_angles(model, tg):
+    """把算好的标签角度写回 model["meta"]（lane_angles / marker_labels[].angle；0 不写）。
+
+    render 与 sync 共用：写出的 ep-meta 因此总和布局一致，刚 render 完的文档第一次 sync = 0 个操作。
+    lane_angles 按泳道顺序存（增删泳道时由 plan_sync 先按上一次的泳道匹配重排）。
+    """
+    meta = model["meta"]
+    specs = {sp["name"]: sp for sp in tg["specs"] if sp["layer"] == "labels"}
+    old = meta.get("lane_angles") or []
+    default_lane = float((meta.get("label_angle") or {}).get("lane", 0.0) or 0.0)
+    idx = [int(k.split()[-1]) for k in specs if k.startswith("label lane ")]
+    n = max(idx + [len(old)])
+    final = []
+    for j in range(1, n + 1):
+        sp = specs.get("label lane %d" % j)
+        final.append(sp["angle"] if sp else (old[j - 1] if j - 1 < len(old) else default_lane))
+    if any(abs(a) > 1e-9 for a in final):
+        meta["lane_angles"] = final
+    else:
+        meta.pop("lane_angles", None)
+    for e in meta.get("marker_labels") or []:
+        sp = specs.get("label band %s" % "/".join("%g" % m for m in e["mws"]))
+        if sp is not None:
+            if abs(sp["angle"]) > 1e-9:
+                e["angle"] = sp["angle"]
+            else:
+                e.pop("angle", None)
+
+
 def build_document(model, report, png, title="fig", layout=None):
     """render：整份新文档（vc_file builder）。Workbench 来自 workbench.add_workbench（不画泳道号/峰，
     它们在 targets 的 analysis 层里），其余全部来自 targets()。"""
@@ -344,6 +407,7 @@ def build_document(model, report, png, title="fig", layout=None):
     key, w, h = vc_file.add_image(doc, png)
     wb = workbench.frame(model, 0.0, 0.0)
     tg = targets(model, report, key, (w, h), wb, layout=layout)
+    _meta_angles(model, tg)                              # ep-meta 与标签角度一起写（sync 幂等的前提）
     vc_file.add_artboard(doc, "Figure", *tg["artboards"]["Figure"])
     layers = workbench.make_layers(doc)
     workbench.add_workbench(doc, layers, model, key, w, h, x0=0.0, y0=0.0, tags=False)
@@ -386,26 +450,33 @@ def plan_sync(document, model, report, layout=None, measure_fn=None, tol=0.01):
         if n.get("name") and n["kind"]["type"] == "text":
             by_name.setdefault(n["name"], n)
     old_names = old_meta.get("lane_names") or []
-    lane_names, labels, keep_ids = [], {}, {}
+    old_angles = old_meta.get("lane_angles") or []
+    default_lane = float((old_meta.get("label_angle") or {}).get("lane", 0.0) or 0.0)
+    lane_names, lane_angles, labels, keep_ids = [], [], {}, {}
     for j, i in enumerate(match, 1):
         node_ = by_name.get("label lane %d" % (i + 1)) if i is not None else None
+        lane_angles.append(old_angles[i] if i is not None and i < len(old_angles) else default_lane)
         if node_ is not None:
             info = vc_file.text_info(node_)
             lane_names.append(None if info["text"] == UNNAMED else info["text"])   # 占位 "?" = 还没起名
-            labels["label lane %d" % j] = (info["text"], info["size"])
+            labels["label lane %d" % j] = info
             keep_ids["label lane %d" % j] = node_
         else:
             lane_names.append(old_names[i] if i is not None and i < len(old_names) else None)
     for nm, n in by_name.items():
         if nm.startswith("label band "):
-            info = vc_file.text_info(n)
-            labels[nm] = (info["text"], info["size"])
+            labels[nm] = vc_file.text_info(n)
             keep_ids[nm] = n
     model = copy.deepcopy(model)
     model["meta"]["lane_names"] = lane_names
+    model["meta"]["lane_angles"] = lane_angles
     model["meta"]["prev_centres_cm"] = new_c
     report = dict(report, lanes=[dict(ln, label=lane_names[ln["lane"] - 1]) for ln in report["lanes"]])
     tg = targets(model, report, key, px, wb, labels=labels, layout=layout, measure_fn=measure_fn)
+
+    # ---- 角度回写进 ep-meta：标签的角度以文档为准（用户在 app 里转过的就记下来），
+    #      新建标签下次仍按它；没有标签的泳道（trimmed）保留原来的角度。0 不写（旧文档 sync 后不变）。
+    _meta_angles(model, tg)
 
     # ---- 画板
     for idx, nm in ((0, "Figure"), (2, "Profiles")):

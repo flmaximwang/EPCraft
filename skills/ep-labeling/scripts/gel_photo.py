@@ -45,7 +45,7 @@ import profiles                                                                 
 import vc_control                                                                      # noqa: E402
 import vc_file                                                                         # noqa: E402
 import workbench                                                                       # noqa: E402
-from config import load_cfg, load_gel_size, load_markers, parse_gel_cm                 # noqa: E402
+from config import as_entry, load_cfg, load_gel_size, load_markers, parse_gel_cm     # noqa: E402
 from env_check import cmd_doctor                                                       # noqa: E402
 from gel_area import compute                                                           # noqa: E402
 from gel_detect import detect_gel                                                      # noqa: E402
@@ -53,6 +53,7 @@ from geometry import load_dims_after                                            
 from lane_select import parse_keep                                                     # noqa: E402
 from magick_io import MAGICK, _run                                                     # noqa: E402
 from mw_report import format_report_v2, write_v2                                       # noqa: E402
+from text_layout import window_deg                                                     # noqa: E402
 from selftest import selftest                                                          # noqa: E402
 
 SKILL_VERSION = "vectorcraft-1"
@@ -165,22 +166,26 @@ def _check_pitch(sd, preset, tol=0.10):
 
 
 def _lanes_and_markers(args, lane_count):
-    """两个配置 → (泳道名[lane_count], marker 标签, marker 泳道候选[], 说明)。"""
+    """两个配置 → (泳道名[lane_count], 每条泳道的标签角度或 None, marker 标签, marker 泳道候选[], 说明)。"""
     if not args.markers:
         raise RuntimeError("要 --markers <json>（单个配置，或 data/markers.json 这种预设库 + --preset）")
     mk, mk_labels, mk_note = load_markers(args.markers, args.preset)
-    names = [""] * lane_count
+    names, angles = [""] * lane_count, [None] * lane_count
     cand = []
     if args.lanes:
         cfg, labels = load_cfg(args.lanes, "泳道配置")
         if len(labels) > lane_count:
             raise RuntimeError("泳道配置有 %d 个名字，胶上只有 %d 条泳道" % (len(labels), lane_count))
-        names[:len(labels)] = [str(x) for x in labels]
+        for i, e in enumerate(labels):                   # 每项：字符串，或 {"text", "angle"}
+            ent = as_entry(e, {})
+            names[i] = str(ent.get("text", ""))
+            if ent.get("angle") is not None:
+                angles[i] = window_deg(ent["angle"])
         cand = [int(v) for v in (cfg.get("marker_lanes") or [])]
     if mk.get("marker_lane") is not None and int(mk["marker_lane"]) not in cand:
         cand.append(int(mk["marker_lane"]))
     cand = [c for c in cand if 1 <= c <= lane_count] or [1]
-    return names, mk_labels, cand, mk_note
+    return names, angles, mk_labels, cand, mk_note
 
 
 def _doc_state(client, path):
@@ -210,15 +215,22 @@ def cmd_render(args):
                           else os.path.splitext(args.out)[0] + ".vectorcraft")
     stem = os.path.splitext(out)[0]
     lane_count = int(args.gel_lanes or preset["lane_count"])
-    names, mk_labels, cand, mk_note = _lanes_and_markers(args, lane_count)
+    names, angles, mk_labels, cand, mk_note = _lanes_and_markers(args, lane_count)
     print("[i] 胶体预设 %s：%d 条泳道，孔距先验 %.3f cm；输出 %d dpi；marker 配置：%s" % (
         preset.get("name", "—"), lane_count, float(preset["lane_pitch_cm"]), dpi, mk_note))
     trim = parse_keep(args.trim_lanes, lane_count) if args.trim_lanes else []
 
     png, ga = gel_face(args.image, preset, args, dpi)
+    lane_angle, marker_angle = window_deg(args.label_angle), window_deg(args.marker_label_angle)
     meta = {"skill": "ep-labeling", "skill_version": SKILL_VERSION, "photo": os.path.abspath(args.image),
             "gel_preset": preset.get("name", ""), "marker_preset": mk_note, "dpi": dpi,
-            "profiles_layout": args.profiles}
+            "profiles_layout": args.profiles,
+            "label_angle": {"lane": lane_angle, "marker": marker_angle},
+            "lane_angles": [a if a is not None else lane_angle for a in angles]}
+    if not lane_angle and not marker_angle:
+        meta.pop("label_angle")                          # 0 不写：默认角的文档与旧版逐字节一致
+    if not any(meta["lane_angles"]):
+        meta.pop("lane_angles")
     model, err, sd = None, None, None
     for ml in cand:                      # 写了几条 marker 泳道就挨个试：第一条叫不全（如胶边损坏）就换下一条
         try:
@@ -446,6 +458,10 @@ def main(argv=None):
     r.add_argument("--profiles", choices=("stack", "strips"), default=figure.PROFILE_LAYOUT,
                    help="Profiles 画板的版式：stack=每道一行横向曲线（默认）/ strips=每道一条竖向曲线，与胶同比例")
     r.add_argument("--port", type=int, default=vc_control.DEFAULT_PORT, help="VectorCraft 控制口（默认 7797）")
+    r.add_argument("--label-angle", type=float, default=0.0,
+                   help="泳道名标签的角度（度，逆时针；90 = 从下往上读；默认 0）；lanes.json 里每项可用 angle 覆盖")
+    r.add_argument("--marker-label-angle", type=float, default=0.0,
+                   help="marker 标签的角度（度，逆时针；默认 0）；markers.json 里每项可用 angle 覆盖")
     r.add_argument("--no-mw", action="store_true", help="不写 fig.mw.json")
     add_detect(r)
     add_removed(r)

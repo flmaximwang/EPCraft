@@ -350,6 +350,24 @@ def run():
     finally:
         fa.close()
     ok += 1
+    # 8) 新建带角度的文字：text.create 之后紧接 object.rotate（绕锚点、绝对角度，同在一个撤销组内）；
+    #    角度 0 不发 rotate（旧文档的命令序列逐条不变）。
+    fa = _fake()
+    try:
+        c = vc_control.Client(fa.port, timeout=5)
+        sp = {"kind": "text", "layer": "labels", "name": "label lane 6", "text": "X", "size": 8.0,
+              "x": 55.0, "y": 300.0, "justify": "Center", "rgb": (0, 0, 0), "angle": 90.0}
+        s = sync_exec.apply_ops_live(c, [{"op": "create", "layer": "labels", "spec": sp}], DOCUMENT)
+        nid = s["created_ids"][0]
+        g = fa.between_group()
+        i = [cm for cm, _p in g].index("text.create")
+        assert g[i + 1] == ("object.rotate", {"ids": [nid], "angle": 90.0, "origin": [55.0, 300.0]}), g[i:i + 3]
+        n0 = len(fa.log)
+        sync_exec.apply_ops_live(c, [{"op": "create", "layer": "labels", "spec": dict(sp, angle=0.0)}], DOCUMENT)
+        assert "object.rotate" not in fa.cmds()[n0:], "角度 0 也发了 rotate"
+    finally:
+        fa.close()
+    ok += 1
     return ok
 
 

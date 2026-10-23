@@ -1,6 +1,6 @@
 {
   "skill": "ep-labeling",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "test_cases": [
     {
       "id": "should-trigger-01",
@@ -218,6 +218,20 @@
       "prompt": "这是我们的失败分析报告，说 split_wide 和 snap_to_anchors 把泳道数搞错了，按报告修一下代码。",
       "expected_behavior": "先确认报告跑的是哪一份 skill：这些函数早已删除（2026-10-22 那份报告就是对着旧的已安装副本写的）。核对脚本路径、仓库提交、文档 ep-meta 里的 skill_version；在当前代码上用同一批照片复现后再谈修复，不要对着已删除的代码写方案。",
       "notes": "special-cases §4 的教训。"
+    },
+    {
+      "id": "should-trigger-30",
+      "type": "should_trigger",
+      "prompt": "这批泳道名太长了，全给我竖着排（90 度），marker 那列还是横的。",
+      "expected_behavior": "走本 skill，不要重跑 render 丢掉用户的编辑。三条路按情况选：(a) 还没改过文档 → `render ... --label-angle 90`（marker 保持默认 0），或 `lanes.json` 每项写 `{\"text\": ..., \"angle\": 90}`；(b) 已在 VectorCraft 里改过 → 用控制口 `object.rotate {ids, angle: 90, origin: 标签锚点}`（相对转、逆时针；`text.create` 没有角度参数），或请用户在 Figure 上转，然后 `sync`；(c) 只转一条 → 只转那条。sync 会从 xf 读到 90°，按墨迹框重新落位（框底离胶顶 4 pt、框中线对准泳道中心），只发 `move`，角度写进 `ep-meta` 的 `lane_angles`；再 sync 一次是 0 个操作。不要用 `absolute:true` 去复位成 0°（0.14 实测是空操作）。",
+      "notes": "V9 加的标签角度能力；角度口径 = 逆时针度，90 = 从下往上读。"
+    },
+    {
+      "id": "edge-case-31",
+      "type": "edge_case",
+      "prompt": "我把一个标签转成了 45°，sync 之后它还能落在该在的位置吗？",
+      "expected_behavior": "能。角度不限于 90° 的整数倍：sync 从 xf 的线性部分反解角度（`atan2(-b, a)`，归一化到 (−180, 180]），按同一个旋转矩阵算墨迹框，再把框摆到规则位置（泳道名：框底离胶顶 4 pt、框中线对准泳道中心；marker：框竖直中心对准 band 线、内侧边离胶 4 pt），必要时放大 Figure 画板与页边距。它只 `move`，不改角度；如果用户想要「回到水平」，相对转 −90，或把角度从配置里改掉后重出。",
+      "notes": "任意角度都走同一套框计算，没有 90° 特判。"
     }
   ]
 }

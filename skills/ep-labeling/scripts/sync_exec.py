@@ -122,6 +122,10 @@ def _create(client, sp, document):
         r = ex("text.create", {"x": sp["x"], "y": sp["y"], "text": sp["text"], "size": sp["size"],
                                "font": "Arial", "justify": sp["justify"].lower(), "color": list(sp["rgb"]),
                                "charAlign": "romanBaseline"})
+        if abs(float(sp.get("angle") or 0.0)) > 1e-9:     # 绕锚点相对转（新建的字本来就是正的）
+            # 不用 absolute：0.14 实测 absolute:0 对已经是 90° 的字是空操作（见 references/vectorcraft.md §2）
+            ex("object.rotate", {"ids": [r["id"]], "angle": float(sp["angle"]),
+                                 "origin": [sp["x"], sp["y"]]})
         return r["id"]
     if k in ("line", "polyline"):
         if k == "line":

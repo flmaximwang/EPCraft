@@ -24,6 +24,7 @@ import copy
 import gzip
 import hashlib
 import json
+import math
 import os
 import struct
 
@@ -106,14 +107,34 @@ def line_ends(node):
 
 
 def text_info(node):
-    """文字对象 → {text, x, y, font, size, color(#rrggbb), justify}；多个 run 时文字拼起来、样式取第一个。"""
+    """文字对象 → {text, x, y, angle, font, size, color(#rrggbb), justify}；
+    多个 run 时文字拼起来、样式取第一个。angle = 逆时针度（见 angle_of_xf）。"""
     k = node["kind"]
     st = k["runs"][0]["style"]
     return {"text": "".join(r["text"] for r in k["runs"]),
-            "x": k["xf"][4], "y": k["xf"][5],
+            "x": k["xf"][4], "y": k["xf"][5], "angle": angle_of_xf(k["xf"]),
             "font": st.get("font_family"), "size": st.get("size"),
             "color": _paint_hex(st.get("fill")),
             "justify": k.get("para", {}).get("justify")}
+
+
+def rot_xf(x, y, angle):
+    """绕 (x, y) 逆时针转 angle 度的 xf 矩阵 [a,b,c,d,e,f]（x' = a u + c v + e，y' = b u + d v + f）。
+
+    实测（references/vectorcraft.md §1）：VectorCraft 把点文字的 xf 当普通仿射用，绕锚点转；
+    [0,−1,1,0] 让字从下往上读（逆时针 90°），与控制口 object.rotate{angle} 的正方向一致。
+    """
+    t = math.radians(float(angle))
+    c, s = math.cos(t), math.sin(t)
+    return [c, -s, s, c, float(x), float(y)]
+
+
+def angle_of_xf(xf):
+    """xf 的线性部分 → 逆时针角度（度，(-180, 180]）。忽略缩放与切变：取阅读方向 (a, b)。"""
+    a, b = float(xf[0]), float(xf[1])
+    deg = math.degrees(math.atan2(-b, a))
+    return round(((deg + 180.0) % 360.0) - 180.0, 6)
+
 
 
 # ---------------------------------------------------------------- 写
@@ -193,15 +214,16 @@ def polyline(doc, name, points, rgb=(0.0, 0.0, 0.0), width=0.5):
     return n
 
 
-def text(doc, name, x, y, s, size=8.0, font="Arial", rgb=(0.0, 0.0, 0.0), justify="Center"):
-    """点文字。(x, y) 是锚点：y 是基线，x 按 justify（Left/Center/Right）对齐。字号只写 size、从不缩放。"""
+def text(doc, name, x, y, s, size=8.0, font="Arial", rgb=(0.0, 0.0, 0.0), justify="Center", angle=0.0):
+    """点文字。(x, y) 是锚点：y 是基线，x 按 justify（Left/Center/Right）对齐；angle = 逆时针度，
+    绕锚点转（90 = 从下往上读）。字号只写 size、从不缩放。"""
     if justify not in ("Left", "Center", "Right"):
         raise RuntimeError("text justify 只收 Left/Center/Right（收到 %r）" % (justify,))
     n = copy.deepcopy(doc["tpl"]["text"])
     n["id"] = _id(doc)
     n["name"] = name
     k = n["kind"]
-    k["xf"] = [1.0, 0.0, 0.0, 1.0, float(x), float(y)]
+    k["xf"] = rot_xf(x, y, angle)
     run = copy.deepcopy(k["runs"][0])
     run["text"] = s
     run["style"].update(font_family=font, font_style="Regular", size=float(size),

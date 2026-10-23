@@ -13,7 +13,7 @@
 
 | 键 | 含义 |
 |---|---|
-| `labels` | **从上到下**，每项一条标签：字符串，或 `{"text", "rows", "color"}`。`text` 里必须有分子量数字（`250 kD`、`21/20 kD`），它变成 Workbench 上的 `band <MW>` 线名。`rows: 2` = 这条标签盖两条带（两条 band 线、一个标签，见 special-cases §1）。`color` = 这条 marker 标签在 Figure 上的初始颜色（之后归用户） |
+| `labels` | **从上到下**，每项一条标签：字符串，或 `{"text", "rows", "color", "angle"}`。`text` 里必须有分子量数字（`250 kD`、`21/20 kD`），它变成 Workbench 上的 `band <MW>` 线名。`rows: 2` = 这条标签盖两条带（两条 band 线、一个标签，见 special-cases §1）。`color` = 这条 marker 标签在 Figure 上的初始颜色（之后归用户）。`angle` = 这条标签的角度（度，逆时针，见 §8；省略用 `--marker-label-angle`） |
 | `marker_lane` | 可选：梯子所在泳道（1 起）。追加到 `lanes.json` `marker_lanes` 候选的**末尾** |
 | `_preset` / `_source` / `_说明` | 预设库里用来挑预设（`--preset` 的关键词在 `_preset` 里匹配，须恰好命中 1 个）与留出处 |
 
@@ -23,7 +23,7 @@
 
 | 键 | 含义 |
 |---|---|
-| `labels` | **从左到右**，每条泳道一个**字符串**（名字成为 Figure 上 `label lane n` 的初始文字）。`""` = 空白泳道：不画标签、MW 终端表不列。没列到的泳道（`labels` 比泳道少）也当 `""` |
+| `labels` | **从左到右**，每条泳道一项：**字符串**，或 `{"text", "angle"}`（名字成为 Figure 上 `label lane n` 的初始文字；`angle` 只改这一条的角度）。`""` = 空白泳道：不画标签、MW 终端表不列。没列到的泳道（`labels` 比泳道少）也当 `""` |
 | `marker_lanes` | **候选梯子泳道**（1 起，按优先顺序，如 `[1, 2, 3]`）。render 依次试：第一条叫出的峰数对不上标签（例如胶边损坏）就换下一条，直到配上。**标定只用配上的那一条**（不是多管加权）；之后 marker 泳道由 band 线落在哪条泳道里决定（§5） |
 
 ## 2. 胶体预设与成品尺寸
@@ -102,15 +102,17 @@ Figure 在 Workbench **下方**（变宽变高不会压到 Workbench），Profil
 | `ep-meta` | Workbench 画板外 | 隐藏、锁定、不打印 | 一个文字对象 `ep-meta`：运行元数据 JSON | 否 |
 
 线宽 0.5 pt。`ep-meta` 里存：skill 版本、照片路径、胶体预设、marker 预设、dpi、Profiles 版式、render 时的泳道名、
-marker 标签表、**上一次的泳道中心**（给标签匹配用）、上一次的 band 线（给 sync 的改动摘要用）、种子信息。
+marker 标签表、**上一次的泳道中心**（给标签匹配用）、上一次的 band 线（给 sync 的改动摘要用）、种子信息、
+`label_angle`（新建标签的默认角：`{"lane", "marker"}`）、`lane_angles`（每条泳道的标签角度，按泳道顺序）。
+角度 0 不写这两个键（没有旋转的文档与旧版逐字节一致）。
 不放进自定义 JSON 键（存盘就丢）也不放 `file.info`（会写进导出的 PNG），见 vectorcraft.md §4。
 
 ### 所有权（sync 的硬规则）
 
 | 对象 | agent 写 | agent 从不改 |
 |---|---|---|
-| `label lane n` | x = 泳道中心（映射到 Figure），y = 胶顶上方 4 pt（基线）；新泳道新建（文字 `?`）；泳道没了就删；泳道增删时按上一次中心就近匹配，改名 | 文字、字体、字号、颜色、对齐 |
-| `label band <MW>` | y = 它的 band 线（映射到 Figure，挤的时候上下让开）；band 线删了就删 | 文字、字体、字号、颜色 |
+| `label lane n` | 按**墨迹框**落位：框的底边离胶顶 4 pt、框的中线对准泳道中心（角度 90° 时字就竖在泳道上方，框宽 = 大写字高）；新泳道新建（文字 `?`，角度取 `lane_angles`/`label_angle`）；泳道没了就删；泳道增删时按上一次中心就近匹配，改名 | 文字、字体、字号、颜色、对齐、**角度**（sync 读到什么就用什么，从不改写） |
+| `label band <MW>` | 框的竖直中心对准它的 band 线（挤的时候上下让开），内侧竖边离胶 4 pt；band 线删了就删 | 文字、字体、字号、颜色、**角度** |
 | `labels` 里其它名字的文字 | — | 一切 |
 | `gel seg k`、Figure / Profiles 画板大小 | 一切（由泳道线 + 保留泳道算） | — |
 | `analysis`、`profiles` 层 | 一切 | — |
@@ -224,10 +226,17 @@ marker 标签表、**上一次的泳道中心**（给标签匹配用）、上一
 
 - **保留段**：没 trim 的泳道里，连续的成一段；段边界 = 与相邻（被 trim 的）泳道中心的**中点**，两端到胶边。
   段与段之间留 **0.15 cm 白缝**（拼缝披露；没有额外的线）。不拉伸、不上下位移、不调色。
-- **泳道名**：`label lane n` 用**原泳道号**（留下的第 8 道还是 `label lane 8`），Arial 8 pt，水平居中在泳道中心，基线在胶顶上方 4 pt。
-- **marker 标签**：Arial 8 pt，竖直中心对准 band 线；marker 泳道中心在 Figure 胶面左半 → 标签在胶左侧、右对齐，否则在右侧、左对齐，离胶边 4 pt。
-  挨得近的（250/150/100、40/35）用一维最小位移排字**上下让开、保持顺序**，不叠字。marker 泳道被 trim 时不画 marker 标签（只标定）。
-- **页面规则**：每边留白 = `max(0.43 cm, 文字越界 + 0.17 cm)`，按**当前**标签文字与字号量（用户把名字改长，页就跟着变宽）。
+- **泳道名**：`label lane n` 用**原泳道号**（留下的第 8 道还是 `label lane 8`），Arial 8 pt；
+  **按墨迹框摆**：框的底边在胶顶上方 4 pt、框的中线对准泳道中心。角度 0° 时就是「水平居中、基线离胶顶 4 pt」；
+  角度 90° 时框宽 = 大写字高，字从胶顶上方 4 pt 起往上竖排。
+- **marker 标签**：Arial 8 pt；**按墨迹框摆**：框的竖直中心对准 band 线，框的内侧竖边离胶边 4 pt（marker 泳道中心在
+  Figure 胶面左半 → 标签在胶左侧、右对齐，否则在右侧、左对齐）。角度 0° 时与旧版逐点一致。
+  挨得近的（250/150/100、40/35）用一维最小位移排字**上下让开、保持顺序**，不叠字（让开量按框高算，竖排时框高 = 字长）。
+  marker 泳道被 trim 时不画 marker 标签（只标定）。
+- **角度**：度，逆时针；90 = 从下往上读，−90 = 从上往下读（与 matplotlib 的 `rotation` 同向）。角度写在点文字的
+  `xf` 矩阵里（绕锚点转，见 vectorcraft.md §1），框用同一个矩阵算，所以任意角度都能正确落位、量页边。
+- **页面规则**：每边留白 = `max(0.43 cm, 文字框越界 + 0.17 cm)`，按**当前**标签的文字、字号与角度量
+  （名字改长或转成竖排，页就跟着变宽/变高）。
 
 **Profiles**（`render --profiles stack|strips`，默认 `stack`；版式记在 `ep-meta`，sync 沿用）：
 
@@ -258,8 +267,11 @@ python3 scripts/gel_photo.py sync fig.vectorcraft [--port 7797] [--dry-run] [--d
 
 - 会变：泳道标签的位置（跟泳道中心）、marker 标签的位置（跟 band 线）、新泳道的 `?` 标签、消失的泳道/带的标签被删、
   Figure 的胶段与拼缝、Figure 与 Profiles 画板大小、`analysis` 与 `profiles` 层、trimmed 线的颜色、`ep-meta`、`fig.png`、`fig.mw.json`。
-- 永远不变：标签的文字、字体、字号、颜色；`labels` 层里用户自加的文字；Workbench 线的位置与名字；`gel` 层的 Workbench 胶面图。
+- 永远不变：标签的文字、字体、字号、颜色、**角度**（用户在 app 里转过的，sync 读到后照它重新落位，只把角度记进 `ep-meta`）；
+  `labels` 层里用户自加的文字；Workbench 线的位置与名字；`gel` 层的 Workbench 胶面图。
 - **幂等**：Workbench 没改、标签已在位时，再跑一次是 0 个操作（`文档已经是最新的（0 个改动）`），只重新存盘和导出。
+- **旧文档第一次 sync（V9 起）**：页顶留白改按**大写字高**算（旧版按字号），整张 Figure 会上移约 2.3 pt（0.08 cm）、
+  页高相应变短；标签相对胶面的位置不变。一次之后稳定，再 sync 还是 0 个操作。
 - **泳道增删**：标签按上一次的泳道中心（`ep-meta`）就近匹配，所以用户改过的名字跟着它的泳道走；新泳道标签是 `?`，agent 要问名字。
 - **band 线**：删掉 = 去掉这个标定点、它的 Figure 标签也删；新增一条 `band <MW>` = 多一个标定点（但没有对应的 Figure 标签）；
   改名 = 改标定值：旧 MW 的 Figure 标签随之删掉，新值自动得到一条默认标签 `"<MW> kD"`（名字 `label band <MW>`，文字可以再改）；新画的 `band <MW>` 线同样。
@@ -295,6 +307,29 @@ python3 <skill>/scripts/gel_photo.py sync fig.vectorcraft
 
 `text.setText` 保留第一段文字的样式（字体、字号、颜色不变）。要改样式也请用户在 app 里改，sync 不会覆盖。
 
+**旋转**一条标签同样不用重跑 render：控制口 `object.rotate {ids, angle, origin}`（`angle` 逆时针、**相对**转；`origin` 给锚点，
+点文字的锚点就是 `xf[4..5]`）。转完 `sync`：读到新角度 → 按墨迹框重新落位、只 `move`，角度记进 `ep-meta`。
+
+```bash
+python3 - <skill>/scripts fig.vectorcraft "label lane 3" 90 <<'EOF'
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import vc_control, vc_file
+c, _ = vc_control.connect(7797, launch=False)
+docs = c.call("ui.inspect").get("documents") or []
+c.execute("document.activate", {"index": next(i for i, d in enumerate(docs)
+                                             if d.get("title") == os.path.basename(sys.argv[2]))})
+n = next(x for x in vc_file.lay_children(vc_file.layer_by_name(c.document_json(), "labels"))
+         if x.get("name") == sys.argv[3])
+c.execute("object.rotate", {"ids": [n["id"]], "angle": float(sys.argv[4]),
+                            "origin": [n["kind"]["xf"][4], n["kind"]["xf"][5]]})
+EOF
+python3 <skill>/scripts/gel_photo.py sync fig.vectorcraft
+```
+
+别用 `absolute:true` 去「设成 0°」：0.14 实测 `object.rotate {angle: 0, absolute: true}` 对已经是 90° 的文字是空操作；
+要把转过的标签转回水平，就相对转 −90。
+
 ## 10. 命令
 
 ```bash
@@ -308,7 +343,8 @@ python3 scripts/gel_photo.py probe photo.jpeg --gel-size data/gel_size.json [--g
 # 出文档 + fig.png + fig.mw.json
 python3 scripts/gel_photo.py render photo.jpeg --out fig.vectorcraft \
         --markers data/markers.json --preset 3 --lanes lanes.json \
-        --gel-size data/gel_size.json [--trim-lanes 1,2,14-15] [--dpi 300] [--profiles stack|strips] [--port 7797] [--no-mw]
+        --gel-size data/gel_size.json [--trim-lanes 1,2,14-15] [--dpi 300] [--profiles stack|strips] \
+        [--label-angle 90] [--marker-label-angle 0] [--port 7797] [--no-mw]
 
 # 用户在 VectorCraft 里改完之后
 python3 scripts/gel_photo.py sync fig.vectorcraft [--dry-run]
@@ -316,6 +352,8 @@ python3 scripts/gel_photo.py sync fig.vectorcraft [--dry-run]
 
 render 的其它开关（全是 stage 1）：`--gel-cm`、`--gel-lanes`、`--trim-top-cm` / `--trim-bottom-cm`、`--angle` / `--no-rotate`、
 `--longest`（分析缩略图长边，默认 700）、`--cue dark|chroma|union`、`--ink-thr`、`--rect`。
+标签角度：`--label-angle`（泳道名默认值）、`--marker-label-angle`（marker 标签默认值），或 `lanes.json` / `markers.json`
+里每项的 `angle`（度，逆时针；90 = 从下往上读）。sync 不需要角度参数：它从文档读。
 `--out` 给 `.png` 也行（取同名 stem）。已有的 `fig.vectorcraft` 先备份成 `fig.vectorcraft.bak`；
 它在 VectorCraft 里开着且有没存的改动时 render 拒绝（免得覆盖用户的修改）。
 
@@ -349,7 +387,7 @@ render 的其它开关（全是 stage 1）：`--gel-cm`、`--gel-lanes`、`--tri
 | `geometry.py` | 旋转几何 |
 | `config.py` | markers / lanes / 胶体预设的读取与校验 |
 | `lane_select.py` | `--trim-lanes` 语法、保留段与拼缝版式 |
-| `text_layout.py` | 字体与文字量宽（Figure 页边距用） |
+| `text_layout.py` | 字体、文字量宽、标签的角度与墨迹框（`box_offsets` / `anchor_for`，页边距与落位都用它） |
 | `well_grid.py` | 泳道种子：按加样孔定相的等距梳子（§6） |
 | `profiles.py` | 剖面、叫带、标定、报告 v2（§7） |
 | `mw_report.py` | MW 数学、marker 配对、终端表与写盘 |

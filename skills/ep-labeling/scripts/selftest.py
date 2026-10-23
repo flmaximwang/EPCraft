@@ -410,7 +410,7 @@ def selftest():
                                                          ((400.0, 30.0), (400.0, 180.0))]
         assert all(n["kind"]["live"]["a"]["x"] == vc_file.line_ends(n)[0][0] for n in lanes)
         lab = vc_file.text_info(vc_file.lay_children(vc_file.layer_by_name(d, "labels"))[0])
-        assert lab == {"text": "M", "x": 52.0, "y": 25.0, "font": "Arial", "size": 8.0,
+        assert lab == {"text": "M", "x": 52.0, "y": 25.0, "angle": 0.0, "font": "Arial", "size": 8.0,
                        "color": "#ff0000", "justify": "Center"}, lab
         meta = vc_file.text_info(vc_file.lay_children(vc_file.layer_by_name(d, "ep-meta"))[0])
         assert json.loads(meta["text"]) == {"skill": "ep-labeling", "px_per_cm": 47.2}, meta
@@ -1163,6 +1163,107 @@ def selftest():
     #      新对象起名、剪切组、失败 → 撤销组 cancel 并抛原错、收尾恢复当前层与默认颜色。
     import selftest_sync
     ok += selftest_sync.run()
+
+    # 78) 标签角度（V9）：角度是逆时针度（90 = 从下往上读），写进点文字的 xf（绕锚点）；读回同值；
+    #     旋转后按**墨迹框**摆位与量页边（竖排的泳道名框底离胶顶 4 pt、框中线=泳道中心，页顶留白
+    #     装得下整条字）；marker 标签也能竖排（框内边离胶 4 pt）；render 完 plan_sync = 0（幂等）；
+    #     sync 读到用户转过的标签 → 只挪位置、不改角度，并把角度记进 ep-meta。
+    import types
+    import text_layout
+    with tempfile.TemporaryDirectory() as td:
+        # (a) 框几何 + xf 往返
+        b0 = text_layout.box_offsets(20.0, 8.0, 0.0, "Center")
+        assert all(abs(a - b) < 1e-9 for a, b in zip(b0, (-10.0, -text_layout.CAP * 8, 10.0, 0.0))), b0
+        b90 = text_layout.box_offsets(20.0, 8.0, 90.0, "Center")
+        assert all(abs(a - b) < 1e-9 for a, b in
+                   zip(b90, (-text_layout.CAP * 8, -10.0, 0.0, 10.0))), b90        # 字往上走、框在锚点左边
+        bl = text_layout.box_offsets(20.0, 8.0, 90.0, "Left")
+        assert abs(bl[1] + 20.0) < 1e-9 and abs(bl[3]) < 1e-9, bl                  # 左对齐从锚点往上
+        assert abs(text_layout.anchor_for(b90, centre_x=100.0, bottom=50.0)[0] - (100.0 + text_layout.CAP * 4)) < 1e-9
+        assert text_layout.window_deg(450.0) == 90.0 and text_layout.window_deg(-270.0) == 90.0
+        for bad in ("x", float("nan")):
+            try:
+                text_layout.window_deg(bad)
+                raise AssertionError("非法角度没报错：%r" % (bad,))
+            except RuntimeError as e:
+                assert "角度" in str(e), e
+        doc_rot = vc_file.new_doc("t")
+        vc_file.add_layer(doc_rot, "labels")
+        n_rot = vc_file.text(doc_rot, "t", 40, 60, "ABCD", size=20, justify="Left", angle=90)
+        assert [round(v, 6) for v in n_rot["kind"]["xf"]] == [0.0, -1.0, 1.0, 0.0, 40.0, 60.0], n_rot["kind"]["xf"]
+        assert vc_file.text_info(n_rot)["angle"] == 90.0
+        n_rot["kind"]["xf"] = vc_file.rot_xf(40, 60, -30)
+        assert abs(vc_file.text_info(n_rot)["angle"] + 30.0) < 1e-9
+
+        # (b) render：泳道名与 marker 标签都竖排
+        gp_c = os.path.join(td, "gel.png")
+        rows_c = [1.0, 1.2, 1.4, 2.3, 3.1]
+        _synth_wells(gp_c, first_cm=0.70, pitch_cm=0.52, ladder_rows_cm=rows_c)
+        png_c = open(gp_c, "rb").read()
+        names_c = ["M", "A", "B"] + [""] * 9 + ["X", "Y", "Z"]
+        mk_c = ["100 kD", "70 kD", "50 kD", "35 kD", "10 kD"]
+        m_c, _sd = workbench.from_image(png_c, 8.6, 6.25, 15, 0.52, names_c, mk_c, 1,
+                                        meta={"skill": "ep-labeling", "label_angle": {"lane": 90.0, "marker": 90.0}})
+        rep_c = profiles.analyze(m_c, png_c, names_c)
+        d_c = vc_file.loads(vc_file.dumps(figure.build_document(m_c, rep_c, png_c, "t")))[0]["document"]
+        lab_c = {n["name"]: vc_file.text_info(n) for n in vc_file.lay_children(vc_file.layer_by_name(d_c, "labels"))}
+        assert lab_c["label lane 2"]["angle"] == 90.0 and lab_c["label band 100"]["angle"] == 90.0, lab_c
+        seg_c = [n for n in vc_file.lay_children(vc_file.layer_by_name(d_c, "gel")) if n["name"] == "gel seg 1"][0]
+        gx_c, gy_c = (seg_c["kind"]["children"][0]["kind"]["path"]["subpaths"][0]["anchors"][0]["p"])
+        w_c = figure.measure("A", figure.LANE_SIZE)[0]
+        bc = text_layout.box_offsets(w_c, figure.LANE_SIZE, 90.0, "Center")
+        ln_c = m_c["lanes"][1]
+        cx_c = (ln_c["left_cm"] + ln_c["right_cm"]) / 2.0 * vc_file.PT_PER_CM
+        assert abs(lab_c["label lane 2"]["y"] + bc[3] - (gy_c - figure.LANE_GAP_PT)) < 0.01, "竖排泳道名的框底不在胶顶上方 4 pt"
+        assert abs(lab_c["label lane 2"]["x"] + (bc[0] + bc[2]) / 2.0 - (gx_c + cx_c)) < 0.01, "竖排泳道名没在泳道中心"
+        fig_c = d_c["artboards"][0]["rect"]
+        assert gy_c - fig_c["y0"] >= w_c + figure.LANE_GAP_PT + figure.PAD_CM * vc_file.PT_PER_CM - 1e-6, "页顶没装下竖排的字"
+        wm_c = figure.measure("100 kD", figure.MARKER_SIZE)[0]
+        bm_c = text_layout.box_offsets(wm_c, figure.MARKER_SIZE, 90.0, "Right")
+        assert abs(lab_c["label band 100"]["x"] + bm_c[2] - (gx_c - figure.MARKER_GAP_PT)) < 0.01, "竖排 marker 标签的内边不在胶左 4 pt"
+        assert fig_c["x0"] <= gx_c - figure.MARKER_GAP_PT + bm_c[0] + 1e-6, "竖排 marker 标签越出页面左边"
+        assert fig_c["y0"] <= lab_c["label band 100"]["y"] + bm_c[1] + 1e-6, "竖排 marker 标签越出页面上边"
+        assert figure.plan_sync(d_c, m_c, rep_c)[0] == [], "竖排 render 完第一次 sync 却有改动"
+
+        # (c) sync：用户在 app 里把 label lane 2 转 90° → 只挪位置（不改角度），角度记进 ep-meta
+        m0, _sd = workbench.from_image(png_c, 8.6, 6.25, 15, 0.52, names_c, mk_c, 1, meta={"skill": "ep-labeling"})
+        rep0 = profiles.analyze(m0, png_c, names_c)
+        d_u = vc_file.loads(vc_file.dumps(figure.build_document(m0, rep0, png_c, "t")))[0]["document"]
+        top_u = {"format": "vectorcraft", "version": 4, "document": d_u, "images": {}}
+        lab_u = vc_file.lay_children(vc_file.layer_by_name(d_u, "labels"))
+        n2 = [n for n in lab_u if n["name"] == "label lane 2"][0]
+        n2["kind"]["xf"] = vc_file.rot_xf(n2["kind"]["xf"][4], n2["kind"]["xf"][5], 90.0)
+        m_u, _notes = workbench.from_document(d_u)
+        rep_u = profiles.analyze(m_u, png_c, [None] * 15)
+        ops_u, meta_u = figure.plan_sync(d_u, m_u, rep_u)
+        touched = [op for op in ops_u if op.get("id") == n2["id"]]
+        assert touched and all(op["op"] == "move" for op in touched), touched
+        assert abs(meta_u["lane_angles"][1] - 90.0) < 1e-9 and abs(meta_u["lane_angles"][0]) < 1e-9, meta_u["lane_angles"]
+        figure.apply_ops_json(top_u, ops_u)
+        assert vc_file.text_info(n2)["angle"] == 90.0, "sync 把用户转的角度改回去了"
+        seg_u = [n for n in vc_file.lay_children(vc_file.layer_by_name(d_u, "gel")) if n["name"] == "gel seg 1"][0]
+        gxu, gyu = (seg_u["kind"]["children"][0]["kind"]["path"]["subpaths"][0]["anchors"][0]["p"])
+        bu = text_layout.box_offsets(w_c, figure.LANE_SIZE, 90.0, "Center")
+        assert abs(n2["kind"]["xf"][5] + bu[3] - (gyu - figure.LANE_GAP_PT)) < 0.01, "转过的标签没按竖排重新落位"
+        m_u2, _n = workbench.from_document(d_u)
+        assert figure.plan_sync(d_u, m_u2, profiles.analyze(m_u2, png_c, [None] * 15))[0] == [], "第二次 sync 不幂等"
+
+        # (d) 配置入口：lanes.json 每项 {text, angle}；markers.json 每项 angle
+        import gel_photo
+        p_lanes = os.path.join(td, "lanes.json")
+        with open(p_lanes, "w", encoding="utf-8") as f:
+            json.dump({"labels": ["M", {"text": "A", "angle": 90}, ""], "marker_lanes": [1, 2]}, f)
+        p_mk = os.path.join(td, "mk.json")
+        with open(p_mk, "w", encoding="utf-8") as f:
+            json.dump({"labels": [{"text": "100 kD", "angle": -90}, "10 kD"]}, f)
+        assert gel_photo._lanes_and_markers(types.SimpleNamespace(markers=p_mk, preset=None, lanes=p_lanes), 15)[:2] == \
+            (["M", "A", ""] + [""] * 12, [None, 90.0, None] + [None] * 12)
+        m_cfg, _sd = workbench.from_image(png_c, 8.6, 6.25, 15, 0.52, ["M", "A"] + [""] * 13,
+                                          [{"text": "100 kD", "angle": -90}, "10 kD", "5 kD"], 1,
+                                          marker_rows_cm=rows_c[:3], meta={"skill": "ep-labeling"})
+        assert m_cfg["meta"]["marker_labels"][0]["angle"] == -90.0 and "angle" not in m_cfg["meta"]["marker_labels"][1], \
+            m_cfg["meta"]["marker_labels"]
+    ok += 1
 
     print("selftest %d/%d 通过" % (ok, ok))
     return 0

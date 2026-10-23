@@ -30,6 +30,7 @@ import vc_file
 import well_grid
 from config import as_entry
 from mw_report import marker_pairs, parse_mw
+from text_layout import window_deg
 
 
 PT = vc_file.PT_PER_CM
@@ -155,9 +156,20 @@ def _assemble(gel, lanes, marker_rows_cm, lane_names, marker_labels, marker_lane
 
     top, bottom = window if window else (TOP_GUARD_CM, gel["height_cm"] * (1.0 - BOTTOM_GUARD))
     m = dict(meta or {})
+    marker_angle = float((m.get("label_angle") or {}).get("marker", 0.0) or 0.0)
+
+    def _label_meta(e):
+        """一条 marker 标签的元数据。角度 0 不写（旧文档 sync 后逐字节不变 → 幂等）。"""
+        d = {"text": e.get("text", ""), "mws": parse_mw(e.get("text", ""))}
+        a = window_deg(e.get("angle", marker_angle))
+        if abs(a) > 1e-9:
+            d["angle"] = a
+        if e.get("color"):
+            d["color"] = e["color"]
+        return d
+
     m.update(lane_names=list(lane_names),
-             marker_labels=[{"text": e.get("text", ""), "mws": parse_mw(e.get("text", "")),
-                             **({"color": e["color"]} if e.get("color") else {})} for e in entries],
+             marker_labels=[_label_meta(e) for e in entries],
              prev_centres_cm=[round((ln["left_cm"] + ln["right_cm"]) / 2.0, 4) for ln in lanes])
     model = {"gel": gel, "window": {"top_cm": round(float(top), 4), "bottom_cm": round(float(bottom), 4)},
              "lanes": lanes, "bands": bands, "marker_lane": int(marker_lane), "meta": m}

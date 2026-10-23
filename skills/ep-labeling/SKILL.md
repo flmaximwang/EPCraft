@@ -10,7 +10,7 @@ Turn a phone photo of a gel into a labeled figure at true physical size. Detecti
 
 ## Scope
 
-- In: one gel photo, a marker preset, **a gel preset (`--gel-size`, mandatory; no default)**, a name for each lane, which wells hold ladders, lanes to leave out of the figure (optional).
+- In: one gel photo, a marker preset, **a gel preset (`--gel-size`, mandatory; no default)**, a name for each lane, which wells hold ladders, lanes to leave out of the figure (optional), a label angle (optional: `--label-angle` for lane names, `--marker-label-angle` for marker labels, or `angle` on a single `lanes.json` / `markers.json` entry; degrees, counter-clockwise, 90 = reads bottom-to-top).
 - Out (exactly three files, same stem):
 
 | File | Content |
@@ -52,7 +52,8 @@ Turn a phone photo of a gel into a labeled figure at true physical size. Detecti
    ```bash
    python3 scripts/gel_photo.py render <photo> --out fig.vectorcraft \
        --markers data/markers.json --preset <N> --lanes lanes.json \
-       --gel-size data/gel_size.json [--trim-lanes 1,2] [--dpi 300] [--profiles stack|strips]
+       --gel-size data/gel_size.json [--trim-lanes 1,2] [--dpi 300] [--profiles stack|strips] \
+       [--label-angle 90] [--marker-label-angle 0]
    ```
    It launches VectorCraft with `--control 7797` if needed, opens the document, exports `fig.png`, writes `fig.mw.json` and prints the MW table. An existing `fig.vectorcraft` is backed up to `fig.vectorcraft.bak`.
 6. **Read `fig.png` back** (do not trust the log): each marker label sits on its band, lane labels sit over their lanes, `magick identify -format "%x" fig.png` shows the dpi.
@@ -61,10 +62,10 @@ Turn a phone photo of a gel into a labeled figure at true physical size. Detecti
    - drag the orange **top** / **bottom** window lines (shared by all lanes);
    - drag, delete or rename the magenta **`band <MW>`** lines (the name is the calibration value);
    - draw a short line in the `trimmed` layer inside a lane to drop that lane from the Figure (delete the mark to restore; the lane lines stay in `lanes`);
-   - on the **Figure**, freely change label text, font, size and colour, and add free text in `labels`.
+   - on the **Figure**, freely change label text, font, size, colour and angle (rotate a label), and add free text in `labels`.
    Then tell the agent "I edited it".
 8. **Sync** when the user says they edited: `python3 scripts/gel_photo.py sync fig.vectorcraft` (`--dry-run` to preview). It reads the live document (no need to save first), recomputes profiles, bands and MW, updates the Figure, labels and curves in **one undo step** (`ep-labeling sync`), saves, re-exports `fig.png` and `fig.mw.json`, and prints what changed. Running it twice changes nothing. **Never re-render to fix lanes or bands**; a re-render starts a fresh document and loses the user's edits. Re-render only for a new photo, a new crop/stage-1 fix, or a different gel or marker preset.
-9. **Text-only requests** ("rename lane 3 to WT"): set the label text through the control port (recipe: conventions §9c), or ask the user to type it on the Figure; then `sync` to re-export. Labels keep their user text, font, size and colour; only their position is the agent's.
+9. **Text-only or angle-only requests** ("rename lane 3 to WT", "rotate the lane names 90°"): set the label text or rotation through the control port (recipes: conventions §9c), or ask the user to do it on the Figure; then `sync` to re-export. Labels keep their user text, font, size, colour and **angle**; only their position (the anchor) is the agent's — `sync` reads the angle back and re-anchors, it never rewrites it.
 10. **New lanes come back as "?"**: `sync` prints `[?] 泳道 [n] 还没有名字`. Ask the user for the names, set them (step 9), `sync` again.
 
 ## Checkpoints
