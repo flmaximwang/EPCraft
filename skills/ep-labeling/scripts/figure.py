@@ -19,12 +19,13 @@ V7 再把同一套 ops 翻成控制口命令。render 与 sync 因此不会各�
     ep-meta：每次改写。
 
 坐标：pt，y 向下。Workbench 画板在 (0, 0) 起，Figure 画板在它**下面**（这样 Figure 变宽变高不会压到
-Workbench），Profiles 在 Workbench 右边。画板顺序固定：0 = Figure（导出 fig.png 的那块）、1 = Workbench、
-2 = Profiles。
+Workbench），Profiles 在 Workbench 右边，Crop 在 Workbench 左边。画板顺序固定：0 = Figure（导出 fig.png
+的那块）、1 = Workbench、2 = Profiles、3 = Crop（照片 + 裁切框；旧文档没有）。
 """
 import copy
 import json
 
+import crop as crop_geom
 import vc_file
 import workbench
 from lane_select import layout as strips_layout, strips as lane_strips
@@ -40,6 +41,7 @@ MARKER_SIZE, MARKER_GAP_PT = 8.0, 4.0
 CAP = TEXT_CAP           # Arial 大写字高 / 字号（text_layout.CAP 的别名，测试与排字用）
 BOARD_GAP = 60.0         # 画板之间的间隔（pt）
 GREY = (0.6, 0.6, 0.6)
+CROP_RGB, CROP_W = (0.0, 0.75, 0.25), 0.75   # Crop 画板上的裁切框：绿、0.75 pt
 UNNAMED = "?"            # 新泳道（用户加的线）的占位名：agent 去问名字；读回时仍算「没有名字」
 
 # Profiles 两种版式（V-D3，待用户选）：
@@ -401,21 +403,63 @@ def _meta_angles(model, tg):
                 e.pop("angle", None)
 
 
-def build_document(model, report, png, title="fig", layout=None):
+def build_document(model, report, png, title="fig", layout=None, crop=None):
     """render：整份新文档（vc_file builder）。Workbench 来自 workbench.add_workbench（不画泳道号/峰，
-    它们在 targets 的 analysis 层里），其余全部来自 targets()。"""
+    它们在 targets 的 analysis 层里），其余全部来自 targets()。
+
+    crop = Crop 画板（crop-artboard spec §3）{"jpeg", "preview_size", "photo_size", "frame_px"}：
+    预览 JPEG、它的 (Wp, Hp)、原图 (W0, H0)、胶面四角（原图 px）。给了就加 photo / crop 两层、
+    照片、裁切框和画板 3「Crop」（Workbench 左边）；None = 没有 Crop 画板（与以前逐字节一样）。
+    ep-meta 的 crop 键由调用方事先放进 model["meta"]（与 plan_sync 写回的是同一份）。"""
     doc = vc_file.new_doc(title)
     key, w, h = vc_file.add_image(doc, png)
     wb = workbench.frame(model, 0.0, 0.0)
     tg = targets(model, report, key, (w, h), wb, layout=layout)
     _meta_angles(model, tg)                              # ep-meta 与标签角度一起写（sync 幂等的前提）
     vc_file.add_artboard(doc, "Figure", *tg["artboards"]["Figure"])
-    layers = workbench.make_layers(doc)
+    layers = workbench.make_layers(doc, skip=() if crop else ("photo", "crop"))
     workbench.add_workbench(doc, layers, model, key, w, h, x0=0.0, y0=0.0, tags=False)
     vc_file.add_artboard(doc, "Profiles", *tg["artboards"]["Profiles"])
     for sp in tg["specs"]:
         vc_file.lay_children(layers[sp["layer"]]).append(node(doc, sp))
+    if crop:
+        _add_crop(doc, layers, model, crop)
     return doc
+
+
+def _add_crop(doc, layers, model, crop):
+    """Crop 画板（画板 3，右边贴 Workbench 左边 −BOARD_GAP）：锁定的照片预览 + 绿色裁切框。
+    摆位来自 crop_layout：框和 Workbench 上的胶面一样宽、是真矩形，读回（crop_geom.read_frame）= frame_px。"""
+    jpeg, (Wp, Hp) = crop["jpeg"], crop["preview_size"]
+    key, w, h = vc_file.add_image(doc, jpeg, "image/jpeg")
+    if (w, h) != (int(Wp), int(Hp)):
+        raise RuntimeError("预览 JPEG 是 %dx%d px，crop 规格说 %dx%d" % (w, h, Wp, Hp))
+    lo = crop_layout(crop["frame_px"], crop["photo_size"], (w, h), model["gel"]["width_cm"])
+    sx, _b, _c, sy, X, Y = lo["image_xf"]
+    img = vc_file.image(doc, "photo", key, w, h, X, Y, sx)
+    img["kind"]["xf"][3] = sy
+    vc_file.lay_children(layers["photo"]).append(img)
+    vc_file.lay_children(layers["crop"]).append(vc_file.rect(doc, "crop", lo["frame_pt"], CROP_RGB, CROP_W))
+    vc_file.add_artboard(doc, "Crop", *lo["artboard"])
+
+
+def crop_layout(frame_px, size0, preview_size, width_cm):
+    """crop_geom.layout，但 pt 与**原图** px 严格等比（pt = 原点 + s × 原图 px，横竖同一个 s）。
+
+    预览图的宽高是整像素，Wp/W0 与 Hp/H0 一般差一点点（如 3001×2000 → 2000×1333，差 0.03%）。
+    layout 让预览图等比、框跟着预览 px 走，于是转过的框在 pt 里成了平行四边形，
+    vc_file.rect（以及 app 的 live 矩形）收不了。这里反过来：框是真矩形，照片 xf 横竖各补一点
+    （sx = s·W0/Wp、sy = s·H0/Hp，差 ≤ 1/短边 px，远小于 read_frame 的 0.5 %）——
+    read_frame 的映射（xf 逆 → × photo_size/(width, height)）照样把锚点读回 frame_px。"""
+    lo = crop_geom.layout(frame_px, size0, preview_size, width_cm, -BOARD_GAP)
+    (W0, H0), (Wp, Hp) = size0, preview_size
+    s = lo["s"]
+    m = crop_geom.MARGIN_CM * PT
+    ab = lo["artboard"]
+    X, Y = ab[0] + m, ab[1] + m
+    return {"artboard": (ab[0], ab[1], ab[2], H0 * s + 2 * m),
+            "image_xf": [s * W0 / float(Wp), 0.0, 0.0, s * H0 / float(Hp), X, Y],
+            "frame_pt": [[X + s * x, Y + s * y] for x, y in frame_px], "s": s}
 
 
 # ---------------------------------------------------------------- sync 计划

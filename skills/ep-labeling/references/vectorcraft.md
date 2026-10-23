@@ -25,7 +25,8 @@ Object kinds we use (`document.layers[].kind.children[]`):
 | layer | `id`, `name`, `kind.children`, `kind.printable`, `kind.color.Preset`; `visible:false` / `locked:true` on the node itself (absent = true/false) | `printable` lives in `kind`, `visible`/`locked` on the node |
 | line | `id`, `name`, `kind.path.subpaths[0].anchors[i].p`, `kind.live.a/b`, `appearance.items[1]` (stroke colour, `width`) | keep `path` and `live` in agreement |
 | point text | `id`, `name`, `kind.xf` (translation = anchor point; `para.justify:"Center"` centres on x), `kind.runs[0].text`, `runs[0].style.{font_family,size,fill}` | y is the **baseline** (`charAlign` romanBaseline). Fonts are not embedded; the default family when none is given is "Source Sans 3", so always set `Arial` |
-| image | `id`, `name`, `kind.key`, `kind.width/height` (pixels), `kind.xf = [s,0,0,s,x,y]` (pt per pixel, top-left) | no `link` = embedded. One `images` entry can back several image objects (Workbench + every Figure segment) |
+| image | `id`, `name`, `kind.key`, `kind.width/height` (pixels), `kind.xf = [s,0,0,s,x,y]` (pt per pixel, top-left) | no `link` = embedded. One `images` entry can back several image objects (Workbench + every Figure segment). `mime` `image/png` or `image/jpeg` (the `Crop` preview) |
+| rectangle | cloned from the template clip path: closed 4-anchor path with `live: {shape:"rectangle", w, h, xf, radii}`; we set anchors, `live.w/h/xf`, stroke | anchors TL TR BR BL; see the V10 notes below |
 | clip group | `kind.type:"group"`, `kind.clip:true`, children `[path with "clipping":true, image]` | the clip path's own paint is none. Measured: a 100 pt rect over a 200 pt image shows only the rect |
 | artboard | `id`, `name`, `rect{x0,y0,x1,y1}` | coordinates in pt, y down, artboards placed side by side |
 
@@ -50,6 +51,13 @@ skill: **degrees, counter-clockwise**, `θ = atan2(−b, a)`, normalized to (−
 For layout the skill treats a label as an ink box: `u ∈ [0, w]` (shifted by `justify`), `v ∈ [−0.716·size, 0]`
 (cap height, no descender), rotated by the same matrix. The box is anchored (4 pt from the gel) and the page margins are
 measured from it, so any angle — not just multiples of 90° — lands correctly.
+
+### Rectangles and images (V10 measurements, 2026-10-23, scratch doc)
+
+- `shape.rectangle {x, y, width, height, rotation?}` → a path with `live: {shape:"rectangle", w, h, xf, radii}` and four anchors TL TR BR BL. `object.rotate {angle:10}` (CCW) changed `live.xf` to `[cos, −sin, sin, cos, …]` and rotated the anchors; `object.scale {sx:120}` scaled `live.w/h`. **Anchor order is kept** through both, so anchors 0→1 stay the same edge at any angle (the skill's `crop` frame: the wells edge).
+- `file.place {name, dataBase64}` embeds PNG and JPEG (`images[key].mime = image/jpeg`) and returns `{ids: [id]}`. The image is centred in the view: move it afterwards (`object.transform`).
+- `links.relink {ids, path, preserve:"transforms"}` then `links.embed {ids}` replace an embedded image's pixels: `xf` and `id` stay, the `key` changes (content-addressed). Works on an image **inside a clip group in a locked layer**. Inside `edit.undoGroup` the whole swap is one undo step (`edit.undo` restored the old key). Re-read the key after the embed before creating more objects from it.
+- `file.close` takes only `{index}`.
 
 ## 2. Control port
 
@@ -79,6 +87,10 @@ A running instance **without** `--control` can't be reached. Launch with `Vector
 | move between layers | `layer.move {ids, target, place:"inside"}` | **fails into a locked layer** ("the layer or group is locked") |
 | delete | `edit.clear {ids}` | |
 | artboard | `artboard.setProps {index, width?, height?, x?, y?, name?}`, `artboard.new {x,y,width,height,name}` | |
+| rectangle | `shape.rectangle {x, y, width, height, rotation?}` | live rectangle, anchors TL TR BR BL (§1 V10). **`rotation` is clockwise** (measured: `rotation:10` moved TR down — the opposite of `object.rotate`), so pass `−angle` for a CCW angle. `path.setAnchors` on a live rectangle drops `live` (it becomes a plain path); use it only as a fallback |
+| place image | `file.place {name, dataBase64}` | PNG or JPEG, embedded, centred in the view; returns `{ids}` |
+| swap pixels | `links.relink {ids, path, preserve:"transforms"}` → `links.embed {ids}` | keeps `xf`/`id`, new `key`; fine in a locked clip group; one undo step inside a group |
+| close | `file.close {index}` | no other params |
 | clip | `object.clippingMask.make {ids:[clipPath, image]}` | returns the group id |
 | file info | `file.info {description?, keywords?}` | **copied into exported PNGs** (tEXt), see §4. |
 | rotate | `object.rotate {ids, angle, origin}` | `angle` = degrees, counter-clockwise, **relative**; `origin` = the anchor keeps the anchor fixed. Measured: `angle:-90` turned a 90° label back to `[1,0,0,1]`; `absolute:true` with `angle:0` was a **no-op** on that same label — never use `absolute` to set 0. |

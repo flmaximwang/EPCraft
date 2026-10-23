@@ -235,10 +235,15 @@ def text(doc, name, x, y, s, size=8.0, font="Arial", rgb=(0.0, 0.0, 0.0), justif
 
 
 def add_image(doc, data, mime="image/png"):
-    """把图片字节放进文档（内嵌，不链接）；同一份字节只存一次。返回 (key, 宽 px, 高 px)。"""
-    if mime != "image/png":
-        raise RuntimeError("add_image 目前只收 PNG（收到 %s）" % mime)
-    w, h = png_size(data)
+    """把图片字节放进文档（内嵌，不链接）；同一份字节只存一次。返回 (key, 宽 px, 高 px)。
+
+    收 image/png（读 IHDR）和 image/jpeg（读 SOFn 帧头）；mime 原样写进 images[key].mime。"""
+    if mime == "image/png":
+        w, h = png_size(data)
+    elif mime == "image/jpeg":
+        w, h = jpeg_size(data)
+    else:
+        raise RuntimeError("add_image 只收 PNG / JPEG（收到 %s）" % mime)
     key = "img" + hashlib.sha1(data).hexdigest()[:16]
     doc["blobs"][key] = data
     doc["top"]["images"][key] = {"mime": mime}
@@ -271,6 +276,57 @@ def clip(doc, name, rect, content):
     path["kind"]["live"].update(w=w, h=h, xf=[1.0, 0.0, 0.0, 1.0, x, y])
     g["kind"]["children"] = [path, content]
     return g
+
+
+def rect(doc, name, corners, rgb=(0.0, 0.0, 0.0), width=0.5):
+    """矩形（闭合 4 锚点路径，live.shape "rectangle"；无填充、实线描边、不是剪切路径）。
+
+    corners = [TL, TR, BR, BL]，每个 (x, y) pt，可以是转过的（TL→TR 是矩形自己的「上边」）。
+    从模板剪切组里的那条矩形路径深拷贝；live 与锚点一致（实测，references/vectorcraft.md）：
+    live.w = |TR−TL|，live.h = |BL−TL|，live.xf 把矩形自身坐标（u∈[0,w]、v∈[0,h]、y 向下）
+    映到页面：x' = a u + c v + e，(a, b) = 上边方向，(c, d) = 左边方向，(e, f) = TL；
+    逆时针转 θ 就是 [cos, −sin, sin, cos, TLx, TLy]。锚点按 TL TR BR BL 存（app 转/缩都保序）。
+    不是矩形（角不直、对边不等）→ 报错，不悄悄改形。"""
+    if len(corners) != 4:
+        raise RuntimeError("rect 要 4 个角 TL TR BR BL（收到 %d）" % len(corners))
+    (x0, y0), (x1, y1), (x2, y2), (x3, y3) = [(float(x), float(y)) for x, y in corners]
+    ux, uy = x1 - x0, y1 - y0
+    vx, vy = x3 - x0, y3 - y0
+    w, h = math.hypot(ux, uy), math.hypot(vx, vy)
+    if w <= 0 or h <= 0:
+        raise RuntimeError("rect：边长为 0（%r）" % (corners,))
+    tol = 1e-6 * max(w, h, 1.0)
+    if abs(ux * vx + uy * vy) > tol * max(w, h) or \
+            math.hypot(x0 + ux + vx - x2, y0 + uy + vy - y2) > tol:
+        raise RuntimeError("rect：四个角不是矩形（TL TR BR BL 顺序？）%r" % (corners,))
+    a, b, c, d = ux / w, uy / w, vx / h, vy / h
+    if a * d - b * c < 0:
+        raise RuntimeError("rect：角的顺序是镜像的（要 TL TR BR BL，y 向下顺时针）%r" % (corners,))
+    tpl = next(ch for ch in doc["tpl"]["clip"]["kind"]["children"] if ch["kind"].get("clipping"))
+    if tpl["kind"].get("live", {}).get("shape") != "rectangle":
+        raise RuntimeError("模板剪切组里的路径不是 live 矩形（见 references/vectorcraft.md §5）")
+    n = copy.deepcopy(tpl)
+    n["id"] = _id(doc)
+    n["name"] = name
+    n["kind"].pop("clipping", None)
+    for it in n["appearance"]["items"]:
+        if it["kind"] == "fill":
+            it["paint"] = {"type": "none"}
+        elif it["kind"] == "stroke":
+            it["paint"] = {"type": "solid", "color": _rgb(rgb)}
+            it["width"] = float(width)
+    xf = [a, b, c, d, x0, y0]
+    pts = [(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)]
+    n["kind"]["path"]["subpaths"] = [{"anchors": [{"p": [a * u + c * v + x0, b * u + d * v + y0]}
+                                                  for u, v in pts], "closed": True}]
+    n["kind"]["live"].update(w=w, h=h, xf=xf)
+    return n
+
+
+def rect_corners(node):
+    """矩形/闭合路径对象的四个锚点 [TL, TR, BR, BL]（按文件里的锚点顺序，每个 (x, y) pt）。"""
+    anchors = node["kind"]["path"]["subpaths"][0]["anchors"]
+    return [tuple(an["p"]) for an in anchors]
 
 
 def dumps(doc):
@@ -306,6 +362,35 @@ def png_size(data):
     if data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
         raise RuntimeError("不是 PNG（缺签名或 IHDR）")
     return struct.unpack(">II", data[16:24])
+
+
+def jpeg_size(data):
+    """JPEG 的 (宽, 高)，读第一个 SOFn 帧头（C0–CF，除 DHT C4 / JPG C8 / DAC CC）。"""
+    if data[:2] != b"\xff\xd8":
+        raise RuntimeError("不是 JPEG（缺 SOI）")
+    i, n = 2, len(data)
+    while i + 4 <= n:
+        if data[i] != 0xFF:
+            raise RuntimeError("JPEG 段头错位（偏移 %d）" % i)
+        m = data[i + 1]
+        if m == 0xFF:                       # 填充字节
+            i += 1
+            continue
+        if m == 0x01 or 0xD0 <= m <= 0xD7:  # 无长度的独立标记
+            i += 2
+            continue
+        if m in (0xD9, 0xDA):
+            break                           # EOI / SOS 之前还没见到帧头
+        seg = struct.unpack(">H", data[i + 2:i + 4])[0]
+        if 0xC0 <= m <= 0xCF and m not in (0xC4, 0xC8, 0xCC):
+            if i + 9 > n:
+                break
+            h, w = struct.unpack(">HH", data[i + 5:i + 9])
+            if not w or not h:
+                raise RuntimeError("JPEG 帧头里宽/高为 0")
+            return w, h
+        i += 2 + seg
+    raise RuntimeError("不是 JPEG（没找到 SOF 帧头）")
 
 
 def _template(path):

@@ -36,10 +36,10 @@ import json
 import os
 import shutil
 import sys
-import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import crop                                                                            # noqa: E402
 import figure                                                                          # noqa: E402
 import profiles                                                                        # noqa: E402
 import vc_control                                                                      # noqa: E402
@@ -49,9 +49,7 @@ from config import as_entry, load_cfg, load_gel_size, load_markers, parse_gel_cm
 from env_check import cmd_doctor                                                       # noqa: E402
 from gel_area import compute                                                           # noqa: E402
 from gel_detect import detect_gel                                                      # noqa: E402
-from geometry import load_dims_after                                                   # noqa: E402
 from lane_select import parse_keep                                                     # noqa: E402
-from magick_io import MAGICK, _run                                                     # noqa: E402
 from mw_report import format_report_v2, write_v2                                       # noqa: E402
 from text_layout import window_deg                                                     # noqa: E402
 from selftest import selftest                                                          # noqa: E402
@@ -122,7 +120,9 @@ def _preset(args):
 def gel_face(image, preset, args, dpi):
     """stage 1：认胶面 → 按预设定形 → 正畸裁切成「胶面图」PNG 字节（dpi 像素/英寸，宽 = width_cm）。
 
-    返回 (png 字节, ga)。这是老管线里唯一还留着的一级；泳道与条带都从这张图上来（V8）。
+    返回 (png 字节, ga, stage1)。这是老管线里唯一还留着的一级；泳道与条带都从这张图上来（V8）。
+    stage1 = {"angle", "gel_box", "size0", "size1"}：Crop 画板要的量（crop.frame_from_stage1 的参数），
+    size0 = 自动定向后的原图 (W0, H0)，size1 = 旋转画布 (W1, H1)。裁切本身是 crop.crop_face。
     """
     info = detect_gel(image, args.longest, args.cue, _rect_arg(args.rect), args.ink_thr)
     ang = args.angle if args.angle is not None else round(info["angle_vertical"], 3)
@@ -131,27 +131,10 @@ def gel_face(image, preset, args, dpi):
     ga = compute(info, preset, ang, gel_lanes=args.gel_lanes, pitch_px=False)   # scale 核对改由孔距做
     print("角度: 竖边拟合 %.3f°；本次用 %.3f°" % (info["angle_vertical"], ang))
     _print_stage1(ga, preset, args.gel_lanes)
-    (_W0, _H0), (W1, H1) = load_dims_after(image, ang)
-    bb = ga["gel_box"]
-    x0, y0 = max(0, int(round(bb[0]))), max(0, int(round(bb[1])))
-    x1, y1 = min(W1, int(round(bb[2]))), min(H1, int(round(bb[3])))
-    gw = int(round(ga["width_cm"] / 2.54 * dpi))
-    gh = int(round(ga["height_cm"] / 2.54 * dpi))
-    fd, tmp = tempfile.mkstemp(suffix=".png")
-    os.close(fd)
-    try:
-        cmd = [MAGICK, image, "-auto-orient"]
-        if abs(ang) > 1e-6:
-            cmd += ["-rotate", "%.4f" % ang]
-        # 别用 -strip：IM7 里它会把后面设的 dpi 一起丢掉（实测）；+profile 去色彩配置
-        cmd += ["-crop", "%dx%d+%d+%d" % (x1 - x0, y1 - y0, x0, y0), "+repage",
-                "-resize", "%dx%d!" % (gw, gh), "+profile", "*", "-depth", "8",
-                "-units", "PixelsPerInch", "-density", str(dpi), tmp]
-        _run(cmd)
-        with open(tmp, "rb") as f:
-            return f.read(), ga
-    finally:
-        os.unlink(tmp)
+    png = crop.crop_face(image, ang, ga["gel_box"], ga["width_cm"], ga["height_cm"], dpi, warn=False)
+    stage1 = {"angle": ang, "gel_box": tuple(ga["gel_box"]), "size0": tuple(info["image"]),
+              "size1": tuple(ga["canvas"])}
+    return png, ga, stage1
 
 
 def _check_pitch(sd, preset, tol=0.10):
@@ -220,7 +203,8 @@ def cmd_render(args):
         preset.get("name", "—"), lane_count, float(preset["lane_pitch_cm"]), dpi, mk_note))
     trim = parse_keep(args.trim_lanes, lane_count) if args.trim_lanes else []
 
-    png, ga = gel_face(args.image, preset, args, dpi)
+    png, ga, stage1 = gel_face(args.image, preset, args, dpi)
+    crop_spec, crop_meta = _crop_artboard(args, preset, stage1)
     lane_angle, marker_angle = window_deg(args.label_angle), window_deg(args.marker_label_angle)
     meta = {"skill": "ep-labeling", "skill_version": SKILL_VERSION, "photo": os.path.abspath(args.image),
             "gel_preset": preset.get("name", ""), "marker_preset": mk_note, "dpi": dpi,
@@ -252,7 +236,8 @@ def cmd_render(args):
 
     report = profiles.analyze(model, png, names)
     model["meta"].update(_meta_state(model, report))
-    doc = figure.build_document(model, report, png, os.path.basename(stem), layout=args.profiles)
+    model["meta"]["crop"] = crop_meta                    # ep-meta 与 plan_sync 写回的同一份（第一次 sync = 0 个操作）
+    doc = figure.build_document(model, report, png, os.path.basename(stem), layout=args.profiles, crop=crop_spec)
 
     client, _launched = vc_control.connect(args.port, launch=True)
     idx, dirty = _doc_state(client, out)
@@ -279,6 +264,24 @@ def cmd_render(args):
           "然后跑 `gel_photo.py sync %s`" % (args.port, out))
     _ask_names(model)
     return 0
+
+
+def _crop_artboard(args, preset, stage1):
+    """Crop 画板要的东西（crop-artboard spec §3）→ (build_document 的 crop 规格, ep-meta 的 crop 键)。
+    frame_px = crop_face 裁到的那块（原图 px）。"""
+    frame_px = crop.frame_from_stage1(stage1["gel_box"], stage1["angle"], stage1["size0"], stage1["size1"])
+    jpeg, psize, _k = crop.preview(args.image)
+    rect = _rect_arg(args.rect)
+    meta = {"photo_size": list(stage1["size0"]), "photo_sha1": crop.photo_sha1(args.image),
+            "frame_px": [[x, y] for x, y in frame_px],     # 不取整：取整后的四角不再是严格矩形（vc_file.rect 会拒）
+            "stage1": {"cue": args.cue, "rect": list(rect) if rect else None, "angle": args.angle,
+                       "no_rotate": bool(args.no_rotate), "longest": args.longest, "ink_thr": args.ink_thr,
+                       "gel_lanes": args.gel_lanes,
+                       "trim_top_cm": float(preset.get("trim_top_cm", 0.0) or 0.0),
+                       "trim_bottom_cm": float(preset.get("trim_bottom_cm", 0.0) or 0.0)}}
+    spec = {"jpeg": jpeg, "preview_size": psize, "photo_size": tuple(stage1["size0"]),
+            "frame_px": meta["frame_px"]}
+    return spec, meta
 
 
 def _meta_state(model, report):
@@ -308,29 +311,34 @@ def cmd_sync(args):
         idx, _dirty = _doc_state(client, path)
     client.execute("document.activate", {"index": idx})
     dj = client.document_json()
-    model, notes = workbench.from_document(dj)          # 读不通 → WorkbenchError，什么都不动
+    _top, blobs = vc_file.read(path)                     # 胶面图从磁盘上那份读（gel 层锁定，图不会变）
+    gel = _gel_node(dj)
+    if gel is not None and gel["kind"]["key"] not in blobs:
+        _top, blobs = client.save(path)                  # 活文档的胶面图不在磁盘那份里（如撤销了上次的重新裁切）
+    model, notes, cs = _read_all(dj, blobs, int(_doc_meta(dj).get("dpi") or args.dpi))
     for n in notes:
         print("[i] %s" % n)
     old = dict(model["meta"])
     for legacy in ("r2",):                      # 旧文档的 ep-meta 里有全局拟合的 R²：顺手清掉
         model["meta"].pop(legacy, None)
-    _top, blobs = vc_file.read(path)                     # 胶面图从磁盘上那份读（gel 层锁定，图不会变）
-    key = next(n for n in vc_file.lay_children(vc_file.layer_by_name(dj, "gel"))
-               if n.get("name") == "gel")["kind"]["key"]
-    png = blobs[key]
+    if cs["crop"] is not None:
+        model["meta"]["crop"] = cs["crop"]               # plan_sync 把整份 meta（含 crop）写回 ep-meta
+    png = cs["png"]
     layout = old.get("profiles_layout") or figure.PROFILE_LAYOUT
     report = profiles.analyze(model, png, [None] * len(model["lanes"]))
     model["meta"].update(_meta_state(model, report))
     ops, meta = figure.plan_sync(dj, model, report, layout=layout)
+    ops = [op for op in cs["ops"] if op["op"] == "relink"] + ops + \
+          [op for op in cs["ops"] if op["op"] != "relink"]          # relink 最先（sync_exec 也会保证）
     names = meta["lane_names"]
     report = dict(report, lanes=[dict(ln, label=names[ln["lane"] - 1]) for ln in report["lanes"]],
                   notes=[n for n in report["notes"] if not n.endswith("还没有名字")]
                   + ["泳道 %d 还没有名字" % ln["lane"] for ln in report["lanes"]
                      if names[ln["lane"] - 1] is None and not ln["trimmed"]])
-    for line in _summary(old, model, report):
+    for line in _summary(old, model, report, cs["lines"]):
         print("[i] %s" % line)
     if args.dry_run:
-        print(json.dumps(ops, ensure_ascii=False, indent=1))
+        print(json.dumps(_printable(ops), ensure_ascii=False, indent=1))
         return 0
     if ops:
         done = sync_exec.apply_ops_live(client, ops, dj)
@@ -348,8 +356,177 @@ def cmd_sync(args):
     return 0
 
 
-def _summary(old, model, report):
-    """这次 sync 相对上一次改了什么（给用户看的几行）。"""
+def _gel_node(document):
+    """Workbench 的胶面图（gel 图层里叫 gel 的图片）；没有 / 不唯一 → None。"""
+    lay = vc_file.layer_by_name(document, "gel")
+    imgs = [n for n in (vc_file.lay_children(lay) if lay else [])
+            if n["kind"].get("type") == "image" and n.get("name") == "gel"]
+    return imgs[0] if len(imgs) == 1 else None
+
+
+def _doc_meta(document):
+    """ep-meta 文字对象的 JSON（读不出 → {}；from_document 会为此另记提示）。"""
+    try:
+        mt = [n for n in vc_file.lay_children(vc_file.layer_by_name(document, "ep-meta") or {"kind": {}})
+              if n.get("name") == "ep-meta"]
+        return json.loads(vc_file.text_info(mt[0])["text"]) if mt else {}
+    except (ValueError, RuntimeError, KeyError):
+        return {}
+
+
+def _wb_items(err):
+    """WorkbenchError → 条目列表（「Workbench 有 N 处要改」那种拆成条；别的整条算一项）。"""
+    msg = str(err)
+    head, sep, rest = msg.partition("：\n- ")
+    if sep and head.startswith("Workbench 有 "):
+        return rest.split("\n- ")
+    return [msg]
+
+
+def _read_all(dj, blobs, dpi):
+    """活文档 → (模型, 提示, 裁切结果)：Workbench 与 Crop 画板一起读，错误一次全列出、什么都不动。
+
+    裁切结果 = _crop_sync 的返回，另加 "png"：要分析的胶面图（重新裁过的，或文档里嵌着的那张）。"""
+    gel = _gel_node(dj)
+    try:
+        model, notes = workbench.from_document(dj)
+        errs = []
+    except workbench.WorkbenchError as e:
+        if gel is None:
+            raise                                        # 连胶面图都没有：Crop 画板无从读起
+        model, notes, errs = None, [], _wb_items(e)
+    meta = model["meta"] if model else _doc_meta(dj)
+    w, h = gel["kind"]["width"], gel["kind"]["height"]
+    frame, cerrs = crop.read_frame(dj, meta, h / float(w))
+    errs += ["Crop：%s" % e for e in cerrs]
+    old_fp = (meta.get("crop") or {}).get("frame_px")
+    delta = crop.frame_delta(old_fp, frame, w * 2.54 / dpi) if frame is not None and old_fp else None
+    if frame is not None and not old_fp:
+        errs.append("Crop：ep-meta 里没有 crop.frame_px（不是本 skill 写的 Crop 画板？）—— 重新 render")
+    if delta is not None:
+        errs += ["Crop：%s" % e for e in _photo_errors(meta)]
+    if errs:
+        raise workbench.WorkbenchError("Workbench 有 %d 处要改（什么都没动）：\n- %s" % (len(errs), "\n- ".join(errs)))
+    png = blobs[gel["kind"]["key"]]
+    cs = _crop_sync(dj, meta, frame, delta, gel, png, dpi)
+    return model, notes + cs["notes"], dict(cs, png=cs["png"] or png)
+
+
+def _photo_errors(meta):
+    """重新裁切要读原图：ep-meta.photo 在、sha1 与 render 时一致 → []；否则一条错（不带 Crop： 前缀）。"""
+    photo = meta.get("photo")
+    if not photo or not os.path.isfile(photo):
+        return ["照片 %s 找不到 —— 把原照片放回去，或重新 render" % photo]
+    if crop.photo_sha1(photo) != (meta.get("crop") or {}).get("photo_sha1"):
+        return ["照片 %s 换过了（sha1 与 render 时不同）—— 把原照片放回去，或重新 render" % photo]
+    return []
+
+
+def _gel_image_ids(document, gel):
+    """用胶面图那个 images key 的所有图片 id：Workbench 的 gel 在前，再是 Figure 每个胶段里的。"""
+    key = gel["kind"]["key"]
+    lay = vc_file.layer_by_name(document, "gel")
+    return [gel["id"]] + [n["id"] for _l, n in vc_file.walk({"layers": [lay]})
+                          if n["kind"].get("type") == "image" and n["kind"].get("key") == key
+                          and n["id"] != gel["id"]]
+
+
+def _crop_sync(document, meta, frame, delta, gel, png, dpi):
+    """Crop 画板这一步（crop-artboard spec §6、§7）→ {"png", "ops", "crop", "lines", "notes"}。
+
+    - 框动过（delta 不是 None；照片已由 _photo_errors 核过）：按新框从原图重新裁 → png = 新胶面图
+      （像素尺寸不变），ops = [relink]，crop = 新的 ep-meta.crop。
+    - 框没动 → 全空（幂等）。
+    - 没有 Crop 画板（frame 是 None 且没报错 = 旧文档）：照片还在且按默认参数重跑 stage 1 能裁出
+      文档里那张胶面图 → ops = [backfill]、crop = 补写的 ep-meta.crop；否则一条提示，照旧 sync。"""
+    out = {"png": None, "ops": [], "crop": None, "lines": [], "notes": []}
+    wpx, hpx = gel["kind"]["width"], gel["kind"]["height"]
+    width_cm, height_cm = wpx * 2.54 / dpi, hpx * 2.54 / dpi     # 正好回到原来的像素尺寸
+    photo = meta.get("photo")
+    old = meta.get("crop") or {}
+    if frame is not None:
+        if delta is None:
+            return out
+        from geometry import load_dims_after
+        ang, box = crop.stage1_from_frame(frame, old["photo_size"], lambda a: load_dims_after(photo, a)[1],
+                                          hpx / float(wpx))
+        new = crop.crop_face(photo, ang, box, width_cm, height_cm, dpi)
+        if vc_file.png_size(new) != (wpx, hpx):
+            raise RuntimeError("重新裁出的胶面图 %dx%d px，文档里的是 %dx%d —— 不该发生；重新 render"
+                               % (vc_file.png_size(new) + (wpx, hpx)))
+        out["png"] = new
+        out["ops"] = [{"op": "relink", "ids": _gel_image_ids(document, gel), "png": new}]
+        out["crop"] = dict(old, frame_px=[list(p) for p in frame])   # 不取整：下次读回要严格相等
+        mm = lambda v: ("%+.2f" % (v if abs(v) >= 0.005 else 0.0)).replace("-", "−")   # noqa: E731（不出 −0.00）
+        out["lines"] = ["裁切框：转 %s°，移 %s/%s cm，宽 ×%.3f（重新裁了胶面图）"
+                        % (mm(delta["angle_deg"]), mm(delta["dx_cm"]), mm(delta["dy_cm"]), delta["scale"])]
+        return out
+
+    # ---- 旧文档：补上 Crop 画板
+    if not photo or not os.path.isfile(photo):
+        out["notes"].append("旧文档没有 Crop 画板（照片 %s 不在了）；要调裁切就重新 render" % photo)
+        return out
+    args = _default_detect_args()
+    preset = {"name": meta.get("gel_preset", ""), "width_cm": round(width_cm, 2), "height_cm": round(height_cm, 2),
+              "trim_top_cm": 0.0, "trim_bottom_cm": 0.0, "anchor": "bottom",
+              "lane_pitch_cm": 0.0, "lane_count": 0}      # 宽高 = 胶面 cm（预设一般只到 0.01 cm）；孔距这里用不上
+    import contextlib
+    import io
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            _png, _ga, st = gel_face(photo, preset, args, dpi)
+        # 旧文档的胶面图是没有 +repage 的旧版裁的：把框挪到它真正裁到的地方再裁一次来比
+        sx, sy = crop.legacy_page_shift(st["angle"], st["size0"], st["size1"])
+        b = st["gel_box"]
+        st = dict(st, gel_box=(b[0] + sx, b[1] + sy, b[2] + sx, b[3] + sy))
+        png2 = crop.crop_face(photo, st["angle"], st["gel_box"], width_cm, height_cm, dpi, warn=False)
+        same = _same_gel(png, png2)
+    except RuntimeError:
+        same = False
+    if not same:
+        out["notes"].append("旧文档没有 Crop 画板（当时的裁切参数没记下来）；要调裁切就重新 render")
+        return out
+    frame_px = crop.frame_from_stage1(st["gel_box"], st["angle"], st["size0"], st["size1"])
+    jpeg, psize, _k = crop.preview(photo)
+    lo = figure.crop_layout(frame_px, st["size0"], psize, width_cm)   # 与 render 同一套摆位（框是真矩形）
+    out["ops"] = [{"op": "backfill", "artboard": [round(v, 3) for v in lo["artboard"]], "jpeg": jpeg,
+                   "preview_size": list(psize), "image_xf": lo["image_xf"], "frame_pt": lo["frame_pt"]}]
+    out["crop"] = {"photo_size": list(st["size0"]), "photo_sha1": crop.photo_sha1(photo),
+                   "frame_px": [list(p) for p in frame_px],
+                   "stage1": {"cue": args.cue, "rect": None, "angle": args.angle, "no_rotate": bool(args.no_rotate),
+                              "longest": args.longest, "ink_thr": args.ink_thr, "gel_lanes": args.gel_lanes,
+                              "trim_top_cm": 0.0, "trim_bottom_cm": 0.0}}
+    out["lines"] = ["已补上 Crop 画板"]
+    return out
+
+
+GEL_SAME_TOL = 2.0          # 旧文档补 Crop 画板：重裁的胶面图与文档里那张平均 |Δ灰度| ≤ 这么多级 = 同一个裁切
+
+
+def _same_gel(a, b, tol=GEL_SAME_TOL):
+    """两张胶面图 PNG 是不是同一个裁切：像素尺寸一样、平均 |Δ灰度| ≤ tol。"""
+    wa, ha, ga = profiles.gel_gray(a)
+    wb, hb, gb = profiles.gel_gray(b)
+    if (wa, ha) != (wb, hb):
+        return False
+    return sum(abs(x - y) for x, y in zip(ga, gb)) / float(len(ga) or 1) <= tol
+
+
+def _default_detect_args():
+    """stage 1 的默认参数（与 CLI 的 _add_detect 同一份默认值）：旧文档的 ep-meta 里没记 render 参数。"""
+    ap = argparse.ArgumentParser(add_help=False)
+    _add_detect(ap)
+    return ap.parse_args([])
+
+
+def _printable(ops):
+    """--dry-run 打印用：op 里的字节（胶面图 PNG、预览 JPEG）换成一句长度说明。"""
+    return [{k: ("<%d bytes>" % len(v) if isinstance(v, (bytes, bytearray)) else v) for k, v in op.items()}
+            for op in ops]
+
+
+def _summary(old, model, report, crop_lines=()):
+    """这次 sync 相对上一次改了什么（给用户看的几行）；crop_lines = Crop 画板那一步的行（重新裁切 / 补画板）。"""
     out = []
     prev = old.get("prev_centres_cm") or []
     new = workbench.centres(model)
@@ -374,7 +551,7 @@ def _summary(old, model, report):
     bd += ["band %g 新增" % mw for mw in nb if mw not in ob]
     if bd:
         out.append("marker 线：%s" % "，".join(bd))
-    return out or ["Workbench 没有改动"]
+    return (out or ["Workbench 没有改动"]) + list(crop_lines)
 
 
 # ---------------------------------------------------------------- probe
@@ -383,7 +560,7 @@ def cmd_probe(args):
     import well_grid
     preset = _preset(args)
     lane_count = int(args.gel_lanes or preset["lane_count"])
-    png, ga = gel_face(args.image, preset, args, 300)
+    png, ga, _stage1 = gel_face(args.image, preset, args, 300)
     w, h, gray = profiles.gel_gray(png)
     ppc = w / float(ga["width_cm"])
     sd = well_grid.seed(gray, w, h, ppc, lane_count, float(preset["lane_pitch_cm"]))
@@ -413,25 +590,29 @@ def _removed_export(_args):
     raise RuntimeError("export 已经去掉了：fig.png 由 VectorCraft 导出；改了文档就跑 `gel_photo.py sync fig.vectorcraft`")
 
 
+def _add_detect(a):
+    """probe / render 共用的 stage 1 参数（sync 补 Crop 画板时也拿它的默认值）。"""
+    a.add_argument("--gel-size", help="胶体预设 JSON（必须给；如 data/gel_size.json）")
+    a.add_argument("--gel-cm", help="覆盖预设里的宽x高（cm），如 8.6x6.25；不能单独使用")
+    a.add_argument("--gel-lanes", type=int, default=None,
+                   help="照片是裁过的、只含 N 条泳道时给 N：改按 lane_pitch_cm 的泳道间距定标")
+    a.add_argument("--trim-top-cm", type=float, default=None, help="从胶面上缘再裁掉多少 cm（默认读预设）")
+    a.add_argument("--trim-bottom-cm", type=float, default=None, help="从胶面下缘再裁掉多少 cm（默认读预设）")
+    a.add_argument("--angle", type=float, default=None, help="强制用这个角度（度，正=顺时针）")
+    a.add_argument("--no-rotate", action="store_true")
+    a.add_argument("--longest", type=int, default=700, help="分析缩略图长边（默认 700）")
+    a.add_argument("--cue", choices=("dark", "chroma", "union"), default="dark",
+                   help="认胶的判据：dark=比背景暗（通用）/ chroma=蓝度（偏蓝光下的染色胶）/ union")
+    a.add_argument("--ink-thr", type=float, default=None, help="dark 判据的阈值（默认 max(6, 背景//20)）")
+    a.add_argument("--rect", help="跳过自动找胶，直接给原图像素矩形 x0,y0,x1,y1")
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     ap = argparse.ArgumentParser(description="凝胶电泳照片 → fig.vectorcraft（VectorCraft 里可改）+ fig.png + fig.mw.json")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    def add_detect(a):
-        a.add_argument("--gel-size", help="胶体预设 JSON（必须给；如 data/gel_size.json）")
-        a.add_argument("--gel-cm", help="覆盖预设里的宽x高（cm），如 8.6x6.25；不能单独使用")
-        a.add_argument("--gel-lanes", type=int, default=None,
-                       help="照片是裁过的、只含 N 条泳道时给 N：改按 lane_pitch_cm 的泳道间距定标")
-        a.add_argument("--trim-top-cm", type=float, default=None, help="从胶面上缘再裁掉多少 cm（默认读预设）")
-        a.add_argument("--trim-bottom-cm", type=float, default=None, help="从胶面下缘再裁掉多少 cm（默认读预设）")
-        a.add_argument("--angle", type=float, default=None, help="强制用这个角度（度，正=顺时针）")
-        a.add_argument("--no-rotate", action="store_true")
-        a.add_argument("--longest", type=int, default=700, help="分析缩略图长边（默认 700）")
-        a.add_argument("--cue", choices=("dark", "chroma", "union"), default="dark",
-                       help="认胶的判据：dark=比背景暗（通用）/ chroma=蓝度（偏蓝光下的染色胶）/ union")
-        a.add_argument("--ink-thr", type=float, default=None, help="dark 判据的阈值（默认 max(6, 背景//20)）")
-        a.add_argument("--rect", help="跳过自动找胶，直接给原图像素矩形 x0,y0,x1,y1")
+    add_detect = _add_detect
 
     def add_removed(a):
         for flag in REMOVED:

@@ -35,6 +35,7 @@ from text_layout import window_deg
 
 PT = vc_file.PT_PER_CM
 # 图层：列表顺序 = 文件里自下而上（spec §4.2）。(名字, printable, visible, locked, 颜色预设)
+# 颜色预设只用 0–8（打得开的文档里用过的值；更大的没验过）
 LAYERS = [
     ("gel", True, True, True, 0),
     ("analysis", False, True, True, 5),
@@ -45,6 +46,8 @@ LAYERS = [
     ("labels", True, True, False, 4),
     ("profiles", True, True, True, 7),
     ("ep-meta", False, False, True, 8),
+    ("photo", False, True, True, 0),             # Crop 画板（crop-artboard spec §3）：照片预览，锁定
+    ("crop", False, True, False, 2),             # Crop 画板：裁切框，用户可移动 / 旋转 / 等比缩放
 ]
 RGB = {"lane": (0.0, 0.7, 1.0), "trimmed": (0.6, 0.6, 0.6), "window": (1.0, 0.55, 0.0),
        "band": (0.9, 0.0, 0.6)}
@@ -181,10 +184,11 @@ def _assemble(gel, lanes, marker_rows_cm, lane_names, marker_labels, marker_lane
 
 # ---------------------------------------------------------------- 写进文档
 
-def make_layers(doc):
-    """按 spec §4.2 的顺序建全部图层（Figure / Profiles 的东西以后也放进这些层）。→ {名字: 图层}"""
+def make_layers(doc, skip=()):
+    """按 spec §4.2 的顺序建全部图层（Figure / Profiles 的东西以后也放进这些层）。→ {名字: 图层}
+    skip = 不建的图层名（没有 Crop 画板的文档不建 photo / crop）。"""
     return {name: vc_file.add_layer(doc, name, printable=p, visible=v, locked=lk, color=col)
-            for name, p, v, lk, col in LAYERS}
+            for name, p, v, lk, col in LAYERS if name not in skip}
 
 
 def frame(model, x0, y0=0.0):

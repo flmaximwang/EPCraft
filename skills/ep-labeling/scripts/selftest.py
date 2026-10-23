@@ -496,6 +496,70 @@ def selftest():
     assert raises(lambda: vc_file.loads(b'{"format": "svg"}'), "不是 .vectorcraft")
     ok += 1
 
+    # 54a) JPEG 内嵌（crop 画板的照片预览）：magick 造基线（SOF0）与渐进（SOF2）两张 JPEG →
+    #      add_image 读出的像素尺寸对；write → read 字节不变、images[key].mime 仍是 image/jpeg；
+    #      非 JPEG 字节 / 不认识的 mime 要报错。
+    with tempfile.TemporaryDirectory() as td:
+        jd = vc_file.new_doc("jpeg")
+        jlay = vc_file.add_layer(jd, "photo")
+        jpgs = {}
+        for tag, extra in (("base", []), ("prog", ["-interlace", "JPEG"])):
+            jpg = _run([MAGICK, "-size", "37x23", "gradient:red-blue"] + extra + ["-quality", "85", "jpg:-"])
+            assert jpg[:2] == b"\xff\xd8", tag
+            key, w, h = vc_file.add_image(jd, jpg, "image/jpeg")
+            assert (w, h) == (37, 23), (tag, w, h)
+            jpgs[key] = jpg
+            vc_file.lay_children(jlay).append(vc_file.image(jd, tag, key, w, h, 0, 0, 0.5))
+        assert vc_file.jpeg_size(jpgs[list(jpgs)[1]]) == (37, 23)
+        top_j, blobs_j = vc_file.read(vc_file.write(jd, os.path.join(td, "j.vectorcraft")))
+        assert blobs_j == jpgs, "JPEG 字节往返变了"
+        assert {k: v["mime"] for k, v in top_j["images"].items()} == {k: "image/jpeg" for k in jpgs}, top_j["images"]
+        assert raises(lambda: vc_file.add_image(jd, b"\x89PNG\r\n\x1a\n", "image/jpeg"), "不是 JPEG")
+        assert raises(lambda: vc_file.add_image(jd, jpg, "image/gif"), "只收 PNG / JPEG")
+    ok += 1
+
+    # 54b) 矩形对象（crop 框）：按 TL TR BR BL 在 0° 与逆时针 17° 各写一个 → 读回四角不变（≤ 1e-6 pt），
+    #      live.w/h/xf 与锚点一致（xf 把 (0,0)(w,0)(w,h)(0,h) 映到四角，与 app 实测
+    #      [cos, −sin, sin, cos, TL] 同式）；绿色 0.75 pt 描边、无填充、不是剪切路径；字段 ⊇ 模板的矩形路径；
+    #      不是矩形 / 镜像顺序 → 报错。
+    import math
+    tpl = vc_file._template(vc_file.TEMPLATE)
+    tpl_rect = next(c for c in tpl["clip"]["kind"]["children"] if c["kind"].get("clipping"))
+    rd = vc_file.new_doc("rect")
+    rlay = vc_file.add_layer(rd, "crop", printable=False)
+    want = {}
+    for deg in (0.0, 17.0):
+        t = math.radians(deg)
+        cx, cy, w, h = 120.0, 80.0, 200.0, 100.0
+        ux, uy, vx, vy = math.cos(t), -math.sin(t), math.sin(t), math.cos(t)
+        tl = (cx - ux * w / 2 - vx * h / 2, cy - uy * w / 2 - vy * h / 2)
+        cs = [(tl[0] + ux * u + vx * v, tl[1] + uy * u + vy * v) for u, v in ((0, 0), (w, 0), (w, h), (0, h))]
+        want["r%g" % deg] = (cs, deg, w, h)
+        vc_file.lay_children(rlay).append(vc_file.rect(rd, "r%g" % deg, cs, (0, 0.75, 0.25), 0.75))
+    top_r, _b = vc_file.loads(vc_file.dumps(rd))
+    for n in vc_file.lay_children(vc_file.layer_by_name(top_r["document"], "crop")):
+        cs, deg, w, h = want[n["name"]]
+        got = vc_file.rect_corners(n)
+        assert max(math.hypot(g[0] - c[0], g[1] - c[1]) for g, c in zip(got, cs)) <= 1e-6, (n["name"], got, cs)
+        lv = n["kind"]["live"]
+        assert lv["shape"] == "rectangle" and abs(lv["w"] - w) < 1e-9 and abs(lv["h"] - h) < 1e-9, lv
+        a, b, c, d, e, f = lv["xf"]
+        for (u, v), g in zip(((0, 0), (lv["w"], 0), (lv["w"], lv["h"]), (0, lv["h"])), got):
+            assert math.hypot(a * u + c * v + e - g[0], b * u + d * v + f - g[1]) <= 1e-6, (n["name"], lv)
+        assert abs(vc_file.angle_of_xf(lv["xf"]) - deg) < 1e-6, (deg, lv["xf"])
+        assert n["kind"]["path"]["subpaths"][0]["closed"] is True and "clipping" not in n["kind"]
+        app = {it["kind"]: it for it in n["appearance"]["items"]}
+        assert app["fill"]["paint"] == {"type": "none"}, app
+        assert app["stroke"]["paint"]["color"] == {"model": "rgb", "r": 0.0, "g": 0.75, "b": 0.25}
+        assert app["stroke"]["width"] == 0.75, app
+        miss = _key_paths(tpl_rect) - _key_paths(n) - {"kind.clipping"}
+        assert not miss, ("rect 比模板少了字段", sorted(miss))
+    sq = [(0, 0), (10, 0), (10, 5), (0, 5)]
+    assert raises(lambda: vc_file.rect(rd, "x", [(0, 0), (10, 0), (11, 5), (0, 5)]), "不是矩形")
+    assert raises(lambda: vc_file.rect(rd, "x", [(0, 0), (0, 5), (10, 5), (10, 0)]), "镜像")
+    assert raises(lambda: vc_file.rect(rd, "x", sq[:3]), "4 个角")
+    ok += 1
+
     # 55) 控制口协议（V2，假服务器）：一行请求一行回包；回包分两段到也要拼齐；ok=false 的错误信息
     #     要写出是哪条命令；空包 / 非 JSON → VCError；请求 id 递增。
     with _FakeVC() as fv:
@@ -1023,6 +1087,63 @@ def selftest():
         assert gx - fig_r["x0"] >= figure.MARGIN_MIN_CM * vc_file.PT_PER_CM - 1e-6
     ok += 1
 
+    # 72a) render 的 Crop 画板（crop-artboard spec §3/§5）：2401×1601 的合成照片（预览 2000×1334，横竖比例
+    #      差一点点 —— 框照样是真矩形）、框转 3° → 画板 3 叫 Crop、右边贴 −BOARD_GAP；photo 层锁定不打印、
+    #      crop 层不锁不打印；照片 image/jpeg、等比到 0.5 % 以内；框四角 = crop_layout 的 frame_pt；
+    #      read_frame 读回 frame_px（≤ 0.01 px）无错；render 完第一次 sync = 0 个操作（ep-meta 带着 crop）；
+    #      crop=None 仍是三画板、没有 photo / crop 层、没有 JPEG。
+    import crop as crop_geom
+    with tempfile.TemporaryDirectory() as td:
+        ph = os.path.join(td, "photo.jpg")
+        _run([MAGICK, "-size", "2401x1601", "xc:gray(210)", "-fill", "gray(90)",
+              "-draw", "rectangle 400,300 1900,1300", "-quality", "90", ph])
+        size0 = (2401, 1601)
+        W5, H5 = m5["gel"]["width_cm"], m5["gel"]["height_cm"]
+        gw = 1500.0
+        box = (500.0, 300.0, 500.0 + gw, 300.0 + gw * H5 / W5)
+        frame_c = crop_geom.frame_from_stage1(box, 3.0, size0, load_dims_after(ph, 3.0)[1])
+        jpeg, psize, _k = crop_geom.preview(ph)
+        assert psize == (2000, 1334), psize
+        m5c = copy.deepcopy(m5)
+        m5c["meta"]["crop"] = {"photo_size": list(size0), "photo_sha1": crop_geom.photo_sha1(ph),
+                               "frame_px": frame_c, "stage1": {"cue": "dark"}}
+        spec = {"jpeg": jpeg, "preview_size": psize, "photo_size": size0, "frame_px": frame_c}
+        top_c, blobs_c = vc_file.loads(vc_file.dumps(figure.build_document(m5c, rep5, png5, "t", crop=spec)))
+    d_c = top_c["document"]
+    assert [a["name"] for a in d_c["artboards"]] == ["Figure", "Workbench", "Profiles", "Crop"]
+    r_c = d_c["artboards"][3]["rect"]
+    assert abs(r_c["x1"] + figure.BOARD_GAP) < 1e-6 and r_c["y0"] == 0.0, r_c
+    assert vc_file.layer_flags(vc_file.layer_by_name(d_c, "photo")) == (True, True, False)
+    assert vc_file.layer_flags(vc_file.layer_by_name(d_c, "crop")) == (True, False, False)
+    ph_n = vc_file.lay_children(vc_file.layer_by_name(d_c, "photo"))
+    assert len(ph_n) == 1 and ph_n[0]["name"] == "photo" and ph_n[0]["kind"]["type"] == "image"
+    assert top_c["images"][ph_n[0]["kind"]["key"]]["mime"] == "image/jpeg"
+    assert blobs_c[ph_n[0]["kind"]["key"]] == jpeg
+    xf_c = ph_n[0]["kind"]["xf"]
+    assert xf_c[1] == xf_c[2] == 0.0 and abs(xf_c[0] - xf_c[3]) / xf_c[0] < 0.005, xf_c
+    fr_n = vc_file.lay_children(vc_file.layer_by_name(d_c, "crop"))
+    assert len(fr_n) == 1 and fr_n[0]["name"] == "crop" and fr_n[0]["kind"]["live"]["shape"] == "rectangle"
+    lo_c = figure.crop_layout(frame_c, size0, psize, W5)
+    assert all(abs(a - b) < 1e-6 for p, q in zip(vc_file.rect_corners(fr_n[0]), lo_c["frame_pt"]) for a, b in zip(p, q))
+    st_c = next(it for it in fr_n[0]["appearance"]["items"] if it["kind"] == "stroke")
+    assert st_c["width"] == figure.CROP_W and st_c["paint"]["color"]["g"] == 0.75
+    assert abs(math.hypot(lo_c["frame_pt"][1][0] - lo_c["frame_pt"][0][0],
+                          lo_c["frame_pt"][1][1] - lo_c["frame_pt"][0][1]) - W5 * vc_file.PT_PER_CM) < 1e-6
+    back_c, _n = workbench.from_document(d_c)
+    assert back_c["meta"]["crop"]["frame_px"] == frame_c
+    got_c, errs_c = crop_geom.read_frame(d_c, back_c["meta"], H5 / W5)
+    assert not errs_c and max(abs(a - b) for p, q in zip(got_c, frame_c) for a, b in zip(p, q)) <= 0.01, (errs_c, got_c)
+    assert crop_geom.frame_delta(frame_c, got_c, W5) is None
+    ops_c, _meta = figure.plan_sync(d_c, back_c, profiles.analyze(back_c, png5, [None] * len(back_c["lanes"])))
+    assert ops_c == [], ops_c[:4]
+    assert figure.plan_sync(d_c, m5c, rep5)[0] == []
+    d_n = vc_file.loads(vc_file.dumps(figure.build_document(copy.deepcopy(m5), rep5, png5, "t")))[0]
+    assert [a["name"] for a in d_n["document"]["artboards"]] == ["Figure", "Workbench", "Profiles"]
+    assert [l["name"] for l in d_n["document"]["layers"]] == [n for n, *_r in workbench.LAYERS if n not in ("photo", "crop")]
+    assert {v["mime"] for v in d_n["images"].values()} == {"image/png"}
+    assert crop_geom.read_frame(d_n["document"], {}, H5 / W5) == (None, [])
+    ok += 1
+
     # 73) sync 往返（V5，spec §11 的脚本版，不需要 app）：在 render 的文档上模拟用户 ——
     #     泳道 3 的两条分隔线右移 0.2 cm、删 band 50 线、在泳道 4 里偏右加一条没名字的线（劈出新泳道 5）、
     #     在 trimmed 里给泳道 14 放一条 trim 标记（青色，sync 后变灰）、
@@ -1164,6 +1285,8 @@ def selftest():
     #      新对象起名、剪切组、失败 → 撤销组 cancel 并抛原错、收尾恢复当前层与默认颜色。
     import selftest_sync
     ok += selftest_sync.run()
+    import selftest_crop
+    ok += selftest_crop.run()
 
     # 78) 标签角度（V9）：角度是逆时针度（90 = 从下往上读），写进点文字的 xf（绕锚点）；读回同值；
     #     旋转后按**墨迹框**摆位与量页边（竖排的泳道名框底离胶顶 4 pt、框中线=泳道中心，页顶留白

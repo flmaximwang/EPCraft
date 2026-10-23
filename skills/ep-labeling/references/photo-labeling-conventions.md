@@ -72,19 +72,29 @@
 4. 核对：预设高 vs 探测框推出的高，差 >5% 打 `[!] height`（只警告、不改图）。
 
 产物是一张**胶面图**（PNG，`--dpi`，宽 = `width_cm`），用 magick 旋转、裁切、缩放（`+profile "*"`，不用 `-strip`）。
+**旋转后先 `+repage` 再 `-crop`**（2026-10-23 修）：之前没有，IM7 转完留下的虚拟画布偏移让实际裁到的地方比探测框
+往右下错了 `((W1−W0)/2, (H1−H0)/2)` 原图 px（1° / 4032×3024 约 1 mm）。修之后转过的照片 render 出来比以前往左上挪这么多，
+正好落在框上；之前 render 的文档内嵌图不变，直到用户挪了 Crop 框。
 它以内嵌方式进 `fig.vectorcraft`，之后的泳道、条带、剖面全部只读这张图，不再读照片。
+
+**这一级的框可以事后调**：render 把裁切框画在 `Crop` 画板的照片预览上（§4）。用户挪 / 转 / 按 Shift 等比缩放这个框，
+sync 就从 `ep-meta.photo` 的**原图**按新框重裁胶面图、原地换像素（§9a）；Workbench 的线按胶面 cm 不动。
+框的宽定标（px/cm），高按预设比例（`width_cm : height_cm − trims`），不读画出来的高。亮度/对比度、透视矫正仍不管。
 
 ## 4. 文档结构（`fig.vectorcraft`）
 
-单位 pt，原点左上、y 向下；1 cm = 72/2.54 pt。三块画板（顺序固定）：
+单位 pt，原点左上、y 向下；1 cm = 72/2.54 pt。四块画板（顺序固定）：
 
 | # | 画板 | 内容 | 导出 |
 |---|---|---|---|
 | 0 | `Figure` | 胶面（按保留泳道剪切/拼接）+ 泳道名 + marker 标签，页边距按页面规则 | → `fig.png`（`document.export {artboard: 0, ppi: dpi}`） |
 | 1 | `Workbench` | 整块胶面、所有泳道线、积分窗、marker 条带线、叫出来的带的刻度、泳道号 | 不导出 |
 | 2 | `Profiles` | 每道一条 `ink` 曲线 | 不导出（用户可手动导） |
+| 3 | `Crop` | 原照片预览 + 裁切框 | 从不导出 |
 
-Figure 在 Workbench **下方**（变宽变高不会压到 Workbench），Profiles 在 Workbench 右边。
+Figure 在 Workbench **下方**（变宽变高不会压到 Workbench），Profiles 在 Workbench 右边，Crop 在 Workbench **左边**
+（`x = −(crop_w + BOARD_GAP)`、`y = 0`，Workbench 与 Profiles 怎么变都不挪它）。
+Crop 的比例：pt / 原图像素 `s = width_cm·PT / 框宽px`，所以框画出来正好和 Workbench 上的胶面一样宽；画板 = 预览图外扩 0.3 cm。
 非打印图层也会被 `document.export` 画出来，所以 Figure 画板上只放可打印的东西。
 
 ### 图层与对象名（名字 / 图层就是文档与分析之间的绑定）
@@ -99,12 +109,24 @@ Figure 在 Workbench **下方**（变宽变高不会压到 Workbench），Profil
 | `marker bands` | Workbench | 不锁、不打印 | 横线 `band <MW>`（品红），伸出 marker 泳道 0.15 cm | **拖、删、改名** |
 | `labels` | Figure | 不锁、打印 | `label lane n`、`label band <MW>`（并带：`label band 21/20`）、用户自加的任意文字 | **文字与样式**；位置归 agent |
 | `profiles` | Profiles | 锁定、打印 | 曲线、坐标、刻度、泳道说明 | 否（每次 sync 重建） |
+| `photo` | Crop | 锁定、不打印 | 一张图 `photo`：内嵌 JPEG 预览（长边 ≤ 2000 px，`xf = [s·k,0,0,s·k,X,Y]`，k = 原图px / 预览px） | 否 |
+| `crop` | Crop | 不锁、不打印 | 矩形 `crop`（4 锚点闭合路径，`live.shape:"rectangle"`），绿 `(0, 0.75, 0.25)`、0.75 pt、无填充；锚点顺序 = 胶面的 TL TR BR BL（TL–TR = 孔那条边，转多少度都一样） | **挪、转、按 Shift 缩放** |
 | `ep-meta` | Workbench 画板外 | 隐藏、锁定、不打印 | 一个文字对象 `ep-meta`：运行元数据 JSON | 否 |
 
 线宽 0.5 pt。`ep-meta` 里存：skill 版本、照片路径、胶体预设、marker 预设、dpi、Profiles 版式、render 时的泳道名、
 marker 标签表、**上一次的泳道中心**（给标签匹配用）、上一次的 band 线（给 sync 的改动摘要用）、种子信息、
 `label_angle`（新建标签的默认角：`{"lane", "marker"}`）、`lane_angles`（每条泳道的标签角度，按泳道顺序）。
-角度 0 不写这两个键（没有旋转的文档与旧版逐字节一致）。
+角度 0 不写这两个键（没有旋转的文档与旧版逐字节一致）。还有 `crop`（Crop 画板对应的裁切）：
+
+```json
+"crop": {"photo_size": [4032, 3024],                 // 自动定向后的原图像素
+         "photo_sha1": "3f2a…",                       // 照片文件 sha1 的前 12 位十六进制
+         "frame_px": [[x,y],[x,y],[x,y],[x,y]],       // TL TR BR BL，原图像素（自动定向后）
+         "stage1": {"cue": "dark", "rect": null, "angle": null, "no_rotate": false,
+                    "longest": 700, "ink_thr": null, "gel_lanes": null,
+                    "trim_top_cm": 0.0, "trim_bottom_cm": 0.0}}  // render 时的参数，只作记录
+```
+
 不放进自定义 JSON 键（存盘就丢）也不放 `file.info`（会写进导出的 PNG），见 vectorcraft.md §4。
 
 ### 所有权（sync 的硬规则）
@@ -117,6 +139,8 @@ marker 标签表、**上一次的泳道中心**（给标签匹配用）、上一
 | `gel seg k`、Figure / Profiles 画板大小 | 一切（由泳道线 + 保留泳道算） | — |
 | `analysis`、`profiles` 层 | 一切 | — |
 | Workbench 的线 | 只改颜色：`trimmed` 里的变灰、`lanes` 里的变青 | 位置、名字、条数 |
+| `crop` 框 | 旧文档补画板时新建 | 位置、角度、大小（归用户） |
+| `photo` 预览、`gel` 图的像素 | 框变了就重裁、原地换像素（`xf`、`id` 不变） | — |
 | `ep-meta` | 每次改写 | — |
 
 推论：用户拖了标签的位置，下一次 sync 会拉回锚点；**删掉** `label lane n` 对象，下一次 sync 会用旧名字重建它 ——
@@ -154,6 +178,19 @@ marker 标签表、**上一次的泳道中心**（给标签匹配用）、上一
 | 所有泳道都在 trimmed 里 | Figure 至少要留一条 |
 
 只提示、不报错：图层里有非直线对象（忽略）；`ep-meta` 缺失或不是 JSON（标签匹配退回按顺序）。
+
+**Crop 画板**（`crop.read_frame`）的报错并进同一张单子（表头不变，条目以 `Crop：` 开头），同样什么都不改。
+框的四角取路径锚点，经 `photo` 图的 `xf` 换回预览像素，再按 `photo_size` 换回原图像素：
+
+| 报错（大意） | 意思 / 怎么改 |
+|---|---|
+| `crop` 图层应当恰好一个 4 角闭合形状（找到 N 个） | 删掉多的 / 撤销删除 |
+| 框不是矩形（某角偏 >0.5°，或对边差 >0.5%） | 撤销变形；只能挪、转、缩放 |
+| 框的长宽比 `h/w` 与预设差 >1%（`… vs …`） | 按住 Shift 等比缩放 |
+| `photo` 图不见了，或被非等比缩放 | 只能重新 render |
+
+框有一部分出了照片**不算错**：`crop_face` 和 render 一样夹到画布里，打同样的 `[!] clipped` 警告
+（所以 render 时探测框本来就贴边的文档，sync 照样是 0 个改动）。
 
 ## 6. 泳道种子：按加样孔定相的等距梳子（`well_grid.py`，V8）
 
@@ -254,11 +291,17 @@ python3 scripts/gel_photo.py sync fig.vectorcraft [--port 7797] [--dry-run] [--d
 ### 9a. 做什么
 
 1. 连上控制口上的 VectorCraft（没有就带 `--control` 启动），文档没开就打开，激活它。
-2. 读 `document.json` → Workbench 模型（§5）。读不通 → 打印全部要改的地方，**什么都不动**。
-3. 在文档里那张胶面图上重算剖面、条带、标定（§7）→ `plan_sync` 算出最少的操作。
-4. 全部操作在**一个**撤销组 `ep-labeling sync` 里执行（⌘Z 一次撤回整个 sync；中途出错整组回滚）。
-5. 存盘（轮询到文件比请求新且能解析），按 `ep-meta` 里的 dpi 重新导出 `fig.png`，重写 `fig.mw.json`（泳道名取当前标签文字）。
-6. 打印改动摘要，例如 `泳道移动：3 +0.15 cm`、`trimmed（不进 Figure）：[14]`、`marker 线：band 35 删除`，
+2. 读 `document.json` → Workbench 模型（§5）和 Crop 框（`crop.read_frame`）。读不通 → 打印全部要改的地方，**什么都不动**。
+3. **框变了**（`frame_delta` 不是 `None`：有角挪了 >0.5 原图像素）：`ep-meta.photo` 必须还在、`photo_sha1` 对得上，
+   否则报 `照片 <path> 找不到 / 换过了 —— 把原照片放回去，或重新 render`（什么都不动）。用 `crop_face` 按 meta 的 dpi
+   从原图重裁 → 后面分析的就是这张新胶面图（像素尺寸不变：width_cm、height_cm、dpi 都没变）。
+4. 在胶面图上重算剖面、条带、标定（§7）→ `plan_sync` 算出最少的操作。重裁过就在最前面加一个 `relink` 操作
+   （Workbench 的 `gel` 图 + 每个 Figure `gel seg k` 里的图）：写临时 PNG → `links.relink {ids, path, preserve:"transforms"}`
+   → `links.embed {ids}`，临时文件在撤销组结束后删掉；`ep-meta.crop.frame_px` 改成新框。
+5. 全部操作在**一个**撤销组 `ep-labeling sync` 里执行（⌘Z 一次撤回整个 sync，含重裁；中途出错整组回滚）。
+6. 存盘（轮询到文件比请求新且能解析），按 `ep-meta` 里的 dpi 重新导出 `fig.png`，重写 `fig.mw.json`（泳道名取当前标签文字）。
+7. 打印改动摘要，例如 `泳道移动：3 +0.15 cm`、`trimmed（不进 Figure）：[14]`、`marker 线：band 35 删除`、
+   `裁切框：转 +0.40°，移 +0.05/−0.10 cm，宽 ×1.020（重新裁了胶面图）`（cm = 旧比例下的胶面 cm；框没动就没有这行），
    以及 `已更新：artboard 1, delete …, create …, move …`；有 `?` 泳道时打 `[?] 泳道 [n] 还没有名字`。
 
 `--dry-run` 只打印摘要和操作列表，不动文档。`--dpi` 只在 `ep-meta` 没记 dpi 时用。
@@ -268,8 +311,16 @@ python3 scripts/gel_photo.py sync fig.vectorcraft [--port 7797] [--dry-run] [--d
 - 会变：泳道标签的位置（跟泳道中心）、marker 标签的位置（跟 band 线）、新泳道的 `?` 标签、消失的泳道/带的标签被删、
   Figure 的胶段与拼缝、Figure 与 Profiles 画板大小、`analysis` 与 `profiles` 层、trimmed 线的颜色、`ep-meta`、`fig.png`、`fig.mw.json`。
 - 永远不变：标签的文字、字体、字号、颜色、**角度**（用户在 app 里转过的，sync 读到后照它重新落位，只把角度记进 `ep-meta`）；
-  `labels` 层里用户自加的文字；Workbench 线的位置与名字；`gel` 层的 Workbench 胶面图。
-- **幂等**：Workbench 没改、标签已在位时，再跑一次是 0 个操作（`文档已经是最新的（0 个改动）`），只重新存盘和导出。
+  `labels` 层里用户自加的文字；Workbench 线的位置与名字（重裁只换线下面的像素，胶面 cm 尺寸不变，线不会掉出胶面）；
+  `gel` 图的位置与 `xf`（框没动时像素也不动）；`crop` 框。
+- **幂等**：Workbench 与框都没改、标签已在位时，再跑一次是 0 个操作（`文档已经是最新的（0 个改动）`），只重新存盘和导出。
+  重裁过的 sync 之后再跑一次也是 0 个（框 = meta 里的 `frame_px`）。
+- **旧文档（没有 Crop 画板）第一次 sync**：`ep-meta.photo` 不在了 → `[i] 旧文档没有 Crop 画板（照片 <path> 不在了）；要调裁切就重新 render`，
+  其余照常。照片在 → 用默认参数重跑 stage 1、框挪 `crop.legacy_page_shift`（旧文档的图是修错位之前裁的，§3）、按 meta dpi 裁出来，与内嵌胶面图比（像素尺寸相同且平均 |Δ灰度| ≤ 2.0 级）：
+  对不上 → 同一条提示加 `（当时的裁切参数没记下来）`，照常；对上 → 同一个撤销组里补上 Crop 画板、`photo` / `crop` 图层、预览与框，
+  写 `ep-meta.crop`，摘要 `已补上 Crop 画板`。之后再 sync 是 0 个操作。
+  sync 没有 `--gel-size`：重跑用的预设由胶面 cm（取到 0.01）拼出来，trim 为 0、anchor = bottom。所以当时用了 trim、
+  `anchor top/center` 或 `--rect` / `--angle` / `--cue` 的旧文档一般对不上，只会得到那条提示（宁可不补，也不补一个错的框）。
 - **旧文档第一次 sync（V9 起）**：页顶留白改按**大写字高**算（旧版按字号），整张 Figure 会上移约 2.3 pt（0.08 cm）、
   页高相应变短；标签相对胶面的位置不变。一次之后稳定，再 sync 还是 0 个操作。
 - **泳道增删**：名字**按序号搬** —— 第 i 格（从左往右数）永远用上一次第 i 格的名字，不看中心位置、不做容差配对。
@@ -352,7 +403,7 @@ python3 scripts/gel_photo.py render photo.jpeg --out fig.vectorcraft \
 python3 scripts/gel_photo.py sync fig.vectorcraft [--dry-run]
 ```
 
-render 的其它开关（全是 stage 1）：`--gel-cm`、`--gel-lanes`、`--trim-top-cm` / `--trim-bottom-cm`、`--angle` / `--no-rotate`、
+render 的其它开关（全是 stage 1；出图后也可以在 Crop 画板上调框再 sync）：`--gel-cm`、`--gel-lanes`、`--trim-top-cm` / `--trim-bottom-cm`、`--angle` / `--no-rotate`、
 `--longest`（分析缩略图长边，默认 700）、`--cue dark|chroma|union`、`--ink-thr`、`--rect`。
 标签角度：`--label-angle`（泳道名默认值）、`--marker-label-angle`（marker 标签默认值），或 `lanes.json` / `markers.json`
 里每项的 `angle`（度，逆时针；90 = 从下往上读）。sync 不需要角度参数：它从文档读。
@@ -387,6 +438,7 @@ render 的其它开关（全是 stage 1）：`--gel-cm`、`--gel-lanes`、`--tri
 | `gel_detect.py` | 认胶面：背景平面、暗度/蓝度判据、连通域、竖边倾角 |
 | `gel_area.py` | stage 1：按预设定标定形、高度核对 |
 | `geometry.py` | 旋转几何 |
+| `crop.py` | Crop 画板：stage 1 框 ↔ 四角、预览 JPEG 与版式、读回框（`read_frame`）、`frame_delta`、按框重裁（`crop_face`） |
 | `config.py` | markers / lanes / 胶体预设的读取与校验 |
 | `lane_select.py` | `--trim-lanes` 语法、保留段与拼缝版式 |
 | `text_layout.py` | 字体、文字量宽、标签的角度与墨迹框（`box_offsets` / `anchor_for`，页边距与落位都用它） |
@@ -399,4 +451,4 @@ render 的其它开关（全是 stage 1）：`--gel-cm`、`--gel-lanes`、`--tri
 | `vc_control.py` | 控制口客户端：连接/启动、对话框、存盘轮询、导出核对、撤销组 |
 | `sync_exec.py` | 把 `plan_sync` 的操作落到活文档上 |
 | `env_check.py` | `doctor` |
-| `selftest.py`、`selftest_sync.py` | `selftest`（后者用假控制口测 sync 执行器） |
+| `selftest.py`、`selftest_sync.py`、`selftest_crop.py` | `selftest`（`selftest_sync` 用假控制口测 sync 执行器；`selftest_crop` 测裁切框几何与读回） |

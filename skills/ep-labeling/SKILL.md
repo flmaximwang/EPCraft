@@ -15,11 +15,11 @@ Turn a phone photo of a gel into a labeled figure at true physical size. Detecti
 
 | File | Content |
 |---|---|
-| `fig.vectorcraft` | The editable document: artboards `Figure` (exported), `Workbench` (edit here), `Profiles` (curves). Structure: `references/photo-labeling-conventions.md` §4. |
+| `fig.vectorcraft` | The editable document: artboards `Figure` (exported), `Workbench` (edit here), `Profiles` (curves), `Crop` (photo preview + crop frame, left of the Workbench). Structure: `references/photo-labeling-conventions.md` §4. |
 | `fig.png` | The Figure artboard, **exported by VectorCraft** at `--dpi` (pHYs set). Always matches what the user sees. |
 | `fig.mw.json` | Report v2: calibration points, every lane's raw `gray`/`baseline`/`ink` profile, called bands with MW (`--no-mw` drops it). MW comes from two-point interpolation between neighbouring marker bands — no global fit. |
 
-- Not covered: perspective correction (shoot straight, or `--angle`), band quantification (profiles are raw data, not densitometry), identifying what a band is, editing the gel crop/angle/brightness in VectorCraft (that is a re-render).
+- Not covered: perspective correction (shoot straight, or `--angle`), band quantification (profiles are raw data, not densitometry), identifying what a band is, brightness/contrast edits, a crop frame with a non-preset aspect (crop position/angle/scale **are** editable on `Crop`).
 
 ## Files
 
@@ -62,9 +62,10 @@ Turn a phone photo of a gel into a labeled figure at true physical size. Detecti
    - drag the orange **top** / **bottom** window lines (shared by all lanes);
    - drag, delete or rename the magenta **`band <MW>`** lines (the name is the calibration value);
    - draw a short line in the `trimmed` layer inside a lane to drop that lane from the Figure (delete the mark to restore; the lane lines stay in `lanes`);
-   - on the **Figure**, freely change label text, font, size, colour and angle (rotate a label), and add free text in `labels`.
+   - on the **Figure**, freely change label text, font, size, colour and angle (rotate a label), and add free text in `labels`;
+   - on **Crop**, move / rotate / Shift-scale the green `crop` frame over the photo to fix the gel-face crop (aspect stays the preset's; Workbench lines keep their gel-face cm).
    Then tell the agent "I edited it".
-8. **Sync** when the user says they edited: `python3 scripts/gel_photo.py sync fig.vectorcraft` (`--dry-run` to preview). It reads the live document (no need to save first), recomputes profiles, bands and MW, updates the Figure, labels and curves in **one undo step** (`ep-labeling sync`), saves, re-exports `fig.png` and `fig.mw.json`, and prints what changed. Running it twice changes nothing. **Never re-render to fix lanes or bands**; a re-render starts a fresh document and loses the user's edits. Re-render only for a new photo, a new crop/stage-1 fix, or a different gel or marker preset.
+8. **Sync** when the user says they edited: `python3 scripts/gel_photo.py sync fig.vectorcraft` (`--dry-run` to preview). It reads the live document (no need to save first), re-crops the gel face from the full-resolution photo at `ep-meta.photo` if the `crop` frame moved (pixels swapped in place), recomputes profiles, bands and MW, updates the Figure, labels and curves in **one undo step** (`ep-labeling sync`), saves, re-exports `fig.png` and `fig.mw.json`, and prints what changed. Running it twice changes nothing. **Never re-render to fix lanes or bands**; a re-render starts a fresh document and loses the user's edits. Re-render only for a new photo, a different gel or marker preset (crop/angle fixes go through `Crop` + `sync`).
 9. **Text-only or angle-only requests** ("rename lane 3 to WT", "rotate the lane names 90°"): set the label text or rotation through the control port (recipes: conventions §9c), or ask the user to do it on the Figure; then `sync` to re-export. Labels keep their user text, font, size, colour and **angle**; only their position (the anchor) is the agent's — `sync` reads the angle back and re-anchors, it never rewrites it.
 10. **New lanes come back as "?"**: `sync` prints `[?] 泳道 [n] 还没有名字`. Ask the user for the names, set them (step 9), `sync` again.
 
@@ -79,6 +80,9 @@ Turn a phone photo of a gel into a labeled figure at true physical size. Detecti
 | `VectorCraft 在运行，但端口 7797 上没有控制口` | VectorCraft was opened normally. Ask the user to save and quit it, then re-run; the skill relaunches it with `--control`. |
 | render: `开着 fig.vectorcraft 而且有没存的改动` | The document is open with unsaved edits. Ask the user: save it (then `sync` is probably what they want) or pass another `--out`. |
 | sync: `Workbench 有 N 处要改（什么都没动）` | Nothing was changed. Relay every listed fix (fewer than 2 lane lines, a vertical line or a stray mark in `trimmed`, two lane lines on top of each other, window not exactly two horizontal lines or top below bottom, a band line not named `band <MW>`, band lines outside or across lanes, fewer than 3 bands, MW not decreasing downwards). Meanings: conventions §5. After the user fixes them, `sync` again. |
+| sync: items prefixed `Crop：` (in the same list) | The frame was distorted, stretched out of aspect, duplicated/deleted, or `photo` was touched. Relay the fix (undo the distort; scale with Shift only); conventions §5. |
+| sync: `照片 … 找不到 / 换过了` | The frame moved but the original photo is gone or changed (sha1). Ask the user to put it back at that path, or re-render. Nothing was changed. |
+| sync: `[i] 旧文档没有 Crop 画板…` | Old document; sync went on as before without the artboard. To adjust the crop, re-render. (`已补上 Crop 画板` = it was added; nothing to do.) |
 | Figure is spliced (non-adjacent kept lanes) | The figure legend **must** state that non-adjacent lanes were spliced from one gel; labels keep the original lane numbers. |
 | Marker lane is trimmed | Calibration still uses it; no marker labels are drawn on the Figure. Tell the user. |
 | A band prints `超出 marker 范围` | Its y lies outside the ladder's span, so two-point interpolation gives it no number (never extrapolate). If a real band of interest fell outside, check the `band` lines on the Workbench — a misplaced line shrinks the calibrated span. |

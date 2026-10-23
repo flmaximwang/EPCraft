@@ -4,10 +4,17 @@
 
 假 app 模拟 VectorCraft 0.14 实测的行为：图层有锁/隐、有当前层；锁定或隐藏的当前层收不到新对象
 （落进上一个可用的当前层）；锁定层里的对象照样能改；undoGroup.end {cancel} 记下回滚。
+Crop 画板（C4）：relink / backfill 两种 op 的命令序列；gel_photo._read_all（重新裁切、框没动、照片
+不见了或换过、旧文档补画板）用 magick 现画的小照片和合成文档跑，Workbench 读回那一步用桩替掉。
 run() → 通过的检查数；失败抛 AssertionError。
 """
+import contextlib
+import io
 import json
+import math
+import os
 import socketserver
+import tempfile
 import threading
 
 import sync_exec
@@ -31,6 +38,9 @@ class _FakeApp:
         self.fail, self.swallow = fail, swallow
         self.paint = {"appearanceItem": None, "fill": "#ffffff", "fillActive": True,
                       "stroke": "#000000", "strokeWidth": 1.0}
+        self.nodes = {}                                # 新建对象的 kind（document.node 回它）
+        self.relinked = []                             # links.relink 时临时 PNG 的 (路径, 当时在不在, 字节)
+        self.place_xf = [1.0, 0.0, 0.0, 1.0, 3.0, 4.0]   # file.place 落下的 xf（「视图中心」，不在目标处）
         fake = self
 
         class H(socketserver.StreamRequestHandler):
@@ -99,6 +109,41 @@ class _FakeApp:
             return None
         if cmd in ("text.create", "shape.line", "path.create"):
             return {"id": self._new()}
+        if cmd == "links.relink":
+            path = p["path"]
+            data = open(path, "rb").read() if os.path.exists(path) else None
+            self.relinked.append((path, data is not None, data))
+            return {"relinked": list(p["ids"]), "notFound": []}
+        if cmd == "links.embed":
+            return {"embedded": list(p["ids"]), "missing": []}
+        if cmd == "artboard.new":
+            return None
+        if cmd == "layer.new":
+            self.next += 1
+            self.layers[self.next] = {"name": p["name"], "locked": p.get("locked", False),
+                                      "visible": p.get("visible", True)}
+            self.order.append(self.next)
+            return {"id": self.next}
+        if cmd == "file.place":
+            nid = self._new()
+            self.nodes[nid] = {"type": "image", "xf": list(self.place_xf)}
+            return {"ids": [nid]}
+        if cmd == "shape.rectangle":                   # 实测：rotation 绕中心、**顺时针**为正
+            nid = self._new()
+            x, y, w, h, r = p["x"], p["y"], p["width"], p["height"], math.radians(p.get("rotation", 0.0))
+            cx, cy = x + w / 2.0, y + h / 2.0
+            pts = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
+            pts = [[cx + (px - cx) * math.cos(r) - (py - cy) * math.sin(r),
+                    cy + (px - cx) * math.sin(r) + (py - cy) * math.cos(r)] for px, py in pts]
+            self.nodes[nid] = {"type": "path", "live": {"shape": "rectangle"},
+                               "path": {"subpaths": [{"anchors": [{"p": q} for q in pts], "closed": True}]}}
+            return {"id": nid}
+        if cmd == "document.node":
+            return {"id": p["id"], "kind": self.nodes[p["id"]]}
+        if cmd == "object.transform" and not p.get("copy"):
+            k = self.nodes[p["ids"][0]]
+            k["xf"] = list(sync_exec._compose(p["matrix"], k["xf"]))
+            return {"ids": p["ids"]}
         if cmd == "object.transform":
             assert p.get("copy") is True
             self.next += 1
@@ -368,6 +413,272 @@ def run():
     finally:
         fa.close()
     ok += 1
+    ok += _crop_ops()
+    ok += _crop_read()
+    return ok
+
+
+# ---------------------------------------------------------------- Crop 画板（C4）
+
+def _crop_ops():
+    ok = 0
+    # 9) relink：不管 ops 里排在哪，都在撤销组里**最先**：links.relink（临时 PNG 还在、字节就是 op 的，
+    #    preserve:"transforms"）→ links.embed；之后新建的胶段照旧复制 Workbench 那张图的对象（id 10），
+    #    复制品因此带上新像素；临时文件在组结束后删掉。relink 没换全 → 整组 cancel。
+    fa = _fake()
+    try:
+        c = vc_control.Client(fa.port, timeout=5)
+        sp = {"kind": "clip", "layer": "gel", "name": "gel seg 2", "rect": (100.0, 300.0, 40.0, 177.0),
+              "image": (80.0, 300.0, GEL_S), "key": "imgK", "px": (860, 625)}
+        ops = [{"op": "set_text", "id": 120, "text": "{}"},
+               {"op": "create", "layer": "gel", "spec": sp},
+               {"op": "relink", "ids": [10, 50], "png": b"\x89PNG fake"}]
+        s = sync_exec.apply_ops_live(c, ops, DOCUMENT)
+        g = fa.between_group()
+        names = [cm for cm, _p in g]
+        i = names.index("links.relink")                 # 之前只有 create 目标层的临时解锁
+        assert set(names[:i]) <= {"layer.setProps"} and names[i + 1] == "links.embed", names
+        assert g[i][1]["ids"] == [10, 50] and g[i][1]["preserve"] == "transforms", g[i]
+        assert g[i + 1][1] == {"ids": [10, 50]}, g[i + 1]
+        path, existed, data = fa.relinked[0]
+        assert existed and data == b"\x89PNG fake" and path.endswith(".png"), fa.relinked
+        assert not os.path.exists(path), "临时 PNG 没删"
+        tr = next(p for cm, p in g if cm == "object.transform")
+        assert tr["ids"] == [10] and names.index("object.transform") > names.index("links.embed")
+        assert s["relink"] == 1 and sync_exec.describe(s).startswith("relink 1, "), s
+    finally:
+        fa.close()
+    fa = _fake()
+    try:
+        c = vc_control.Client(fa.port, timeout=5)
+
+        def half(cmd, p, _h=fa.handle):
+            r = _h(cmd, p)
+            return {"relinked": p["ids"][:1]} if cmd == "links.relink" else r
+        fa.handle = half
+        try:
+            sync_exec.apply_ops_live(c, [{"op": "relink", "ids": [10, 50], "png": b"x"}], DOCUMENT)
+            raise AssertionError("relink 没换全却没报错")
+        except vc_control.VCError as e:
+            assert "links.relink" in str(e), e
+        assert [p for cm, p in fa.log if cm == "edit.undoGroup.end"] == [{"cancel": True}]
+        assert not os.path.exists(fa.relinked[0][0]), "出错后临时 PNG 没删"
+    finally:
+        fa.close()
+    ok += 1
+
+    # 10) backfill：画板 → photo 层（可见、不锁、设为当前）→ file.place 预览 → object.transform 把 xf 精确
+    #     拉到 image_xf（横竖缩放可以差一点点）→ 起名 photo → crop 层 → shape.rectangle（rotation = −视觉逆时针角）
+    #     → 锚点读回已对上（不发 path.setAnchors）→ 无填充、绿描边 0.75、起名 crop → 最后锁 photo 层。
+    fa = _fake()
+    try:
+        c = vc_control.Client(fa.port, timeout=5)
+        a = math.radians(3.0)
+        w, h = 200.0, 140.0
+        cx, cy = -300.0, 150.0
+        pts = [[cx + u * math.cos(a) + v * math.sin(a), cy - u * math.sin(a) + v * math.cos(a)]
+               for u, v in ((-w / 2, -h / 2), (w / 2, -h / 2), (w / 2, h / 2), (-w / 2, h / 2))]
+        xf = [0.2, 0.0, 0.0, 0.20003, -420.0, 8.5]
+        op = {"op": "backfill", "artboard": [-429.0, 0.0, 369.0, 318.0], "jpeg": b"\xff\xd8jpeg",
+              "preview_size": [2000, 1500], "image_xf": xf, "frame_pt": pts}
+        s = sync_exec.apply_ops_live(c, [op, {"op": "set_text", "id": 120, "text": "{}"}], DOCUMENT)
+        g = fa.between_group()
+        names = [cm for cm, _p in g]
+        want = ["artboard.new", "layer.new", "layer.setCurrent", "select.set", "file.place", "document.node",
+                "object.transform", "object.setProps", "layer.new", "layer.setCurrent", "select.set",
+                "shape.rectangle", "document.node", "paint.setFill", "paint.setStroke", "stroke.set",
+                "object.setProps", "text.setText", "document.json", "layer.setProps"]
+        assert names == want, names
+        assert g[0][1] == {"x": -429.0, "y": 0.0, "width": 369.0, "height": 318.0, "name": "Crop"}, g[0]
+        lp, lc = [p for cm, p in g if cm == "layer.new"]
+        assert lp["name"] == "photo" and lc["name"] == "crop" and all(
+            q["printable"] is False and q["visible"] is True and q["locked"] is False and q["top"] for q in (lp, lc))
+        img, rid = s["created_ids"]
+        assert all(abs(u - v) < 1e-9 for u, v in zip(fa.nodes[img]["xf"], xf)), fa.nodes[img]["xf"]
+        place = next(p for cm, p in g if cm == "file.place")
+        assert place["dataBase64"] == "/9hqcGVn" and place["name"].endswith(".jpg"), place
+        rect = next(p for cm, p in g if cm == "shape.rectangle")
+        assert abs(rect["rotation"] + 3.0) < 1e-9 and abs(rect["width"] - w) < 1e-9, rect
+        got = [q["p"] for q in fa.nodes[rid]["path"]["subpaths"][0]["anchors"]]
+        assert all(abs(u[0] - v[0]) < 1e-9 and abs(u[1] - v[1]) < 1e-9 for u, v in zip(got, pts)), got
+        assert ("object.setProps", {"id": img, "name": "photo"}) in g and ("object.setProps", {"id": rid, "name": "crop"}) in g
+        assert ("paint.setFill", {"ids": [rid], "none": True}) in g
+        assert ("paint.setStroke", {"ids": [rid], "color": [0.0, 0.75, 0.25]}) in g
+        assert ("stroke.set", {"ids": [rid], "weight": 0.75}) in g
+        photo_lid = [lid for lid, L in fa.layers.items() if L["name"] == "photo"][0]
+        assert g[-1] == ("layer.setProps", {"id": photo_lid, "locked": True}) and fa.layers[photo_lid]["locked"]
+        assert fa.obj[img] == photo_lid and fa.obj[rid] != photo_lid and "layer.move" not in names
+        assert s["backfill"] == 1, s
+    finally:
+        fa.close()
+    ok += 1
+    return ok
+
+
+def _crop_read():
+    """gel_photo._read_all：Crop 画板的读回、重新裁切、报错与旧文档补画板（照片是 magick 现画的）。"""
+    import crop
+    import figure
+    import gel_photo
+    import vc_file
+    import workbench
+    from magick_io import MAGICK, _run
+    ok = 0
+    dpi, wpx, hpx = 127, 250, 175                      # 胶面图 250×175 px @127 dpi = 5.00 × 3.50 cm（补画板按 0.01 cm 取整预设）
+    width_cm = wpx * 2.54 / dpi
+    with tempfile.TemporaryDirectory() as td:
+        photo = os.path.join(td, "gel.png")
+        _run([MAGICK, "-size", "480x360", "xc:gray(235)", "-fill", "gray(90)",
+              "-draw", "rotate 1.5 rectangle 120,70 380,252", "-fill", "gray(30)",
+              "-draw", "rectangle 170,120 180,200", "-depth", "8", photo])
+        args = gel_photo._default_detect_args()
+        preset = {"name": "t", "width_cm": width_cm, "height_cm": hpx * 2.54 / dpi, "lane_pitch_cm": 0.0}
+        with contextlib.redirect_stdout(io.StringIO()):
+            embedded, _ga, st = gel_photo.gel_face(photo, preset, args, dpi)
+        assert vc_file.png_size(embedded) == (wpx, hpx)
+        frame_px = crop.frame_from_stage1(st["gel_box"], st["angle"], st["size0"], st["size1"])
+        jpeg, psize, _k = crop.preview(photo)
+        lo = figure.crop_layout(frame_px, st["size0"], psize, width_cm)
+        meta0 = {"photo": photo, "dpi": dpi,
+                 "crop": {"photo_size": list(st["size0"]), "photo_sha1": crop.photo_sha1(photo),
+                          "frame_px": [list(p) for p in frame_px], "stage1": {}}}
+
+        def doc(frame_pt, meta, crop_board=True):
+            def text(t):
+                return {"id": 120, "name": "ep-meta", "kind": {"type": "text", "xf": [1, 0, 0, 1, 0, 0],
+                                                              "runs": [{"text": t, "style": {}}]}}
+            gel = {"id": 10, "name": "gel", "kind": {"type": "image", "key": "K", "width": wpx, "height": hpx,
+                                                    "xf": [72.0 / dpi, 0, 0, 72.0 / dpi, 17.0, 17.0]}}
+            seg = {"id": 60, "name": "gel seg 1", "kind": {"type": "group", "clip": True, "children": [
+                {"id": 61, "kind": {"type": "path", "clipping": True}},
+                {"id": 62, "kind": {"type": "image", "key": "K", "width": wpx, "height": hpx,
+                                    "xf": [72.0 / dpi, 0, 0, 72.0 / dpi, 17.0, 300.0]}}]}}
+            layers = [{"id": 1, "name": "gel", "kind": {"type": "layer", "children": [gel, seg]}},
+                      {"id": 9, "name": "ep-meta", "kind": {"type": "layer", "children": [
+                          text(json.dumps(meta, ensure_ascii=False))]}}]
+            boards = [{"name": "Figure"}, {"name": "Workbench"}, {"name": "Profiles"}]
+            if crop_board:
+                boards.append({"name": "Crop"})
+                layers += [{"id": 20, "name": "photo", "locked": True, "kind": {"type": "layer", "children": [
+                               {"id": 80, "name": "photo", "kind": {"type": "image", "key": "J", "width": psize[0],
+                                                                    "height": psize[1], "xf": lo["image_xf"]}}]}},
+                           {"id": 21, "name": "crop", "kind": {"type": "layer", "children": [
+                               {"id": 90, "name": "crop", "kind": {"type": "path", "path": {"subpaths": [
+                                   {"anchors": [{"p": list(p)} for p in frame_pt], "closed": True}]}}}]}}]
+            return {"artboards": boards, "layers": layers}
+
+        real = workbench.from_document
+        wb_errs = []
+
+        def fake_from_document(d):                       # Workbench 那一步的桩：meta 照读，错误按需注入
+            meta = gel_photo._doc_meta(d)
+            if wb_errs:
+                raise workbench.WorkbenchError("Workbench 有 %d 处要改（什么都没动）：\n- %s"
+                                               % (len(wb_errs), "\n- ".join(wb_errs)))
+            return {"gel": {}, "lanes": [], "meta": meta}, []
+        workbench.from_document = fake_from_document
+        try:
+            blobs = {"K": embedded}
+            read = lambda d: gel_photo._read_all(d, blobs, dpi)          # noqa: E731
+
+            # 11) 框没动：没有 op、没有行、分析用文档里那张图、meta 不改（幂等）
+            _m, _n, cs = read(doc(lo["frame_pt"], meta0))
+            assert cs["ops"] == [] and cs["lines"] == [] and cs["crop"] is None and cs["png"] is embedded, cs
+            ok += 1
+
+            # 12) 框逆时针转 1°：按新框从原图重裁（同像素尺寸、像素变了）→ relink [Workbench 的 gel, 胶段里的图]；
+            #     meta 的 frame_px = 读回的新框（不取整）；摘要一行。新 op 跑在假 app 上：relink → embed 在最前。
+            c0 = [sum(p[i] for p in lo["frame_pt"]) / 4.0 for i in (0, 1)]
+            a = math.radians(1.0)
+            rot = [[c0[0] + (x - c0[0]) * math.cos(a) + (y - c0[1]) * math.sin(a),
+                    c0[1] - (x - c0[0]) * math.sin(a) + (y - c0[1]) * math.cos(a)] for x, y in lo["frame_pt"]]
+            d1 = doc(rot, meta0)
+            _m, _n, cs = read(d1)
+            assert [op["op"] for op in cs["ops"]] == ["relink"] and cs["ops"][0]["ids"] == [10, 62], cs["ops"]
+            new = cs["png"]
+            assert new is cs["ops"][0]["png"] and new != embedded and vc_file.png_size(new) == (wpx, hpx)
+            fp, _e = crop.read_frame(d1, meta0, hpx / float(wpx))
+            assert cs["crop"]["frame_px"] == [list(p) for p in fp] and cs["crop"]["photo_sha1"] == meta0["crop"]["photo_sha1"]
+            assert cs["lines"] == ["裁切框：转 +1.00°，移 +0.00/+0.00 cm，宽 ×1.000（重新裁了胶面图）"], cs["lines"]
+            assert gel_photo._printable(cs["ops"])[0]["png"] == "<%d bytes>" % len(new)
+            #     下一次（meta 已是新框）= 没有改动
+            _m, _n, cs2 = read(doc(rot, dict(meta0, crop=cs["crop"])))
+            assert cs2["ops"] == [] and cs2["png"] is embedded
+            fa = _fake()
+            try:
+                c = vc_control.Client(fa.port, timeout=5)
+                sync_exec.apply_ops_live(c, cs["ops"] + [{"op": "set_text", "id": 120, "text": "{}"}], DOCUMENT)
+                assert [cm for cm, _p in fa.between_group()][:3] == ["links.relink", "links.embed", "text.setText"]
+                assert fa.relinked[0][2] == new
+            finally:
+                fa.close()
+            ok += 1
+
+            # 13) 框动了但照片不见了 / 换过了 → WorkbenchError（Crop： 前缀，与 Workbench 的错一起列），什么都不发
+            for meta, word in ((dict(meta0, photo=os.path.join(td, "nope.png")), "找不到"),
+                               (dict(meta0, crop=dict(meta0["crop"], photo_sha1="000000000000")), "换过了")):
+                for wbe in ([], ["window 图层应当恰好有两条横线"]):
+                    wb_errs[:] = wbe
+                    try:
+                        read(doc(rot, meta))
+                        raise AssertionError("照片不对却没报错")
+                    except workbench.WorkbenchError as e:
+                        msg = str(e)
+                        assert msg.startswith("Workbench 有 %d 处要改（什么都没动）" % (1 + len(wbe))), msg
+                        assert "- Crop：照片 " in msg and word in msg and all(w in msg for w in wbe), msg
+            wb_errs[:] = ["window 图层应当恰好有两条横线"]
+            bad = [list(p) for p in rot]
+            bad[2] = [bad[2][0] + 4.0, bad[2][1] + 3.0]
+            try:
+                read(doc(bad, meta0))
+                raise AssertionError("框变形了却没报错")
+            except workbench.WorkbenchError as e:
+                assert "Workbench 有 2 处要改" in str(e) and "- Crop：裁切框不再是矩形" in str(e), e
+            wb_errs[:] = []
+            ok += 1
+
+            # 14) 旧文档（没有 Crop 画板、meta 没有 crop；胶面图是修错位之前、没有 +repage 的旧版裁的）：
+            #     照片在、默认参数重裁 ≈ 文档里那张 → backfill op + 新 meta.crop（frame_px = 旧图真正裁到的那块）；
+            #     文档里的图对不上 / 照片不在 → 一条提示、没有 op。
+            import selftest_crop
+            assert abs(st["angle"]) > 0.5, st["angle"]           # 照片要是歪的，错位才测得出来
+            keep = blobs["K"]
+            blobs["K"] = embedded = selftest_crop._old_crop(photo, st["angle"], st["gel_box"], width_cm,
+                                                            hpx * 2.54 / dpi, dpi)
+            sx, sy = crop.legacy_page_shift(st["angle"], st["size0"], st["size1"])
+            assert abs(sx) + abs(sy) > 1.0, (sx, sy)
+            b = st["gel_box"]
+            frame_px = crop.frame_from_stage1((b[0] + sx, b[1] + sy, b[2] + sx, b[3] + sy), st["angle"],
+                                              st["size0"], st["size1"])
+            lo = figure.crop_layout(frame_px, st["size0"], psize, width_cm)
+            meta_old = {"photo": photo, "dpi": dpi}
+            _m, notes, cs = read(doc(lo["frame_pt"], meta_old, crop_board=False))
+            assert [op["op"] for op in cs["ops"]] == ["backfill"] and notes == [], (cs["ops"], notes)
+            bf = cs["ops"][0]
+            near = lambda u, v: all(abs(x - y) < 1e-6 for x, y in zip(u, v))       # noqa: E731
+            assert near(bf["image_xf"], lo["image_xf"]) and all(map(near, bf["frame_pt"], lo["frame_pt"])), bf
+            assert bf["jpeg"] == jpeg
+            assert bf["preview_size"] == list(psize) and abs(bf["artboard"][0] + bf["artboard"][2] + figure.BOARD_GAP) < 1e-2
+            assert all(map(near, cs["crop"]["frame_px"], frame_px)) and cs["crop"]["photo_size"] == list(st["size0"])
+            assert cs["crop"]["photo_sha1"] == crop.photo_sha1(photo) and cs["crop"]["stage1"]["cue"] == "dark"
+            assert cs["lines"] == ["已补上 Crop 画板"] and cs["png"] is embedded
+            #     补上之后的文档（框 = 刚写的）再读 = 没有改动
+            _m, _n, cs2 = read(doc(bf["frame_pt"], dict(meta_old, crop=cs["crop"])))
+            assert cs2["ops"] == []
+            #     修错位之后裁的图（框没挪 legacy_page_shift）就对不上旧版那张：确认上面比的确实是旧裁法
+            assert not gel_photo._same_gel(keep, embedded) or (sx, sy) == (0.0, 0.0)
+            other = crop.crop_face(photo, st["angle"] + 2.0, st["gel_box"], width_cm, hpx * 2.54 / dpi, dpi, warn=False)
+            blobs["K"] = other
+            _m, notes, cs = read(doc(lo["frame_pt"], meta_old, crop_board=False))
+            assert cs["ops"] == [] and cs["crop"] is None and notes == [
+                "旧文档没有 Crop 画板（当时的裁切参数没记下来）；要调裁切就重新 render"], notes
+            blobs["K"] = keep
+            gone = os.path.join(td, "moved.png")
+            _m, notes, cs = read(doc(lo["frame_pt"], dict(meta_old, photo=gone), crop_board=False))
+            assert cs["ops"] == [] and notes == ["旧文档没有 Crop 画板（照片 %s 不在了）；要调裁切就重新 render" % gone]
+            ok += 1
+        finally:
+            workbench.from_document = real
     return ok
 
 
