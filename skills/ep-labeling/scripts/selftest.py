@@ -679,7 +679,6 @@ def selftest():
         assert abs(ln["right_cm"] - (xs_r[i] + xs_r[i + 1]) / 2) < 1e-3, (i, ln)
     assert abs(mdl["lanes"][0]["left_cm"] - (xs_r[0] - rec["lanes"][0]["width_cm"] / 2)) < 1e-3
     assert abs(mdl["lanes"][-1]["right_cm"] - (xs_r[-1] + rec["lanes"][-1]["width_cm"] / 2)) < 1e-3
-    assert mdl["meta"]["lane_lines"] == workbench.LANE_LINES
     ys = [b["y_cm"] for b in rec["bands"]["1"]]
     assert [(b["mw"], b["y_cm"]) for b in mdl["bands"]] == list(zip([250.0, 100.0, 50.0], ys)), mdl["bands"]
     assert mdl["window"] == {"top_cm": workbench.TOP_GUARD_CM, "bottom_cm": round(6.6 * 0.97, 4)}, mdl["window"]
@@ -783,24 +782,6 @@ def selftest():
         raise AssertionError("trimmed 里的竖线没报错")
     except workbench.WorkbenchError as e:
         assert "trimmed 图层里有竖线" in str(e), e
-    # 旧版文档（ep-meta 没有 lane_lines）：仍按「每道两条线」读，并提示重新 render
-    mdl_o = dict(mdl, meta={k: v for k, v in mdl["meta"].items() if k != "lane_lines"})
-    doc_o = vc_file.new_doc("wb")
-    key_o, w_o, h_o = vc_file.add_image(doc_o, png_wb)
-    lay_o = workbench.make_layers(doc_o)
-    fr_o = workbench.add_workbench(doc_o, lay_o, mdl_o, key_o, w_o, h_o, x0=340.0)
-    for lay in ("lanes", "trimmed"):
-        vc_file.lay_children(lay_o[lay])[:] = []
-    for ln in mdl["lanes"]:
-        for x in (ln["left_cm"] + 0.05, ln["right_cm"] - 0.05):
-            xp = fr_o["gel_x"] + x * vc_file.PT_PER_CM
-            vc_file.lay_children(lay_o["trimmed" if ln["trimmed"] else "lanes"]).append(
-                vc_file.line(doc_o, "lane", (xp, 30), (xp, 90), (0, .7, 1)))
-    old = vc_file.loads(vc_file.dumps(doc_o))[0]["document"]
-    got_o, notes_o = workbench.from_document(old)
-    assert any("旧版文档" in t for t in notes_o), notes_o
-    assert len(got_o["lanes"]) == 15 and [ln["trimmed"] for ln in got_o["lanes"]][-2:] == [True, True]
-    assert abs(got_o["lanes"][3]["left_cm"] - (mdl["lanes"][3]["left_cm"] + 0.05)) < 1e-3
     bad2 = json.loads(json.dumps(top_wb["document"]))
     B2 = {l["name"]: l for l in bad2["layers"]}
     bl = sorted(vc_file.lay_children(B2["marker bands"]), key=lambda n: vc_file.line_ends(n)[0][1])

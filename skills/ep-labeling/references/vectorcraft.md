@@ -96,7 +96,7 @@ A running instance **without** `--control` can't be reached. Launch with `Vector
 ## 4. Decisions settled by these measurements
 
 - **V-D2, run metadata:** a text object `ep-meta` in a hidden, locked, non-printing layer `ep-meta`. It is written by the file writer (no hidden-layer create problem) and updated with `text.setText` (works while locked and hidden). Not `file.info description`, because that leaks into `fig.png`. Not custom JSON keys, because those are dropped on save.
-- **V-D1, trim marking:** a short line in the `trimmed` layer whose midpoint lies inside a lane drops that lane from the Figure (lane lines are shared separators, so they can't be moved out pair by pair). Agent recipe: `layer.setCurrent` on `trimmed`, then `shape.line` across the lane above the gel. Read back from `document.json` like any layer. `trimmed` must stay **unlocked**. Sync re-strokes everything in `trimmed` grey. (Legacy documents, written before shared lane lines, still read lane pairs moved into `trimmed`.)
+- **V-D1, trim marking:** a short line in the `trimmed` layer whose midpoint lies inside a lane drops that lane from the Figure (lane lines are shared separators, so they can't be moved out pair by pair). Agent recipe: `layer.setCurrent` on `trimmed`, then `shape.line` across the lane above the gel. Read back from `document.json` like any layer. `trimmed` must stay **unlocked**. Sync re-strokes everything in `trimmed` grey.
 - **Writer:** inline encoding, objects cloned from `templates/kinds.vectorcraft`, all text `Arial`.
 - **PNG:** `document.export` with `artboard:0` (Figure is artboard 1) and `ppi:<dpi>`.
 

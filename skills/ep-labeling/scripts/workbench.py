@@ -15,7 +15,6 @@
 文档里的绑定靠**图层**，不靠对象名（用户新画的线没有名字也算）：
     lanes 图层里的竖线 → 按 x 排序，相邻两条夹一条泳道（相邻泳道共用中间那条分隔线：n 道 = n+1 条线）；
     trimmed 图层里的短线 → 中点落在哪条泳道里，那条泳道就不进 Figure（trim 标记）；
-    （旧版文档 —— ep-meta 里没有 lane_lines = "shared" —— 仍按「每道一左一右两条、trimmed 里放线对」读）
     window 图层里恰好两条横线 → 上、下；
     marker bands 图层里的横线 → 名字必须是 `band <MW>`；
     gel 图层里顶层的 image `gel` → Workbench 上胶面的位置与比例（pt ↔ cm 就从它的 xf 来）。
@@ -48,7 +47,6 @@ LAYERS = [
 ]
 RGB = {"lane": (0.0, 0.7, 1.0), "trimmed": (0.6, 0.6, 0.6), "window": (1.0, 0.55, 0.0),
        "band": (0.9, 0.0, 0.6)}
-LANE_LINES = "shared"              # ep-meta 里的版本记号：泳道线是共用分隔线（没有 = 旧版「每道两条」）
 TRIM_Y_CM = 0.35                   # trim 标记画在胶面上沿之上多少 cm（泳道号在 0.14 cm 处）
 LINE_W = 0.5                       # pt
 MARGIN_CM = 0.6                    # Workbench 画板四周留白（放泳道号）
@@ -157,7 +155,7 @@ def _assemble(gel, lanes, marker_rows_cm, lane_names, marker_labels, marker_lane
 
     top, bottom = window if window else (TOP_GUARD_CM, gel["height_cm"] * (1.0 - BOTTOM_GUARD))
     m = dict(meta or {})
-    m.update(lane_lines=LANE_LINES, lane_names=list(lane_names),
+    m.update(lane_names=list(lane_names),
              marker_labels=[{"text": e.get("text", ""), "mws": parse_mw(e.get("text", "")),
                              **({"color": e["color"]} if e.get("color") else {})} for e in entries],
              prev_centres_cm=[round((ln["left_cm"] + ln["right_cm"]) / 2.0, 4) for ln in lanes])
@@ -306,11 +304,7 @@ def from_document(document):
         notes.append("没有 ep-meta 文字对象 —— 泳道名匹配退回按顺序")
 
     # 泳道
-    if meta.get("lane_lines") == LANE_LINES or not meta:
-        lanes = _shared_lanes(lines, cx, errs)
-    else:
-        notes.append("旧版文档（每条泳道一左一右两条线）：仍按线对读；重新 render 就换成相邻泳道共用一条分隔线")
-        lanes = _paired_lanes(lines, cx, errs)
+    lanes = _shared_lanes(lines, cx, errs)
 
     # marker 条带线
     bands, band_x, band_nm = [], [], []
@@ -372,26 +366,6 @@ def _shared_lanes(lines, cx, errs):
                         % n.get("id"))
         else:
             hit["trimmed"] = True
-    return lanes
-
-
-def _paired_lanes(lines, cx, errs):
-    """旧版文档：lanes / trimmed 两层各自按 x 两两成对（左、右）。"""
-    lanes = []
-    for lname, trimmed in (("lanes", False), ("trimmed", True)):
-        ls = lines(lname)
-        horiz = [n for _x, _y, v, n in ls if not v]
-        if horiz:
-            errs.append("%s 图层里有 %d 条横线（id %s）—— 泳道边界应是竖线"
-                        % (lname, len(horiz), [n["id"] for n in horiz]))
-        xs = sorted(cx(x) for x, _y, v, _n in ls if v)
-        if len(xs) % 2:
-            errs.append("%s 图层里有 %d 条竖线（奇数）—— 每条泳道要一左一右两条；补一条或删一条"
-                        % (lname, len(xs)))
-            continue
-        lanes += [{"left_cm": round(xs[i], 4), "right_cm": round(xs[i + 1], 4), "trimmed": trimmed}
-                  for i in range(0, len(xs), 2)]
-    lanes.sort(key=lambda ln: ln["left_cm"] + ln["right_cm"])
     return lanes
 
 
