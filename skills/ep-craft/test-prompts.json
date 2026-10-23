@@ -1,6 +1,6 @@
 {
   "skill": "ep-craft",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "test_cases": [
     {
       "id": "should-trigger-01",
@@ -48,7 +48,7 @@
       "id": "should-trigger-05",
       "type": "should_trigger",
       "prompt": "分子量标签整体错位了一位：70 kD 那个标签跑到别的带上了。",
-      "expected_behavior": "render 不会按位置硬配（峰数对不上就拒绝），所以多半是 band 线落在了错的峰上，或预设与梯子不符。在 Workbench 上把 `band <MW>` 线拖到对应的带上（或删掉梯子上没有的那条、改名），然后 `sync`：标定、MW、Figure 上的 marker 标签都跟着更新。若是预设本身选错（同货号不同体系），换预设重新 render。不要去改脚本放宽检查。",
+      "expected_behavior": "先看 `fig.mw.json` 的 `calibration.draft`：是 true 就是草稿标定（梯子带数对不上时 render 猜的 band 线），MW 本来就不可信。否则多半是 band 线落在了错的峰上，或预设与梯子不符。在 Workbench 上把 `band <MW>` 线拖到对应的带上（或删掉梯子上没有的那条、改名），然后 `sync`：标定、MW、Figure 上的 marker 标签都跟着更新。若是预设本身选错（同货号不同体系），换预设重新 render。不要去改脚本放宽检查。",
       "notes": ""
     },
     {
@@ -104,7 +104,7 @@
       "id": "should-trigger-13",
       "type": "should_trigger",
       "prompt": "render 报错说 marker 泳道配不上，列了一串 y 值，怎么办？",
-      "expected_behavior": "这是设计好的闸门：梯子泳道叫出的峰数 ≠ 标签需要的行数，不硬配。render 已经按 `marker_lanes` 逐条试过。看列出的 y：胶边损坏导致少叫一条（IMG_1497 泳道 1 只叫出 10/11）→ 在 `marker_lanes` 里列上其它梯子孔再 render；梯子确实少一条带 → 复制 markers.json 删掉那条标签；两条并带 → `rows: 2`。可以先 `probe` 看每道叫出的带和噪声。不要试图绕过检查。",
+      "expected_behavior": "梯子泳道叫出的峰数 ≠ 标签需要的行数，render 已经按 `marker_lanes` 逐条试过，都对不上就出了**草稿标定**（`[!] 草稿标定`）：文档照样出来，band 线是猜的。不重试、不调查、不绕检查：交付时明说 MW 还不可信，请用户在 Workbench 上把每条 `band <MW>` 线拖到梯子对应的带（梯子上没有的删掉），说一声后 sync —— band 线一动草稿标记就去掉。草稿上的 MW 不当结果报。下次同类照片可以提前防：列全梯子孔（`marker_lanes`）、梯子确实少的带从 markers.json 里删、并带写 `rows: 2`。",
       "notes": "老的 y_px 手动标定已移除；render 出来后的手动标定 = 在 Workbench 上调 band 线再 sync。"
     },
     {
@@ -139,7 +139,7 @@
       "id": "should-trigger-18",
       "type": "should_trigger",
       "prompt": "这张 15 条泳道的胶，我只要第 1、2、8、9 这四条，出一张能放汇报里的图。",
-      "expected_behavior": "新 render 时第 1 步就记下要拿掉的：`--trim-lanes 3-7,10-15`（写的是要拿掉的，不是要留的；`--keep-lanes` 已移除）。已经有文档时不重跑：请用户（或 agent 经控制口：`layer.setCurrent` trimmed + `shape.line`）在 `trimmed` 图层里给这些泳道各画一条短线（trim 标记，中点落在泳道里），泳道线留在 `lanes`，然后 sync。Figure 上 1-2 一段、8-9 一段，段边界在与相邻被拿掉泳道中心的中点，段间 0.15 cm 白缝；标签保留原号 1/2/8/9。提醒图注必须声明「非相邻泳道由同一块胶拼接」。trimmed 泳道照样分析、照样在 fig.mw.json 里（`trimmed: true`）。",
+      "expected_behavior": "新 render 时第 1 步就记下要拿掉的：`--trim-lanes 3-7,10-15`（写的是要拿掉的，不是要留的；`--keep-lanes` 已移除）。已经有文档时不重跑：agent 跑 `edit fig.vectorcraft --trim 3-7,10-15`（或 `--keep 1,2,8,9`；它在 `trimmed` 图层里给这些泳道各画一条 trim 短线，然后自动 sync），或请用户自己在 `trimmed` 里画短线再 sync。Figure 上 1-2 一段、8-9 一段，段边界在与相邻被拿掉泳道中心的中点，段间 0.15 cm 白缝；标签保留原号 1/2/8/9。提醒图注必须声明「非相邻泳道由同一块胶拼接」。trimmed 泳道照样分析、照样在 fig.mw.json 里（`trimmed: true`）。",
       "notes": ""
     },
     {
@@ -153,7 +153,7 @@
       "id": "should-trigger-20",
       "type": "should_trigger",
       "prompt": "把泳道 3 改名 WT。",
-      "expected_behavior": "纯文字改动，**不重跑 render**。把 Figure 上 `label lane 3` 的文字改成 WT：请用户在 VectorCraft 里直接改，或 agent 经控制口 `text.setText`（按完整名字在 `document.json` 的 `labels` 层里找对象，别用子串匹配的 `document.find`；见 conventions §9c）。然后 `sync fig.vectorcraft` 重新导出 fig.png 和 fig.mw.json（报告里泳道 3 的 label 变成 WT）。字体、字号、颜色不变；名字变长时页面自动加宽。",
+      "expected_behavior": "纯文字改动，**不重跑 render**。把 Figure 上 `label lane 3` 的文字改成 WT：请用户在 VectorCraft 里直接改，或 agent 跑 `edit fig.vectorcraft --label 3=WT`（不手写控制口脚本；edit 自动 sync），重新导出 fig.png 和 fig.mw.json（报告里泳道 3 的 label 变成 WT）。字体、字号、颜色不变；名字变长时页面自动加宽。",
       "notes": ""
     },
     {
@@ -232,6 +232,20 @@
       "prompt": "我把一个标签转成了 45°，sync 之后它还能落在该在的位置吗？",
       "expected_behavior": "能。角度不限于 90° 的整数倍：sync 从 xf 的线性部分反解角度（`atan2(-b, a)`，归一化到 (−180, 180]），按同一个旋转矩阵算墨迹框，再把框摆到规则位置（泳道名：框底离胶顶 4 pt、框中线对准泳道中心；marker：框竖直中心对准 band 线、内侧边离胶 4 pt），必要时放大 Figure 画板与页边距。它只 `move`，不改角度；如果用户想要「回到水平」，相对转 −90，或把角度从配置里改掉后重出。",
       "notes": "任意角度都走同一套框计算，没有 90° 特判。"
+    },
+    {
+      "id": "edge-case-32",
+      "type": "edge_case",
+      "prompt": "标注这 3 张 SDS-PAGE 图片。marker: WJ103 / 11 条（10% Tris-Tricine）；胶预设 mini-gel 15 孔。1464：Marker 2、8；裁剪成 2 块：2～7 一块，8～15 一块；Label：空、M、Total、Sup、…（15 个）。1477：裁剪成 2 块 2～7、8～13。1478：裁掉空泳道。",
+      "expected_behavior": "信息已给齐，不再提问。直接 doctor → 写 5 份 lanes.json（同一张照片切两块 = 两次 render、各自 --out 与互补的 --trim-lanes，marker_lanes 把落在保留范围内的梯子孔放第一）→ 一个 shell 循环跑完 5 次 render → 一次 magick identify 查 dpi → 一次性汇报。不读 references、不 dump markers.json、不跑 --help、不搜盘找旧输出、不先 probe、不写任何诊断脚本、不看照片。某次 render 打出 `[!] 草稿标定`（梯子带数对不上）：不重试、不调查，照常交付，明说这份的 MW 还不可信、请用户把 band 线拖到梯子的带上再说一声；不报草稿上的 MW。不扫 --rect、不平移胶面框。",
+      "notes": "来自 2026-10-23 会话：agent 在第一次 render 前写了 10 个诊断脚本、花了 13 分钟，用户两次抱怨慢和无效确认。"
+    },
+    {
+      "id": "edge-case-33",
+      "type": "edge_case",
+      "prompt": "1464 A 保留 2-7，用 2 当 marker；1477_B 的 label 都向右移一位，新标签也要转 90 度。赶紧做，不要做之前确认一次，做之后又确认一次。",
+      "expected_behavior": "不提问、不给 A/B 选项，直接用 `edit`：`edit IMG_1464_A.vectorcraft --keep 2-7 --marker-lane 2`、`edit IMG_1477_B.vectorcraft --shift-labels 1 --label 9=M`（新标签由 sync 按文档的泳道名角度建，自动 90°）。不手写控制口脚本、不先 --dry-run、不另外复查；按 edit/sync 打印的摘要一次性汇报。",
+      "notes": "同一会话的后半段。"
     }
   ]
 }

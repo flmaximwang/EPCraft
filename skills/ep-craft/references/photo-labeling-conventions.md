@@ -333,7 +333,8 @@ python3 scripts/gel_photo.py sync fig.vectorcraft [--port 7797] [--dry-run] [--d
 
 ### 9c. 只改文字：经控制口改标签（然后 sync）
 
-改泳道名之类的请求**不需要重跑 render**。最省事是请用户在 Figure 上直接改字；要 agent 来改，就用控制口的 `text.setText`
+改泳道名之类的请求**不需要重跑 render**。最省事是请用户在 Figure 上直接改字；要 agent 来改，**用 `edit`**（§9d），
+下面的手写脚本只是它做的事的记录。控制口的 `text.setText`
 （对象按**完整名字**找；`document.find` 是子串匹配，`label lane 1` 会命中 `label lane 10`–`15`，别用）：
 
 ```bash
@@ -383,6 +384,23 @@ python3 <skill>/scripts/gel_photo.py sync fig.vectorcraft
 别用 `absolute:true` 去「设成 0°」：0.14 实测 `object.rotate {angle: 0, absolute: true}` 对已经是 90° 的文字是空操作；
 要把转过的标签转回水平，就相对转 −90。
 
+### 9d. `edit`：agent 替用户改（然后自动 sync）
+
+`gel_photo.py edit fig.vectorcraft [--keep 2-7 | --trim 1,8-15] [--marker-lane N] [--shift-labels K] [--labels a,b,…] [--label N=TEXT …] [--no-sync]`
+
+`doc_edit.plan_edit` 读活文档（`workbench.from_document`，泳道号 = Workbench 上现在的泳道），生成与 `plan_sync` 同一套 op，
+`sync_exec.apply_ops_live(label="ep-craft edit")` 一个撤销步落下，然后照常 `sync`（第二个撤销步）。
+
+| 选项 | 做的事 |
+|---|---|
+| `--keep` / `--trim` | 清空 `trimmed` 层，每条要拿掉的泳道画一条 trim 短线（位置样式同 render）；集合没变 = 0 个操作 |
+| `--marker-lane N` | `marker bands` 层每条线 `reshape` 到泳道 N（两端 = 泳道边 ± 0.15 cm，y = 原中点 y）：标定换到这条梯子 |
+| `--shift-labels K` | 现在每道的名字整体右移 K 格（负 = 左移），先于下面两项 |
+| `--labels` / `--label N=TEXT` | 有 `label lane n` 对象的 `text.setText`（样式与角度不动）；没有的写进 ep-meta `lane_names`，随后的 sync 按 `lane_angles` 新建 —— 新标签与其它标签同角度 |
+
+标签对象的号是上一次 sync 的泳道号：按 `prev_centres_cm` 用 `match_lanes` 对到现在的泳道（与 plan_sync 一样）；
+上次 sync 之后才新加的泳道没有对应 → 报「先 sync 一次」。越界、全部 trim → 报错，什么都不改。
+
 ## 10. 命令
 
 ```bash
@@ -401,7 +419,15 @@ python3 scripts/gel_photo.py render photo.jpeg --out fig.vectorcraft \
 
 # 用户在 VectorCraft 里改完之后
 python3 scripts/gel_photo.py sync fig.vectorcraft [--dry-run]
+
+# agent 替用户改 trim / marker 泳道 / 泳道名（§9d），然后自动 sync
+python3 scripts/gel_photo.py edit fig.vectorcraft [--keep 2-7] [--marker-lane 2] [--shift-labels 1] [--label 9=M]
 ```
+
+marker 泳道叫出的带数与标签都对不上时，render 不再拒绝，而是出**草稿标定**（`[!] 草稿标定`）：取带数最接近的那条，
+多的把最近的两条并成一条、少的在最大空当正中插一条（不到 2 条就在积分窗里等距放），ep-meta 记 `draft: {called, need}`，
+`fig.mw.json` 的 `calibration.draft = true`、注的第一条说明 MW 不可信。sync 发现 band 线与上一次不同（MW 或 y 差 ≥ 0.005 cm）
+就去掉草稿标记。`--no-draft` = 老行为（拒绝）。
 
 render 的其它开关（全是 stage 1；出图后也可以在 Crop 画板上调框再 sync）：`--gel-cm`、`--gel-lanes`、`--trim-top-cm` / `--trim-bottom-cm`、`--angle` / `--no-rotate`、
 `--longest`（分析缩略图长边，默认 700）、`--cue dark|chroma|union`、`--ink-thr`、`--rect`。
@@ -423,14 +449,14 @@ render 的其它开关（全是 stage 1；出图后也可以在 Crop 画板上�
 | `--record` JSON | Workbench 上的线 + `ep-meta`；数值在 `fig.mw.json` |
 | `--keep-lanes` | `--trim-lanes`（写要拿掉的），或在 `trimmed` 里给那条泳道画一条 trim 标记 |
 | `--marker-policy` | 固定行为：marker 泳道被 trim 时只标定、不画标签 |
-| `--pair-force`、`y_px` 手动标定 | 在 Workbench 上拖 / 删 / 改名 `band <MW>` 线，然后 sync |
+| `--pair-force`、`y_px` 手动标定 | 带数对不上时 render 自动出草稿标定；在 Workbench 上拖 / 删 / 改名 `band <MW>` 线，然后 sync |
 | `--mw-method interp` | 没有可选方法：MW 一律在相邻两条 marker 带之间插值，全局拟合被禁止 |
 | `--margin-frac`、`--splice-gap-cm` | 页面规则自动推导；拼缝固定 0.15 cm |
 | `--font`、`--outline` / `--no-outline` | 字体与样式在 VectorCraft 里改（默认 Arial） |
 
 ## 12. 脚本模块
 
-`scripts/gel_photo.py` 只放 CLI 与编排（`probe` / `render` / `sync`）；其余同目录、纯 stdlib：
+`scripts/gel_photo.py` 只放 CLI 与编排（`probe` / `render` / `sync` / `edit`）；其余同目录、纯 stdlib：
 
 | 模块 | 承担 |
 |---|---|
@@ -447,6 +473,7 @@ render 的其它开关（全是 stage 1；出图后也可以在 Crop 画板上�
 | `mw_report.py` | MW 数学、marker 配对、终端表与写盘 |
 | `workbench.py` | Workbench 模型：建（`from_image`）、画、读回（`from_document`）、校验、泳道名匹配 |
 | `figure.py` | Figure / Profiles 画板、整份文档（`build_document`）、sync 增量计划（`plan_sync`） |
+| `doc_edit.py` | `edit` 的改动计划（`plan_edit`：trim、marker 泳道、泳道名），出与 `plan_sync` 同一套 op |
 | `vc_file.py` | `.vectorcraft` 读写（内联 / blobs / gzip 三种编码；对象从 `templates/kinds.vectorcraft` 深拷贝） |
 | `vc_control.py` | 控制口客户端：连接/启动、对话框、存盘轮询、导出核对、撤销组 |
 | `sync_exec.py` | 把 `plan_sync` 的操作落到活文档上 |

@@ -65,6 +65,36 @@ class WorkbenchError(RuntimeError):
     """Workbench 读不通：消息逐条写「在 VectorCraft 里改什么」。"""
 
 
+class MarkerCountError(WorkbenchError):
+    """marker 泳道叫出的带数 ≠ 标签要的行数。rows = 叫出的 y（cm，升序），need = 标签要的行数。"""
+
+    def __init__(self, msg, rows, need):
+        WorkbenchError.__init__(self, msg)
+        self.rows, self.need = list(rows), int(need)
+
+
+def rows_needed(marker_labels):
+    """markers 配置的 labels → 要几条 band 线（rows 求和）。"""
+    return sum(max(1, int(as_entry(e, {}).get("rows", 1))) for e in marker_labels)
+
+
+def draft_rows(rows, need, top, bottom):
+    """草稿标定：把叫出的 y 凑成 need 条（只给用户一个起点，MW 不可信）。
+
+    多了 → 反复把挨得最近的两条并成均值（多叫的通常是一条带劈成两峰）；少了 → 反复在最大的空当正中插一条；
+    叫出不到 2 条 → 在积分窗 [top, bottom] 里等距放 need 条。"""
+    rows = sorted(float(y) for y in rows)
+    if len(rows) < 2:
+        return [round(top + (k + 1) * (bottom - top) / (need + 1.0), 4) for k in range(need)]
+    while len(rows) > need:
+        i = min(range(len(rows) - 1), key=lambda k: rows[k + 1] - rows[k])
+        rows[i:i + 2] = [(rows[i] + rows[i + 1]) / 2.0]
+    while len(rows) < need:
+        i = max(range(len(rows) - 1), key=lambda k: rows[k + 1] - rows[k])
+        rows.insert(i + 1, (rows[i] + rows[i + 1]) / 2.0)
+    return [round(y, 4) for y in rows]
+
+
 # ---------------------------------------------------------------- 从探测结果建模
 
 def from_record(rec, lane_names, marker_labels, marker_lane, marker_rows_cm=None,
@@ -97,12 +127,13 @@ def from_record(rec, lane_names, marker_labels, marker_lane, marker_rows_cm=None
 
 
 def from_image(png, gel_width_cm, gel_height_cm, lane_count, pitch_prior_cm, lane_names, marker_labels,
-               marker_lane, marker_rows_cm=None, trim=(), window=None, meta=None):
+               marker_lane, marker_rows_cm=None, trim=(), window=None, meta=None, draft=False):
     """胶面图（stage 1 的产物，PNG 字节）→ Workbench 模型。不用老 stage 2/3（V8）：
 
     泳道 = well_grid 的等距梳子（相位与间距由胶面顶上的加样孔定）；
     marker 条带线 = marker 泳道剖面上叫出来的峰（profiles.call_bands）—— 比老 stage 3 的行准：
     老行在 5 张 DGC 照片上一律偏下 0.13–0.5 mm（V4 实测）。
+    draft=True：带数对不上时不拒绝，按 draft_rows 凑够条数，meta 记 draft = {called, need}（草稿标定）。
     返回 (模型, 种子信息 dict：pitch_cm / first_cm / source / depth / note)。
     """
     w, h, gray = profiles.gel_gray(png)
@@ -126,6 +157,10 @@ def from_image(png, gel_width_cm, gel_height_cm, lane_count, pitch_prior_cm, lan
         _b, _ink, sm = profiles.ink_trace(gs, ppc)
         marker_rows_cm = [b["y_cm"] for b in profiles.call_bands(ys, gs, sm, ppc)[0]]
     m = dict(meta or {})
+    need = rows_needed(marker_labels)
+    if draft and len(marker_rows_cm) != need:
+        m["draft"] = {"called": len(marker_rows_cm), "need": need}
+        marker_rows_cm = draft_rows(marker_rows_cm, need, top, bottom)
     m["seed"] = {k: sd[k] for k in ("pitch_cm", "first_cm", "source", "depth")}
     model = _assemble(gel, lanes, marker_rows_cm, lane_names, marker_labels, marker_lane, (top, bottom), m,
                       "的剖面上叫出")
@@ -147,10 +182,11 @@ def _assemble(gel, lanes, marker_rows_cm, lane_names, marker_labels, marker_lane
     span = [max(1, int(e.get("rows", 1))) for e in entries]
     rows = sorted(float(y) for y in marker_rows_cm)
     if len(rows) != sum(span):
-        raise WorkbenchError(
+        raise MarkerCountError(
             "marker 泳道 %d %s %d 条带（y = %s cm），标签需要 %d 行（rows 求和）—— 不硬配。\n"
             "改 markers 的 labels（并带写成 {\"text\": \"21/20 kD\", \"rows\": 2}，缺的带删掉那条标签），"
-            "或手工给 marker 行。" % (int(marker_lane), how, len(rows), [round(y, 2) for y in rows], sum(span)))
+            "或手工给 marker 行。" % (int(marker_lane), how, len(rows), [round(y, 2) for y in rows], sum(span)),
+            rows, sum(span))
     for e in entries:
         if not parse_mw(e.get("text", "")):
             raise WorkbenchError("marker 标签 %r 里没有分子量数字，没法做成 band 线" % e.get("text"))

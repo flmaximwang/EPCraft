@@ -63,7 +63,7 @@ REMOVED = {
     "--no-editor": "不再写 HTML 编辑器；编辑在 VectorCraft 里做",
     "--debug": "检测结果都在 fig.vectorcraft 的 Workbench 画板上（lanes / window / marker bands / analysis 图层）",
     "--record": "探测记录就是 Workbench 上的线（加 ep-meta）；数值在 fig.mw.json 里",
-    "--pair-force": "不硬配：在 Workbench 上改 band 线（拖、删、改名 band <MW>），然后 sync",
+    "--pair-force": "带数对不上时 render 自动出草稿标定；在 Workbench 上改 band 线（拖、删、改名 band <MW>），然后 sync",
     "--marker-policy": "marker 泳道被 trim 时只用来标定、不画标签（固定行为）",
     "--margin-frac": "页边由 Figure 的页面规则自动推导",
     "--outline": "文字样式在 VectorCraft 里改",
@@ -216,27 +216,40 @@ def cmd_render(args):
     if not any(meta["lane_angles"]):
         meta.pop("lane_angles")
     model, err, sd = None, None, None
+    counts = []                          # [(泳道, MarkerCountError)]：只是带数对不上的那些
+    build = lambda ml, draft=False: workbench.from_image(   # noqa: E731
+        png, ga["width_cm"], ga["height_cm"], lane_count, float(preset["lane_pitch_cm"]), names, mk_labels, ml,
+        trim=trim, meta=meta, draft=draft)
     for ml in cand:                      # 写了几条 marker 泳道就挨个试：第一条叫不全（如胶边损坏）就换下一条
         try:
-            model, sd = workbench.from_image(png, ga["width_cm"], ga["height_cm"], lane_count,
-                                             float(preset["lane_pitch_cm"]), names, mk_labels, ml,
-                                             trim=trim, meta=meta)
+            model, sd = build(ml)
             break
         except workbench.WorkbenchError as e:
             err = e
+            if isinstance(e, workbench.MarkerCountError):
+                counts.append((ml, e))
             if len(cand) > 1:
                 print("[!] marker 泳道 %d 配不上：%s" % (ml, str(e).splitlines()[0]))
     if model is None:
-        raise err
+        if args.no_draft or not counts:
+            raise err
+        # 草稿：带数最接近的那条（并列取先写的）凑够条数，band 线让用户拖到位 —— 不当真
+        ml, e = min(counts, key=lambda c: abs(len(c[1].rows) - c[1].need))
+        model, sd = build(ml, draft=True)
+        print("[!] 草稿标定：没有一条 marker 泳道叫出的带数与标签对得上（泳道 %d 叫出 %d 条，要 %d 条）。"
+              "band 线是按顺序猜的位置，MW 不可信 —— 在 Workbench 上把每条 band <MW> 线拖到梯子上对应的带"
+              "（梯子上没有的就删掉），然后 sync；band 线动过之后草稿标记自动去掉。"
+              % (ml, len(e.rows), e.need))
     print("[i] 泳道种子：%s，%d 道，孔距 %.3f cm，首道中心 %.3f cm（孔深 %.0f 灰度级）%s" % (
         {"wells": "按加样孔定相", "even": "看不清孔，预设间距居中"}[sd["source"]], lane_count, sd["pitch_cm"],
         sd["first_cm"], sd["depth"], ("；" + sd["note"]) if sd["note"] else ""))
-    print("[i] marker 泳道 %d：%d 条 band 线（来自剖面上叫出的峰）" % (model["marker_lane"], len(model["bands"])))
+    print("[i] marker 泳道 %d：%d 条 band 线（%s）" % (model["marker_lane"], len(model["bands"]),
+                                                "草稿：位置是猜的" if model["meta"].get("draft") else "来自剖面上叫出的峰"))
     _check_pitch(sd, preset)
 
-    report = profiles.analyze(model, png, names)
+    report = _mark_draft(model, profiles.analyze(model, png, names))
     model["meta"].update(_meta_state(model, report))
-    model["meta"]["crop"] = crop_meta                    # ep-meta 与 plan_sync 写回的同一份（第一次 sync = 0 个操作）
+    model["meta"]["crop"] = crop_meta                   # ep-meta 与 plan_sync 写回的同一份（第一次 sync = 0 个操作）
     doc = figure.build_document(model, report, png, os.path.basename(stem), layout=args.profiles, crop=crop_spec)
 
     client, _launched = vc_control.connect(args.port, launch=True)
@@ -284,6 +297,17 @@ def _crop_artboard(args, preset, stage1):
     return spec, meta
 
 
+DRAFT_NOTE = "标定是草稿（band 线位置是猜的，MW 不可信）—— 在 Workbench 上把 band 线拖到梯子的带上，再 sync"
+
+
+def _mark_draft(model, report):
+    """ep-meta 带着 draft → 报告也标上（calibration.draft = true，注里放第一条）。返回 report。"""
+    if model["meta"].get("draft"):
+        report["calibration"]["draft"] = True
+        report["notes"] = [DRAFT_NOTE] + [n for n in report["notes"] if n != DRAFT_NOTE]
+    return report
+
+
 def _meta_state(model, report):
     """写进 ep-meta 的「上一次」状态：sync 拿它说清楚这次改了什么（R² 不再有：标定不做全局拟合）。"""
     return {"bands": [[b["mw"], b["y_cm"]] for b in model["bands"]]}
@@ -325,7 +349,10 @@ def cmd_sync(args):
         model["meta"]["crop"] = cs["crop"]               # plan_sync 把整份 meta（含 crop）写回 ep-meta
     png = cs["png"]
     layout = old.get("profiles_layout") or figure.PROFILE_LAYOUT
-    report = profiles.analyze(model, png, [None] * len(model["lanes"]))
+    if model["meta"].get("draft") and not _same_bands(old.get("bands"), model["bands"]):
+        model["meta"].pop("draft")                       # 用户动过 band 线：标定以他的线为准
+        print("[i] band 线改过了：去掉草稿标记")
+    report = _mark_draft(model, profiles.analyze(model, png, [None] * len(model["lanes"])))
     model["meta"].update(_meta_state(model, report))
     ops, meta = figure.plan_sync(dj, model, report, layout=layout)
     ops = [op for op in cs["ops"] if op["op"] == "relink"] + ops + \
@@ -354,6 +381,66 @@ def cmd_sync(args):
     model["meta"] = meta
     _ask_names(model)
     return 0
+
+
+def _same_bands(prev, bands, tol=0.005):
+    """ep-meta 里上一次的 band 线 [[mw, y], …] 与现在的一样（MW 相同、y 差 < tol cm）？"""
+    a = sorted((float(mw), float(y)) for mw, y in (prev or []))
+    b = sorted((float(x["mw"]), float(x["y_cm"])) for x in bands)
+    return len(a) == len(b) and all(p[0] == q[0] and abs(p[1] - q[1]) < tol for p, q in zip(a, b))
+
+
+# ---------------------------------------------------------------- edit
+
+def cmd_edit(args):
+    """改哪些泳道进 Figure / 泳道名 / 用哪条泳道当 marker：一个撤销步「ep-craft edit」，然后照常 sync。"""
+    import doc_edit
+    import sync_exec
+    if args.keep and args.trim is not None:
+        raise RuntimeError("--keep 与 --trim 只给一个")
+    path = os.path.abspath(args.doc)
+    if not os.path.exists(path):
+        raise RuntimeError("找不到 %s（先 render）" % path)
+    client, _launched = vc_control.connect(args.port, path=path, launch=True)
+    idx, _dirty = _doc_state(client, path)
+    if idx is None:
+        client.open(path)
+        idx, _dirty = _doc_state(client, path)
+    client.execute("document.activate", {"index": idx})
+    dj = client.document_json()
+    model, _notes = workbench.from_document(dj)
+    n = len(model["lanes"])
+    trim = None
+    if args.keep:
+        keep = set(parse_keep(args.keep, n))
+        trim = [i for i in range(1, n + 1) if i not in keep]
+    elif args.trim is not None:
+        trim = parse_keep(args.trim, n) if args.trim.strip() else []
+    names = {}
+    if args.shift_labels:
+        cur = doc_edit.current_names(dj, model)
+        names.update({j: t for j, t in enumerate(doc_edit.shifted(cur, args.shift_labels), 1)})
+    if args.labels is not None:
+        lab = [t.strip() for t in args.labels.split(",")]
+        if len(lab) > n:
+            raise RuntimeError("--labels 有 %d 个名字，Workbench 上只有 %d 条泳道" % (len(lab), n))
+        names.update({j: t for j, t in enumerate(lab, 1)})
+    for item in args.label or []:
+        k, sep, t = item.partition("=")
+        if not sep or not k.strip().isdigit():
+            raise RuntimeError("--label 要写成 泳道号=名字，如 --label 9=M（收到 %r）" % item)
+        names[int(k)] = t
+    ops, lines = doc_edit.plan_edit(dj, model, trim=trim, names=names, marker_lane=args.marker_lane)
+    for line in lines:
+        print("[i] %s" % line)
+    if ops:
+        done = sync_exec.apply_ops_live(client, ops, dj, label="ep-craft edit")
+        print("[i] 已改：%s（一个撤销步「ep-craft edit」）" % sync_exec.describe(done))
+    else:
+        print("[i] 文档里已经是这样了（0 个改动）")
+    if args.no_sync:
+        return 0
+    return cmd_sync(argparse.Namespace(doc=args.doc, port=args.port, dpi=args.dpi, dry_run=False))
 
 
 def _gel_node(document):
@@ -644,6 +731,8 @@ def main(argv=None):
     r.add_argument("--marker-label-angle", type=float, default=0.0,
                    help="marker 标签的角度（度，逆时针；默认 0）；markers.json 里每项可用 angle 覆盖")
     r.add_argument("--no-mw", action="store_true", help="不写 fig.mw.json")
+    r.add_argument("--no-draft", action="store_true",
+                   help="marker 泳道的带数与标签都对不上时拒绝（默认：出草稿标定，band 线让用户拖到位）")
     add_detect(r)
     add_removed(r)
     r.set_defaults(func=cmd_render)
@@ -654,6 +743,20 @@ def main(argv=None):
     s.add_argument("--dpi", type=int, default=300, help="ep-meta 里没记 dpi 时用它")
     s.add_argument("--dry-run", action="store_true", help="只打印要做的改动，不动文档")
     s.set_defaults(func=cmd_sync)
+
+    ed = sub.add_parser("edit", help="改进 Figure 的泳道 / 泳道名 / marker 泳道，然后 sync（不用手写控制口脚本）")
+    ed.add_argument("doc", help="render 写出的 fig.vectorcraft")
+    ed.add_argument("--keep", help="只留这些泳道进 Figure（1 起，如 2-7）；其余画 trim 标记")
+    ed.add_argument("--trim", help="拿掉这些泳道（如 1,8-15）；给空串 \"\" = 一条都不拿")
+    ed.add_argument("--labels", help="泳道名，从泳道 1 起、逗号分隔（空的写成两个逗号之间什么都没有）")
+    ed.add_argument("--label", action="append", metavar="N=TEXT", help="单改一条泳道名，可重复：--label 9=M")
+    ed.add_argument("--shift-labels", type=int, default=0, metavar="K",
+                    help="泳道名整体右移 K 格（负数左移）；先移，再套 --labels / --label")
+    ed.add_argument("--marker-lane", type=int, help="band 线整组搬到这条泳道（y 不变）：改用这条梯子标定")
+    ed.add_argument("--no-sync", action="store_true", help="只改文档，不跟着 sync")
+    ed.add_argument("--port", type=int, default=vc_control.DEFAULT_PORT, help="VectorCraft 控制口（默认 7797）")
+    ed.add_argument("--dpi", type=int, default=300, help="ep-meta 里没记 dpi 时用它")
+    ed.set_defaults(func=cmd_edit)
 
     t = sub.add_parser("selftest")
     t.set_defaults(func=lambda a: selftest())

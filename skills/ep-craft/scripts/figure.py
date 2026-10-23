@@ -148,7 +148,12 @@ def targets(model, report, gel_key, gel_px, wb, labels=None, layout=None, measur
     left_side = (fig_x_cm(ml) or 0.0) < gel_w_cm / 2.0 if marker_items else True
     justify = "Right" if left_side else "Left"
     for it in marker_items:
-        it["box"] = box_offsets(measure_fn(it["text"], it["size"])[0], it["size"], it["angle"], justify)
+        # 已有的标签按它**自己的**对齐量框（对齐归用户，sync 不改）：marker 泳道换到胶的另一侧时
+        # （edit --marker-lane、拖 band 线），旧的左对齐标签按右对齐摆会整个压到胶上
+        cur = labels.get(it["name"])
+        own = (cur or {}).get("justify")
+        it["justify"] = own if own in ("Left", "Center", "Right") else justify
+        it["box"] = box_offsets(measure_fn(it["text"], it["size"])[0], it["size"], it["angle"], it["justify"])
 
     # ---- 标签落位：按**墨迹框**摆，角度只改框的形状；页边距也从框算
     def overflow(box, ax, ay):
@@ -194,7 +199,7 @@ def targets(model, report, gel_key, gel_px, wb, labels=None, layout=None, measur
                       "x": gx + it["anchor_cm"][0] * PT, "y": gy + it["anchor_cm"][1] * PT})
     for it in marker_items:
         specs.append({"kind": "text", "layer": "labels", "name": it["name"], "text": it["text"],
-                      "size": it["size"], "angle": it["angle"], "justify": justify, "rgb": it["rgb"],
+                      "size": it["size"], "angle": it["angle"], "justify": it["justify"], "rgb": it["rgb"],
                       "x": gx + it["anchor_cm"][0] * PT, "y": gy + it["anchor_cm"][1] * PT})
 
     # ---- Workbench 上的分析层：泳道号、叫出来的带
