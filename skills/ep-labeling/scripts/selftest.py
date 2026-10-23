@@ -1265,9 +1265,35 @@ def selftest():
             m_cfg["meta"]["marker_labels"]
     ok += 1
 
+    # 80) 泳道匹配（V10，Issue #1）：道数不变 → 按顺序一一对应。把最外侧那条线拖到胶边，泳道中心挪
+    #     0.2651 cm（0.52 cm 胶的半个孔距，比旧 tol=0.26 多 0.005 cm）也不再判成新泳道 —— 名字不变 `?`、
+    #     不 create+delete。道数变了 → 保序 DP：容差 0.75 × 孔距，配不上的新道给 None，且不许交叉配对。
+    prev15 = [0.660 + 0.520 * k for k in range(15)]
+    assert workbench.match_lanes(prev15, prev15) == list(range(15))
+    moved = [0.3949] + prev15[1:]                          # 第 1 条线拖到胶边：中心 0.660 → 0.3949
+    assert workbench.match_lanes(prev15, moved) == list(range(15)), "道数不变时把拖边判成了新泳道"
+    dropped = prev15[1:]                                   # 删掉第 1 道（15 → 14）
+    assert workbench.match_lanes(prev15, dropped) == list(range(1, 15))
+    shifted = [p + 0.20 for p in prev15[2:]]               # 删两道 + 整体平移 0.2 cm
+    assert workbench.match_lanes(prev15, shifted) == list(range(2, 15))
+    ins = prev15[:7] + [(prev15[6] + prev15[7]) / 2.0] + prev15[7:]   # 中间插一道（15 → 16）
+    m4 = workbench.match_lanes(prev15, ins)
+    assert m4[7] is None and m4[:7] == list(range(7)) and m4[8:] == list(range(7, 15)), m4
+    assert workbench.match_lanes([], [1.0, 2.0]) == [None, None]
+    assert workbench.match_lanes([0.0, 1.0], []) == []
+    assert workbench.match_lanes([0.0, 1.0], [0.90], tol=0.05) == [None]     # 容差可覆盖
+    assert workbench.match_lanes([0.0], [5.0, 9.0]) == [0, None]             # 单道：顺序仍成立
+    # 同一条链路的另一种入口：lane_names_after() 用它搬名字 —— 第 1 道中心 0.660 → 0.3949 时
+    # 名字必须原样留在原位（这就是 Issue #1 里名字变 `?` 的那一步）。
+    names15 = ["M"] + ["L%d" % i for i in range(1, 15)]
+    fake_m = {"lanes": [{"left_cm": 0.0, "right_cm": 0.7898, "trimmed": False}]
+                        + [{"left_cm": prev15[i] - 0.26, "right_cm": prev15[i] + 0.26, "trimmed": False}
+                           for i in range(1, 15)]}
+    assert workbench.lane_names_after(fake_m, prev15, names15) == names15, "拖边后名字没留住"
+    ok += 1
+
     print("selftest %d/%d 通过" % (ok, ok))
     return 0
-
 
 
 def _walk_keys(o):
