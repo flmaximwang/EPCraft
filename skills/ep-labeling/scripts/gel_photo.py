@@ -59,7 +59,7 @@ SKILL_VERSION = "vectorcraft-1"
 
 # 已经去掉的参数 → 用什么代替（V6；给了就报这一句，不静默忽略）
 REMOVED = {
-    "--keep-lanes": "--trim-lanes（反过来写：要从 Figure 拿掉的泳道号），或在 VectorCraft 里把那条泳道的两条线挪进 trimmed 图层",
+    "--keep-lanes": "--trim-lanes（反过来写：要从 Figure 拿掉的泳道号），或在 VectorCraft 的 trimmed 图层里给那条泳道画一条短线（trim 标记）",
     "--svg": "fig.vectorcraft 本身就是矢量文档；要 SVG 就在 VectorCraft 里 File → Export",
     "--no-editor": "不再写 HTML 编辑器；编辑在 VectorCraft 里做",
     "--debug": "检测结果都在 fig.vectorcraft 的 Workbench 画板上（lanes / window / marker bands / analysis 图层）",

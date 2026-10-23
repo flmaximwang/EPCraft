@@ -94,8 +94,8 @@ Figure 在 Workbench **下方**（变宽变高不会压到 Workbench），Profil
 | `gel` | 全部 | 锁定、打印 | Workbench：一张图 `gel`；Figure：每个保留段一个剪切组 `gel seg k` | 否 |
 | `analysis` | Workbench | 锁定、不打印 | 泳道号 `tag n`（灰），叫出来的带的短刻度 `peak n`（绿） | 否（每次 sync 重建） |
 | `window` | Workbench | 不锁、不打印 | 两条横线 `top`、`bottom`（橙），伸出胶边 0.15 cm 方便抓 | **拖** |
-| `lanes` | Workbench | 不锁、不打印 | 竖线 `lane`（青），全窗高；按 x 排序两两成对 | **拖、加、删** |
-| `trimmed` | Workbench | 不锁、不打印 | 用户挪进来的泳道线对（sync 后变灰） | **成对挪进/挪出** |
+| `lanes` | Workbench | 不锁、不打印 | 竖线 `lane`（青），全窗高；是**分隔线**：相邻泳道共用一条，n 道 = n+1 条 | **拖、加、删** |
+| `trimmed` | Workbench | 不锁、不打印 | trim 标记：胶顶上方横跨泳道的灰色短线 `trim`，中点落在哪道就拿掉哪道 | **画、删** |
 | `marker bands` | Workbench | 不锁、不打印 | 横线 `band <MW>`（品红），伸出 marker 泳道 0.15 cm | **拖、删、改名** |
 | `labels` | Figure | 不锁、打印 | `label lane n`、`label band <MW>`（并带：`label band 21/20`）、用户自加的任意文字 | **文字与样式**；位置归 agent |
 | `profiles` | Profiles | 锁定、打印 | 曲线、坐标、刻度、泳道说明 | 否（每次 sync 重建） |
@@ -114,7 +114,7 @@ marker 标签表、**上一次的泳道中心**（给标签匹配用）、上一
 | `labels` 里其它名字的文字 | — | 一切 |
 | `gel seg k`、Figure / Profiles 画板大小 | 一切（由泳道线 + 保留泳道算） | — |
 | `analysis`、`profiles` 层 | 一切 | — |
-| Workbench 的线 | 只改颜色：`trimmed` 里的变灰、挪回 `lanes` 的变青 | 位置、名字、条数 |
+| Workbench 的线 | 只改颜色：`trimmed` 里的变灰、`lanes` 里的变青 | 位置、名字、条数 |
 | `ep-meta` | 每次改写 | — |
 
 推论：用户拖了标签的位置，下一次 sync 会拉回锚点；**删掉** `label lane n` 对象，下一次 sync 会用旧名字重建它 ——
@@ -124,7 +124,11 @@ marker 标签表、**上一次的泳道中心**（给标签匹配用）、上一
 
 `sync` 读活文档（`document.json`，不需要先存盘），按**图层**绑定，不靠对象名（用户新画的线没名字也算）：
 
-- `lanes`、`trimmed` 两层各自把竖线按中点 x 排序、两两成对（左、右）；两层的泳道合起来按中心从左到右编号 1…n。
+- `lanes` 层的竖线按中点 x 排序，**相邻两条之间就是一条泳道**（相邻泳道共用中间那条线），从左到右编号 1…n；
+  要劈开一条泳道就在中间加一条线，要合并两条就删掉中间那条。
+- `trimmed` 层里每条线的中点 x 落在哪条泳道里，那条泳道就不进 Figure；同一道放几条都算一次。删掉标记 = 恢复。
+- 旧版文档（`ep-meta` 里没有 `"lane_lines": "shared"`，每道一左一右两条线、trim 时把线对挪进 `trimmed`）
+  照旧按线对读，并提示「旧版文档」；重新 render 才换成共用分隔线。
 - `window` 层恰好两条横线 → 上 = `top`、下 = `bottom`。超出胶面只提示、按胶面裁。
 - `marker bands` 层的横线名字必须是 `band <MW>`（数字可带小数）。
 - marker 泳道 = **[L, R] 包含全部 band 线中点**的那一条（不存序号，增删泳道后照样找得到）。
@@ -135,13 +139,15 @@ marker 标签表、**上一次的泳道中心**（给标签匹配用）、上一
 
 | 报错（大意） | 意思 / 怎么改 |
 |---|---|
-| `lanes`（或 `trimmed`）图层里有奇数条竖线 | 少拖了一条或多画了一条。挪进 `trimmed` 必须**两条一起挪** |
-| 图层里有横线 —— 泳道边界应是竖线 | 横线画错层了 |
-| 泳道 i 与泳道 j 重叠 / 左右边线几乎重合 / 整个在胶面外 | 某条线被拖过了邻线，配对错位；把它拖回去 |
+| `lanes` 图层里只有 0 / 1 条竖线 | 至少两条才夹得出一条泳道 |
+| `lanes` 图层里有横线 —— 泳道分隔线应是竖线 | 横线画错层了 |
+| `trimmed` 图层里有竖线 | 按旧习惯把泳道线挪进了 `trimmed`；挪回 `lanes`，改在 `trimmed` 里画一条短横线落在那条泳道里 |
+| `trimmed` 图层里的线中点不在任何泳道里 | trim 标记落在最外两条分隔线之外（或正好压在分隔线上）；拖进要拿掉的那条泳道 |
+| 泳道 i 的两条边线几乎重合 / 整个在胶面外 | 两条分隔线叠在一起（多复制了一条）；删掉多的那条 |
 | window 应当恰好有两条横线 / top 与 bottom 几乎重合（<0.05 cm）/ top 在 bottom 下面 | 积分窗被删了一条、多了一条或拖反了 |
 | 一条线名叫 'xxx' —— 改名为「band <分子量>」 | band 线名不是 `band 35` 这种格式（含复制出来的无名线） |
 | marker bands 图层里有竖线 | 竖线画错层 |
-| 条带线的中点不在任何泳道里 | band 线被拖出了 marker 泳道，或 marker 泳道的边线收得太窄 |
+| 条带线的中点不在任何泳道里 | band 线被拖到了最外两条分隔线之外 |
 | marker 条带线横跨了泳道 … | band 线分散在几条泳道里，应全在一条里 |
 | 只剩 k 条，标定至少要 3 条 | 删多了 |
 | band A 在 band B 下面，但分子量不更小 | 名字或位置弄反了（MW 必须随 y 向下单调减小） |
@@ -326,7 +332,7 @@ render 的其它开关（全是 stage 1）：`--gel-cm`、`--gel-lanes`、`--tri
 | `--no-editor` | 不再写 HTML 编辑器 |
 | `--debug` 覆盖图 | Workbench 画板（`lanes` / `window` / `marker bands` / `analysis` 图层） |
 | `--record` JSON | Workbench 上的线 + `ep-meta`；数值在 `fig.mw.json` |
-| `--keep-lanes` | `--trim-lanes`（写要拿掉的），或把泳道的两条线挪进 `trimmed` |
+| `--keep-lanes` | `--trim-lanes`（写要拿掉的），或在 `trimmed` 里给那条泳道画一条 trim 标记 |
 | `--marker-policy` | 固定行为：marker 泳道被 trim 时只标定、不画标签 |
 | `--pair-force`、`y_px` 手动标定 | 在 Workbench 上拖 / 删 / 改名 `band <MW>` 线，然后 sync |
 | `--mw-method interp` | 没有可选方法：MW 一律在相邻两条 marker 带之间插值，全局拟合被禁止 |

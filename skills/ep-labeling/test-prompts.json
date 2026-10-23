@@ -139,7 +139,7 @@
       "id": "should-trigger-18",
       "type": "should_trigger",
       "prompt": "这张 15 条泳道的胶，我只要第 1、2、8、9 这四条，出一张能放汇报里的图。",
-      "expected_behavior": "新 render 时第 1 步就记下要拿掉的：`--trim-lanes 3-7,10-15`（写的是要拿掉的，不是要留的；`--keep-lanes` 已移除）。已经有文档时不重跑：请用户（或 agent 经控制口）把这些泳道的两条线挪进 `trimmed` 图层，然后 sync。Figure 上 1-2 一段、8-9 一段，段边界在与相邻被拿掉泳道中心的中点，段间 0.15 cm 白缝；标签保留原号 1/2/8/9。提醒图注必须声明「非相邻泳道由同一块胶拼接」。trimmed 泳道照样分析、照样在 fig.mw.json 里（`trimmed: true`）。",
+      "expected_behavior": "新 render 时第 1 步就记下要拿掉的：`--trim-lanes 3-7,10-15`（写的是要拿掉的，不是要留的；`--keep-lanes` 已移除）。已经有文档时不重跑：请用户（或 agent 经控制口：`layer.setCurrent` trimmed + `shape.line`）在 `trimmed` 图层里给这些泳道各画一条短线（trim 标记，中点落在泳道里），泳道线留在 `lanes`，然后 sync。Figure 上 1-2 一段、8-9 一段，段边界在与相邻被拿掉泳道中心的中点，段间 0.15 cm 白缝；标签保留原号 1/2/8/9。提醒图注必须声明「非相邻泳道由同一块胶拼接」。trimmed 泳道照样分析、照样在 fig.mw.json 里（`trimmed: true`）。",
       "notes": ""
     },
     {
@@ -174,7 +174,7 @@
       "id": "should-trigger-23",
       "type": "should_trigger",
       "prompt": "drop lanes 1–2 from the figure",
-      "expected_behavior": "If the document already exists: move lane 1's and lane 2's two lines each into the `trimmed` layer (user in the Layers panel, or the agent via `layer.move` into the unlocked `trimmed` layer), then `sync`. On a fresh render: `--trim-lanes 1,2`. Lane numbers stay original on the Figure. If lane 1 or 2 is the marker lane, say that it still calibrates but its marker labels disappear from the Figure, and ask whether to keep it. Trimmed lanes stay in `fig.mw.json` with `trimmed: true`.",
+      "expected_behavior": "If the document already exists: draw a short trim mark inside lane 1 and inside lane 2 in the unlocked `trimmed` layer (the user draws it, or the agent uses `layer.setCurrent` on `trimmed` then `shape.line`); the lane lines stay in `lanes`. Then `sync`. On a fresh render: `--trim-lanes 1,2`. Lane numbers stay original on the Figure. If lane 1 or 2 is the marker lane, say that it still calibrates but its marker labels disappear from the Figure, and ask whether to keep it. Trimmed lanes stay in `fig.mw.json` with `trimmed: true`.",
       "notes": "Replaces the old --keep-lanes re-render."
     },
     {
@@ -195,7 +195,7 @@
       "id": "should-trigger-26",
       "type": "should_trigger",
       "prompt": "I added a lane",
-      "expected_behavior": "Run `sync fig.vectorcraft`. It pairs the lane lines by x, matches existing labels to lanes by their previous centres (custom names follow their lanes), creates a `?` label for the new lane and prints `[?] 泳道 [n] 还没有名字`. Ask the user what the new lane holds, set its label text (control port `text.setText` on `label lane n`, or the user types it), then `sync` again. If sync says a layer has an odd number of lines, the user drew only one line of the pair.",
+      "expected_behavior": "Run `sync fig.vectorcraft`. It sorts the lane lines by x (neighbouring lanes share one separator, so every gap between two lines is a lane), matches existing labels to lanes by their previous centres (custom names follow their lanes), creates a `?` label for the new lane and prints `[?] 泳道 [n] 还没有名字`. Ask the user what the new lane holds, set its label text (control port `text.setText` on `label lane n`, or the user types it), then `sync` again. A single new line splits an existing lane; to add a lane at the edge, one line past the outermost separator is enough.",
       "notes": ""
     },
     {

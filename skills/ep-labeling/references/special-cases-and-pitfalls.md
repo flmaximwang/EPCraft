@@ -48,7 +48,7 @@ render 按 `lanes.json` `marker_lanes`（再加 marker 预设的 `marker_lane`�
   看不到孔（孔深 < 20 灰度级）就退回「预设间距、整排居中」，日志 `看不清孔，预设间距居中`。这时种子没有锚定，可能整体偏半道到一道。
   处置：先修 stage 1 让胶面上缘落在孔底（去掉多余的 trim、修 `--rect`）再 render；或照常 render、请用户在 Workbench 上把泳道线拖正后 sync。
 - **孔距与预设差 >10%**（`[!] scale: …`）：宽度定标或预设有一个不对，或照片裁过却没给 `--gel-lanes`。先问，不要改预设凑数。
-- **个别泳道偏了**：不调参数、不重跑 —— 在 Workbench 上拖那两条线，sync。实测种子与手放泳道平均差 0.015 cm，偏差大多来自胶本身（smile、弯道）。
+- **个别泳道偏了**：不调参数、不重跑 —— 在 Workbench 上拖那条泳道两侧的分隔线（也会改邻道的边），sync。实测种子与手放泳道平均差 0.015 cm，偏差大多来自胶本身（smile、弯道）。
 
 ## 4. History and lessons
 
@@ -83,5 +83,5 @@ render 按 `lanes.json` `marker_lanes`（再加 marker 预设的 `marker_lane`�
 - 没带 `--control` 启动的 VectorCraft 连不上，只能请用户存盘退出，再由 skill 带端口重启（不替用户关，会丢未存改动）。
 - `document.find` 是**子串**匹配：`label lane 1` 会命中 `label lane 10`–`15`。按完整名字在 `document.json` 里找。
 - 在锁定或隐藏的当前图层里 `text.create` 会把对象放进**别的**图层。新建标签只在 `labels`（不锁、可见）里做。
-- 用户手动在 Layers 面板挪泳道进 `trimmed`：两条线都要挪（奇数条会被校验拒绝）；`trimmed` 必须保持不锁。
+- 拿掉泳道 = 在 `trimmed` 里画一条短线落在那条泳道里；泳道线本身留在 `lanes`（把竖线挪进 `trimmed` 会被校验拒绝）。`trimmed` 必须保持不锁。
 - `document.save` 返回时文件可能还没写完；skill 自己会轮询，手动读文件前也要等。

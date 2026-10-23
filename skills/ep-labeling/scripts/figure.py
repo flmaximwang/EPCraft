@@ -14,8 +14,8 @@ V7 再把同一套 ops 翻成控制口命令。render 与 sync 因此不会各�
         **从不写文字与样式**（文字、字体、字号、颜色归用户）；labels 层里别的名字的对象一律不碰；
     analysis / profiles 两层：每次整层重建；
     gel 层：Figure 上的 `gel seg k`（剪切组）由 agent 管；Workbench 那张 `gel` 图不动；
-    Workbench 的线（lanes / trimmed / window / marker bands）归用户，agent 只给 trimmed 里的线换灰色、
-        挪回 lanes 的线换回青色；
+    Workbench 的线（lanes / trimmed / window / marker bands）归用户，agent 只给 trimmed 里的 trim 标记换灰色、
+        lanes 里的分隔线换回青色；
     ep-meta：每次改写。
 
 坐标：pt，y 向下。Workbench 画板在 (0, 0) 起，Figure 画板在它**下面**（这样 Figure 变宽变高不会压到
@@ -463,7 +463,7 @@ def plan_sync(document, model, report, layout=None, measure_fn=None, tol=0.01):
         if (nm.startswith("label lane ") or nm.startswith("label band ")) and n["id"] not in used:
             ops.append({"op": "delete", "id": n["id"]})
 
-    # ---- Workbench：trimmed 里的线变灰、挪回 lanes 的线变青
+    # ---- Workbench：trimmed 里的 trim 标记变灰、lanes 里的分隔线变青
     for lay, rgb in (("trimmed", GREY), ("lanes", workbench.RGB["lane"])):
         for n in vc_file.lay_children(L[lay]):
             st = next((it for it in n.get("appearance", {}).get("items", []) if it["kind"] == "stroke"), None)

@@ -663,7 +663,7 @@ def selftest():
             started[1].__exit__(None, None, None)
     ok += 1
 
-    # 60) Workbench 建模（V3）：record → 模型。泳道左右 = 中心 ± 宽/2（不越过邻道中点），
+    # 60) Workbench 建模（V3）：record → 模型。相邻泳道首尾相接，分隔线在两中心的中点；最外两条在首/末道中心 ± 宽/2，
     #     marker 条带线按标签配 MW（rows:2 的并带出两条线），trim 进 trimmed，默认窗下沿让开 3%；
     #     条带数与标签行数对不上 → 拒绝；标签里没数字 → 拒绝。
     _preset, rec = _synth_record()
@@ -672,9 +672,14 @@ def selftest():
                                 meta={"skill": "ep-labeling"})
     assert len(mdl["lanes"]) == 15 and mdl["marker_lane"] == 1
     assert [ln["trimmed"] for ln in mdl["lanes"]][-3:] == [False, True, True]
-    for ln, src in zip(mdl["lanes"], rec["lanes"]):
-        assert abs((ln["left_cm"] + ln["right_cm"]) / 2 - src["x_cm"]) < 1e-3
-        assert abs((ln["right_cm"] - ln["left_cm"]) - src["width_cm"]) < 1e-3
+    xs_r = [src["x_cm"] for src in rec["lanes"]]
+    for a_, b_ in zip(mdl["lanes"], mdl["lanes"][1:]):
+        assert a_["right_cm"] == b_["left_cm"], (a_, b_)
+    for i, ln in enumerate(mdl["lanes"][:-1]):
+        assert abs(ln["right_cm"] - (xs_r[i] + xs_r[i + 1]) / 2) < 1e-3, (i, ln)
+    assert abs(mdl["lanes"][0]["left_cm"] - (xs_r[0] - rec["lanes"][0]["width_cm"] / 2)) < 1e-3
+    assert abs(mdl["lanes"][-1]["right_cm"] - (xs_r[-1] + rec["lanes"][-1]["width_cm"] / 2)) < 1e-3
+    assert mdl["meta"]["lane_lines"] == workbench.LANE_LINES
     ys = [b["y_cm"] for b in rec["bands"]["1"]]
     assert [(b["mw"], b["y_cm"]) for b in mdl["bands"]] == list(zip([250.0, 100.0, 50.0], ys)), mdl["bands"]
     assert mdl["window"] == {"top_cm": workbench.TOP_GUARD_CM, "bottom_cm": round(6.6 * 0.97, 4)}, mdl["window"]
@@ -701,8 +706,9 @@ def selftest():
     assert names_in == {n for n, *_r in workbench.LAYERS}, names_in
     ok += 1
 
-    # 62) 读回用户的改动（V3）：泳道 3 右移 0.2 cm（且线有点斜）、删 band 100、在泳道 7/8 之间
-    #     新画一对**没有名字**的线、把泳道 2 挪进 trimmed、积分窗上沿下移 → 全部按几何读出来。
+    # 62) 读回用户的改动（V3）：泳道 3 的两条分隔线右移 0.2 cm（且线有点斜）、删 band 100、在泳道 7 正中
+    #     新画一条**没有名字**的线（劈成两道）、在 trimmed 里给泳道 2 放一条 trim 标记、积分窗上沿下移
+    #     → 全部按几何读出来。
     mdl4 = workbench.from_record(rec, names, ["250 kD", "100 kD", "50 kD", "10 kD"], 1,
                                  marker_rows_cm=ys + [ys[-1] + 0.5], trim=[14, 15])
     d = vc_file.loads(vc_file.dumps(_synth_wb_doc(mdl4)[0]))[0]["document"]
@@ -710,46 +716,52 @@ def selftest():
     gx, s_pt = _wb_origin(d)
     cm = lambda pt: (pt - gx) / vc_file.PT_PER_CM
     lane_lines = vc_file.lay_children(L["lanes"])
+    assert len(lane_lines) == 16                         # 15 道 = 16 条分隔线
+    assert len(vc_file.lay_children(L["trimmed"])) == 2  # 泳道 14、15 各一条 trim 标记
     by_x = sorted(lane_lines, key=lambda n: vc_file.line_ends(n)[0][0])
-    for n in by_x[4:6]:                                  # 泳道 3 的左右线
+    for n in by_x[2:4]:                                  # 泳道 3 的两条分隔线（也是泳道 2 的右线、泳道 4 的左线）
         for a_ in n["kind"]["path"]["subpaths"][0]["anchors"]:
             a_["p"][0] += 0.2 * vc_file.PT_PER_CM
         n["kind"]["path"]["subpaths"][0]["anchors"][1]["p"][0] += 0.6     # 下端斜 0.6 pt：读中点
-    moved = by_x[2:4]                                    # 泳道 2 → trimmed
-    for n in moved:
-        lane_lines.remove(n)
-    vc_file.lay_children(L["trimmed"]).extend(moved)
+    mark = json.loads(json.dumps(vc_file.lay_children(L["trimmed"])[0]))   # 泳道 2 → trimmed
+    mark["id"] = 91000
+    dx = (mdl4["lanes"][1]["left_cm"] + mdl4["lanes"][1]["right_cm"]) / 2 * vc_file.PT_PER_CM + gx \
+        - sum(p_[0] for p_ in vc_file.line_ends(mark)) / 2
+    for a_ in mark["kind"]["path"]["subpaths"][0]["anchors"]:
+        a_["p"][0] += dx
+    vc_file.lay_children(L["trimmed"]).append(mark)
     bands_l = vc_file.lay_children(L["marker bands"])
     bands_l[:] = [n for n in bands_l if n["name"] != "band 100"]
-    c7, c8 = (mdl["lanes"][6]["right_cm"], mdl["lanes"][7]["left_cm"])
-    for x_cm in (c7 + 0.05, c8 - 0.05):
-        n = json.loads(json.dumps(by_x[0]))
-        n.pop("name")
-        n["id"] = 90000 + int(x_cm * 1000)
-        x = gx + x_cm * vc_file.PT_PER_CM
-        for a_ in n["kind"]["path"]["subpaths"][0]["anchors"]:
-            a_["p"][0] = x
-        lane_lines.append(n)
+    x_new = (mdl4["lanes"][6]["left_cm"] + mdl4["lanes"][6]["right_cm"]) / 2
+    n = json.loads(json.dumps(by_x[0]))
+    n.pop("name")
+    n["id"] = 90000
+    for a_ in n["kind"]["path"]["subpaths"][0]["anchors"]:
+        a_["p"][0] = gx + x_new * vc_file.PT_PER_CM
+    lane_lines.append(n)
     wl = sorted(vc_file.lay_children(L["window"]), key=lambda n: vc_file.line_ends(n)[0][1])
     for a_ in wl[0]["kind"]["path"]["subpaths"][0]["anchors"]:
         a_["p"][1] += 0.5 * vc_file.PT_PER_CM
     got, notes = workbench.from_document(d)
     assert len(got["lanes"]) == 16, len(got["lanes"])
-    assert [ln["trimmed"] for ln in got["lanes"]][:3] == [False, True, False]
+    assert [i for i, ln in enumerate(got["lanes"], 1) if ln["trimmed"]] == [2, 15, 16], got["lanes"]
     c3 = (got["lanes"][2]["left_cm"] + got["lanes"][2]["right_cm"]) / 2
-    want = rec["lanes"][2]["x_cm"] + 0.2 + 0.3 / vc_file.PT_PER_CM   # 两条线下端各斜 0.6 pt → 中点各多 0.3 pt
+    c3_0 = (mdl4["lanes"][2]["left_cm"] + mdl4["lanes"][2]["right_cm"]) / 2
+    want = c3_0 + 0.2 + 0.3 / vc_file.PT_PER_CM          # 两条线下端各斜 0.6 pt → 中点各多 0.3 pt
     assert abs(c3 - want) < 2e-3, (c3, want)
-    assert abs(got["lanes"][7]["left_cm"] - (c7 + 0.05)) < 1e-3, got["lanes"][7]
+    assert got["lanes"][1]["right_cm"] == got["lanes"][2]["left_cm"]           # 共用的那条线
+    assert abs(got["lanes"][6]["right_cm"] - x_new) < 1e-3 and abs(got["lanes"][7]["left_cm"] - x_new) < 1e-3
     assert [b["mw"] for b in got["bands"]] == [250.0, 50.0, 10.0]
     assert abs(got["window"]["top_cm"] - (workbench.TOP_GUARD_CM + 0.5)) < 1e-3, got["window"]
     ok += 1
 
-    # 63) 校验（V3）：所有问题一次报完、什么都不读出来 —— 奇数条泳道线、window 三条线、
-    #     band 名字不合规、泳道交错；另一份：条带线横跨两条泳道、MW 不单调、条带不足 3 条。
+    # 63) 校验（V3）：所有问题一次报完、什么都不读出来 —— 删掉最右的分隔线（泳道 15 的 trim 标记落空）、
+    #     window 三条线、band 名字不合规；trimmed 里放竖线（旧习惯：把线挪进去）；
+    #     另一份：条带线横跨两条泳道、MW 不单调、条带不足 3 条。
     bad = json.loads(json.dumps(top_wb["document"]))
     B = {l["name"]: l for l in bad["layers"]}
     lanes_b = vc_file.lay_children(B["lanes"])
-    lanes_b.pop()                                                           # 奇数
+    lanes_b.remove(max(lanes_b, key=lambda n: vc_file.line_ends(n)[0][0]))  # 最右那条
     vc_file.lay_children(B["window"]).append(json.loads(json.dumps(vc_file.lay_children(B["window"])[0])))
     vc_file.lay_children(B["marker bands"])[0]["name"] = "250kD band"
     try:
@@ -758,27 +770,42 @@ def selftest():
     except workbench.WorkbenchError as e:
         msg = str(e)
         assert "有 3 处要改" in msg, msg                                     # 一次报完
-        for frag in ("奇数", "window 图层应当恰好有两条横线", "band <分子量>"):
+        for frag in ("不在任何泳道里", "window 图层应当恰好有两条横线", "band <分子量>"):
             assert frag in msg, (frag, msg)
     bad3 = json.loads(json.dumps(top_wb["document"]))
     B3 = {l["name"]: l for l in bad3["layers"]}
-    dup = json.loads(json.dumps(sorted(vc_file.lay_children(B3["lanes"]),
-                                       key=lambda n: vc_file.line_ends(n)[0][0])[6:8]))
-    for i, n in enumerate(dup):
-        n["id"] = 80000 + i
-        for a_ in n["kind"]["path"]["subpaths"][0]["anchors"]:
-            a_["p"][0] += 1.0                                               # 与泳道 4 交错 1 pt
-    vc_file.lay_children(B3["trimmed"]).extend(dup)
+    moved = sorted(vc_file.lay_children(B3["lanes"]), key=lambda n: vc_file.line_ends(n)[0][0])[6:8]
+    for n in moved:                                                         # 旧习惯：把泳道的线挪进 trimmed
+        vc_file.lay_children(B3["lanes"]).remove(n)
+        vc_file.lay_children(B3["trimmed"]).append(n)
     try:
         workbench.from_document(bad3)
-        raise AssertionError("交错的泳道没报错")
+        raise AssertionError("trimmed 里的竖线没报错")
     except workbench.WorkbenchError as e:
-        assert "重叠" in str(e), e
+        assert "trimmed 图层里有竖线" in str(e), e
+    # 旧版文档（ep-meta 没有 lane_lines）：仍按「每道两条线」读，并提示重新 render
+    mdl_o = dict(mdl, meta={k: v for k, v in mdl["meta"].items() if k != "lane_lines"})
+    doc_o = vc_file.new_doc("wb")
+    key_o, w_o, h_o = vc_file.add_image(doc_o, png_wb)
+    lay_o = workbench.make_layers(doc_o)
+    fr_o = workbench.add_workbench(doc_o, lay_o, mdl_o, key_o, w_o, h_o, x0=340.0)
+    for lay in ("lanes", "trimmed"):
+        vc_file.lay_children(lay_o[lay])[:] = []
+    for ln in mdl["lanes"]:
+        for x in (ln["left_cm"] + 0.05, ln["right_cm"] - 0.05):
+            xp = fr_o["gel_x"] + x * vc_file.PT_PER_CM
+            vc_file.lay_children(lay_o["trimmed" if ln["trimmed"] else "lanes"]).append(
+                vc_file.line(doc_o, "lane", (xp, 30), (xp, 90), (0, .7, 1)))
+    old = vc_file.loads(vc_file.dumps(doc_o))[0]["document"]
+    got_o, notes_o = workbench.from_document(old)
+    assert any("旧版文档" in t for t in notes_o), notes_o
+    assert len(got_o["lanes"]) == 15 and [ln["trimmed"] for ln in got_o["lanes"]][-2:] == [True, True]
+    assert abs(got_o["lanes"][3]["left_cm"] - (mdl["lanes"][3]["left_cm"] + 0.05)) < 1e-3
     bad2 = json.loads(json.dumps(top_wb["document"]))
     B2 = {l["name"]: l for l in bad2["layers"]}
     bl = sorted(vc_file.lay_children(B2["marker bands"]), key=lambda n: vc_file.line_ends(n)[0][1])
     a0 = bl[0]["kind"]["path"]["subpaths"][0]["anchors"]
-    for shift, frag in ((4 * 0.565, "横跨了泳道"), (2.0, "不在任何泳道里")):   # 落到泳道 5 上 / 落在道间空隙
+    for shift, frag in ((4 * 0.565, "横跨了泳道"), (-2.0, "不在任何泳道里")):  # 落到泳道 5 上 / 落到最左分隔线外
         for a_ in a0:
             a_["p"][0] += shift * vc_file.PT_PER_CM
         try:
@@ -1015,7 +1042,8 @@ def selftest():
     ok += 1
 
     # 73) sync 往返（V5，spec §11 的脚本版，不需要 app）：在 render 的文档上模拟用户 ——
-    #     泳道 3 右移 0.2 cm、删 band 50 线、在泳道 4/5 之间加一对没名字的线、把泳道 14 挪进 trimmed、
+    #     泳道 3 的两条分隔线右移 0.2 cm、删 band 50 线、在泳道 4 里偏右加一条没名字的线（劈出新泳道 5）、
+    #     在 trimmed 里给泳道 14 放一条 trim 标记（青色，sync 后变灰）、
     #     把泳道 2 的标签改成 "WT" 并改成红色 → 读回 → plan_sync → apply_ops_json：
     #     "WT" 文字与颜色原样、跟着泳道走（改名为新泳道号）并重新居中；新泳道得到 "?" 标签；
     #     trimmed 的泳道标签删掉、Figure 拆成两段（中间有拼缝）、trimmed 的线变灰；50 kD 标签随线删除；
@@ -1026,20 +1054,23 @@ def selftest():
     gx_wb, _s = _wb_origin(d6)
     PTc = vc_file.PT_PER_CM
     lines6 = sorted(vc_file.lay_children(L6["lanes"]), key=lambda n: vc_file.line_ends(n)[0][0])
-    for n in lines6[4:6]:
+    assert len(lines6) == 16
+    for n in lines6[2:4]:
         for a_ in n["kind"]["path"]["subpaths"][0]["anchors"]:
             a_["p"][0] += 0.2 * PTc
-    for n in lines6[26:28]:                              # 原泳道 14（"Y"）→ trimmed：中间一段被拿掉
-        vc_file.lay_children(L6["lanes"]).remove(n)
-        vc_file.lay_children(L6["trimmed"]).append(n)
-    x45 = (m5["lanes"][3]["right_cm"] + m5["lanes"][4]["left_cm"]) / 2
-    for k, dx in enumerate((-0.03, 0.03)):
-        n = json.loads(json.dumps(lines6[0]))
-        n.pop("name")
-        n["id"] = 70000 + k
-        for a_ in n["kind"]["path"]["subpaths"][0]["anchors"]:
-            a_["p"][0] = gx_wb + (x45 + dx) * PTc
-        vc_file.lay_children(L6["lanes"]).append(n)
+    c14 = (m5["lanes"][13]["left_cm"] + m5["lanes"][13]["right_cm"]) / 2   # 原泳道 14（"Y"）→ trimmed：中间一段被拿掉
+    mark = json.loads(json.dumps(lines6[0]))
+    mark["id"], mark["name"] = 70100, "trim"
+    for a_, dx in zip(mark["kind"]["path"]["subpaths"][0]["anchors"], (-0.1, 0.1)):
+        a_["p"] = [gx_wb + (c14 + dx) * PTc, 20.0]
+    vc_file.lay_children(L6["trimmed"]).append(mark)
+    x_split = (m5["lanes"][3]["left_cm"] + m5["lanes"][3]["right_cm"]) / 2 + 0.1
+    n = json.loads(json.dumps(lines6[0]))
+    n.pop("name")
+    n["id"] = 70000
+    for a_ in n["kind"]["path"]["subpaths"][0]["anchors"]:
+        a_["p"][0] = gx_wb + x_split * PTc
+    vc_file.lay_children(L6["lanes"]).append(n)
     bl6 = vc_file.lay_children(L6["marker bands"])
     bl6[:] = [n for n in bl6 if n["name"] != "band 50"]
     wt = [n for n in vc_file.lay_children(L6["labels"]) if n["name"] == "label lane 2"][0]

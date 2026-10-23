@@ -27,7 +27,7 @@ Automatic detection won't be perfect on phone photos. So the skill should **make
 2. **Python writes the `.vectorcraft` file directly** (§5). The app is not needed to create it.
 3. **The PNG always comes from VectorCraft's own export**, through the control port (§6). Then `fig.png` always matches what the user sees, both after `render` and after every `sync`. VectorCraft is a **hard requirement**: `doctor` checks for it, and `render` fails without it. It never writes a `.vectorcraft` without a PNG.
 4. **Sync is live.** The user keeps the document open in a VectorCraft instance started with `--control`. `sync` reads the live document, applies updates in place, saves and exports. The user never closes or reloads anything.
-5. **Lane model = lines, not rectangles.** All lanes share **one** integration window: one `top` and one `bottom` horizontal line. Each lane is a **pair of vertical lines** (left and right). Lanes are paired by x order, left to right.
+5. **Lane model = lines, not rectangles.** All lanes share **one** integration window: one `top` and one `bottom` horizontal line. Lanes are separated by vertical lines: neighbouring lanes **share one line**, so n lanes need n+1 lines and every gap between two neighbouring lines (by x order) is a lane. (Amended 2026-10-23; before that each lane had its own left and right line.)
 6. **Marker band lines carry their MW in their name** (e.g. `band 35`). Deleting a band line drops that calibration point, and renaming one changes its value. This replaces hand-rewritten marker label lists (the IMG_1497 case).
 7. **The marker lane is found from the geometry:** it is the lane whose [L, R] contains the marker band lines. It is not a stored index, so it survives added or deleted lanes.
 8. **Ownership on sync** (§4.4): the agent owns geometry (label x follows the lane centre, marker label y follows its band line, curves, figure crop). The user owns label **text, font, size and colour**, which are never overwritten.
@@ -65,10 +65,10 @@ Object names are the binding between the document and the analysis. The agent on
 | Layer | Artboard | Lock / print | Objects (name) | Edited by the user |
 |---|---|---|---|---|
 | `gel` | all | locked, printable | Workbench: one image `gel`. Figure: one clipped instance per kept segment `gel seg k`, splice lines `splice k` | no |
-| `lanes` | Workbench | unlocked, non-printing | vertical lines named `lane` (pairs by x order); full window height | **move, add, delete** |
+| `lanes` | Workbench | unlocked, non-printing | vertical separator lines named `lane` (n+1 for n lanes); full window height | **move, add, delete** |
 | `window` | Workbench | unlocked, non-printing | two horizontal lines `top`, `bottom`, full gel width | **move** |
 | `marker bands` | Workbench | unlocked, non-printing | horizontal lines `band <MW>` over the marker lane | **move, delete, rename** |
-| `trimmed` | Workbench | unlocked, non-printing | lane line pairs the user moved here (§4.5) | **move pairs in/out** |
+| `trimmed` | Workbench | unlocked, non-printing | trim marks: short lines whose midpoint lies inside a lane (§4.5) | **draw, delete** |
 | `analysis` | Workbench | locked, non-printing, agent-owned | lane number tags `tag n`, ticks for detected sample bands `peak n.k` | no (rebuilt every sync) |
 | `labels` | Figure | unlocked, printable | lane labels `label lane n`, marker labels `label band <MW>`, user-added free text (any other name, never touched) | **text and style**; position is agent-owned |
 | `profiles` | Profiles | locked, printable | `curve n`, axis, band markers, lane captions | no (rebuilt every sync) |
@@ -79,7 +79,7 @@ Line style: lanes cyan, window orange, marker bands magenta, 0.5 pt, so they are
 ### 4.3 Reading the Workbench (validation)
 
 `sync` refuses to change anything and prints what to fix when:
-- the number of `lane` lines (outside `trimmed`) is odd, or two pairs overlap;
+- fewer than two `lane` lines, two lines on top of each other, or a vertical line / a mark outside every lane in `trimmed`;
 - `top` or `bottom` is missing, or `top` is below `bottom`;
 - no lane contains all the `band <MW>` lines, or they span more than one lane;
 - a band name doesn't parse as a number, fewer than 3 bands remain, or MW is not monotonic with y.
@@ -100,7 +100,7 @@ Lane numbering `n` is left-to-right among kept + trimmed lanes. When lanes are a
 
 ### 4.5 Trimming
 
-Every lane is kept by default. To drop a lane from the Figure, the user moves its two lines into the `trimmed` layer (one action in the Layers panel), or passes `--trim-lanes 1,2` to `render`, which puts them there. Trimmed lanes still get a profile and appear in `fig.mw.json` (`"trimmed": true`). Non-contiguous kept lanes are spliced exactly as today: segment boundaries sit at the midpoint between neighbouring lanes, and a splice line is drawn. `--keep-lanes` is replaced by `--trim-lanes`.
+Every lane is kept by default. To drop a lane from the Figure, the user draws a short line inside that lane in the `trimmed` layer, or passes `--trim-lanes 1,2` to `render`, which draws those marks. Trimmed lanes still get a profile and appear in `fig.mw.json` (`"trimmed": true`). Non-contiguous kept lanes are spliced exactly as today: segment boundaries sit at the midpoint between neighbouring lanes, and a splice line is drawn. `--keep-lanes` is replaced by `--trim-lanes`.
 
 ### 4.6 Run metadata
 
@@ -187,7 +187,7 @@ python3 scripts/gel_photo.py doctor                # also checks VectorCraft.app
 
 - On the reference photo and the five DGC photos, `render` writes exactly three files. The document opens in VectorCraft 0.14 without dialogs and shows three artboards and the layers in §4.2.
 - `fig.png` has the Figure artboard's physical size within 0.01 cm, and pHYs equals `--dpi`.
-- **Round trip, scripted (selftest, no app):** build a Workbench model → move lane 3's lines by +0.2 cm, delete `band 35`, add one lane pair, move one pair to `trimmed` → `plan_sync()` gives the expected ops (label moves/creates/deletes, figure segments, MW refit), and leaves user text and style alone.
+- **Round trip, scripted (selftest, no app):** build a Workbench model → move lane 3's lines by +0.2 cm, delete `band 35`, add one separator line, put one trim mark in `trimmed` → `plan_sync()` gives the expected ops (label moves/creates/deletes, figure segments, MW refit), and leaves user text and style alone.
 - **Round trip, live (manual checklist, recorded in the ticket):** in VectorCraft, drag a lane line, rename a lane label and change its colour, delete a band line → `sync` → the label stays renamed and coloured but re-centres; the MW report and curves change; `fig.png` matches the window.
 - `sync` run twice in a row changes nothing the second time.
 - IMG_1496 seeds the marker in lane 1 (V8).
@@ -202,7 +202,7 @@ python3 scripts/gel_photo.py doctor                # also checks VectorCraft.app
 
 ## 13. Open decisions
 
-- ~~V-D1 — trim marking~~ **Settled (V0):** move the pair into the unlocked `trimmed` layer; sync re-strokes trimmed lines grey.
+- ~~V-D1 — trim marking~~ **Settled (V0):** a trim mark in the unlocked `trimmed` layer (originally: move the lane's line pair there; changed when lane lines became shared); sync re-strokes it grey.
 - ~~V-D2 — run metadata location~~ **Settled (V0):** the `ep-meta` text object (§4.6).
 - **V-D3 — Profiles layout:** horizontal stack with an MW axis, or vertical strips aligned beside each lane (V5 shows both).
 - **V-D4 — overwrite guard:** does `render` onto an existing `fig.vectorcraft` refuse, back up (`fig.vectorcraft.bak`), or ask?
