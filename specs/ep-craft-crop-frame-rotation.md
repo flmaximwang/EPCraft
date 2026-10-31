@@ -1,6 +1,6 @@
 # Spec: ep-craft — 裁切框写成「0° 矩形 + 旋转」，让检查器显示真实角度
 
-Status: proposed · Scope: `skills/ep-craft` · Written 2026-10-31 · Builds on `specs/ep-craft-crop-artboard.md`
+Status: implemented 2026-10-31 · Scope: `skills/ep-craft` · Written 2026-10-31 · Builds on `specs/ep-craft-crop-artboard.md`
 
 ## 1. 问题
 
@@ -20,6 +20,8 @@ Status: proposed · Scope: `skills/ep-craft` · Written 2026-10-31 · Builds on 
 
 成因在写入端：`vc_file.rect()`（`scripts/vc_file.py:281`）把 4 个角直接换算成 `w/h/xf`——它从模板剪切组深拷贝那条 `live.shape:"rectangle"` 路径，然后只 patch `w/h/xf` 和锚点，**从来没有把角度写成一个 app 能读的旋转**。app 读不到 `rotation`，检查器就报 0°。
 
+**根因（2026-10-31 实测 0.19.0，见 §3）：** app 里的矩形角度存在**节点层**的 `bbox_angle` 上（`id / name / appearance / kind / bbox_angle`），既不在 `live` 里，也不从 `xf` 推。值为 `−atan2(b, a)`（= `vc_file.angle_of_xf(xf)`）；角度为 0 时 app 自己不写这个字段。skill 只写 `xf`，于是形状画对了、角度读不到——检查器 0°，选择框还被画成直的外接框，看起来像多了一个矩形。
+
 ### 后果
 
 1. **用户被误导。** 「0° 却斜着」在人的眼里只有一个解释：这不是矩形。
@@ -35,21 +37,20 @@ Status: proposed · Scope: `skills/ep-craft` · Written 2026-10-31 · Builds on 
 5. **`render` 仍然不依赖 app。** `specs/ep-craft-vectorcraft.md` 决策 2：Python 直接写 `.vectorcraft`，app 只负责导出。所以首选**在写文件时就产出 app 认的字段**；只有在测量证明该字段无法由文件写入时才退到「render 打开文档后补一步旋转」。
 6. **只改裁切框。** 泳道标签的旋转（90°）走的是 `text.create` + `object.rotate`，很可能有同一类问题，但那是另一件事：本 spec 只要求把它**量一遍并记进 `references/vectorcraft.md`**，不要求改。
 
-## 3. 实现前必须先测：三种写法里哪种能让检查器显示角度
+## 3. 实测（VectorCraft 0.19.0，2026-10-31，控制口 7797）
 
-VectorCraft 已从 0.14 升到 0.19，而 `references/vectorcraft.md` 的结论全是在 0.14 上测的（`doctor` 已经在警告）。**先复核、再选型**，别照着 0.14 的结论写。
+背景：`references/vectorcraft.md` 的结论原是在 0.14 上测的，`doctor` 在警告版本变化。这个版本变化正是要点——0.14 上矩形的角度只在 `xf` 里；0.19 把它搬到了节点层的 `bbox_angle`。
 
-| # | 写法 | 要测什么 |
+| # | 写法 | 0.19.0 上的结果 |
 |---|---|---|
-| A（现状，基线） | 深拷贝模板剪切组的矩形路径，patch `w/h/xf`/锚点 | 检查器角度读数（已知 0.19 上是 0°）；这行是记录，不是候选 |
-| B | `shape.rectangle {x, y, width, height, rotation}` | 存盘后节点里角度落在哪个字段；检查器是否显示该角度；`rotation` 是顺时针（0.14 实测，传入值要按这个口径，`object.rotate` 则是逆时针）；锚点顺序是否仍是 TL TR BR BL |
-| C | `shape.rectangle` 建 0° → `object.rotate {ids, angle, origin:中心}` | 同上；另测 `angle` 是相对角还是可设绝对值（0.14 上 `absolute:true, angle:0` 对已转对象是空操作） |
+| A（旧） | 深拷贝模板剪切组的矩形路径，patch `w/h/xf`/锚点 | 文件里没有 `bbox_angle`；`document.inspect` 不给 `rotation`；检查器 0°、选择框为直立外接框 |
+| B | `shape.rectangle {x, y, width, height, rotation:−3.147}` | 节点带 `bbox_angle:3.147`，`xf` 角度 −3.147；`inspect` 报 `rotation:3.147` |
+| C | `shape.rectangle` 建 0° → `object.rotate {angle:3.147}` | 同一节点形状：`bbox_angle:3.147`，`xf` 角度 −3.147 |
+| D | 手写文件里补 `bbox_angle` | app 读它（`inspect` 报 `rotation`）；存盘、重开不丢（两轮 save/reopen，四角漂移 0.000000000 pt） |
 
-选型规则：
+口径确认（怎么知道 −3.147 才是我们这张框的值）：给 `crop` 框（`xf` 角度 +3.147）分别写 `bbox_angle` ±3.147，再让 app 做 `object.rotate {absolute:true, angle:0}`。写 −3.147 时框正好变成横平竖直（`xf` 角度 0.000000），写 +3.147 时落到 6.294——两倍的角。所以 **`bbox_angle = angle_of_xf(xf)`**。
 
-1. 优先选**检查器显示真角度、且 app 存盘再读回不丢**的那种。
-2. 若 B 与 C 表现相同，选 **C**——它就是用户说的「先建 0° 矩形，再写入旋转」，且与 app 自己的交互路径一致。
-3. 若三者都显示 0°，说明这个角度在 0.19 里根本不可表示：**本 spec 降级为文档改动**（`SKILL.md` / `references/vectorcraft.md` 写明「检查器角度对 `crop` 框不可信，以画布为准，不要把它改成 0」），并把测量结果记进 `references/vectorcraft.md` §6 的版本复核表。
+结论：不需要 B/C 那两条例行命令。直接按 D 写文件即可，`render` 仍然不依赖 app（决策 5 成立）。
 
 ## 4. 合同
 
@@ -57,6 +58,7 @@ VectorCraft 已从 0.14 升到 0.19，而 `references/vectorcraft.md` 的结论�
 |---|---|
 | `vc_file.rect(doc, name, corners, rgb, width)` | 入参、返回节点名不变；输出仍是 `live.shape:"rectangle"`、四角 TL TR BR BL、`w/h` 正确；新增：旋转按 §3 选定的方式写入，**app 存盘后角度不丢** |
 | 角度口径 | 与现有 `xf` 一致：`θ = atan2(b, a)`（y 向下、顺时针为正）。写 `shape.rectangle.rotation` 用顺时针值，写 `object.rotate` 传相反数 |
+| `vc_file.rect()` 的输出 | 新增节点层 `bbox_angle = angle_of_xf(live.xf)`；角度为 0 时不写（与 app 一致）；模板里残留的先删再算 |
 | `rect_corners` / `crop.read_frame` | 不变，只读锚点 |
 | `sync` 的矩形校验 | 不变（某角偏 >0.5°、对边差 >0.5% → 报错、什么都不改） |
 | 幂等 | render 完立刻 `sync` = 0 ops |
@@ -79,4 +81,4 @@ VectorCraft 已从 0.14 升到 0.19，而 `references/vectorcraft.md` 的结论�
 ## 7. 顺带要记的实测事实（`references/vectorcraft.md`）
 
 - 0.19.0 与 0.14.x 在 `live` 矩形、`rotation`、`object.rotate` 上的一致/差异（§3 的测量表原样录入）。
-- 一句话结论：「检查器角度读的是 X 字段；skill 写的 `crop` 框以前只有 `xf`，所以显示 0°」——给以后的人省一轮。
+- 一句话结论：「0.19 的检查器角度读节点上的 `bbox_angle`（= −atan2(b,a)，0 时省略）；skill 写的 `crop` 框以前只有 `xf`，所以显示 0°、选择框是直的外接框」。

@@ -548,6 +548,8 @@ def selftest():
         for (u, v), g in zip(((0, 0), (lv["w"], 0), (lv["w"], lv["h"]), (0, lv["h"])), got):
             assert math.hypot(a * u + c * v + e - g[0], b * u + d * v + f - g[1]) <= 1e-6, (n["name"], lv)
         assert abs(vc_file.angle_of_xf(lv["xf"]) - deg) < 1e-6, (deg, lv["xf"])
+        # app 的检查器/选择框读的是节点上的 bbox_angle（0 时 app 自己也不写）
+        assert n.get("bbox_angle") == (vc_file.angle_of_xf(lv["xf"]) or None), (n["name"], n.get("bbox_angle"), lv["xf"])
         assert n["kind"]["path"]["subpaths"][0]["closed"] is True and "clipping" not in n["kind"]
         app = {it["kind"]: it for it in n["appearance"]["items"]}
         assert app["fill"]["paint"] == {"type": "none"}, app
