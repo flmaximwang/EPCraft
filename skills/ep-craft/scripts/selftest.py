@@ -1319,6 +1319,8 @@ def selftest():
         n_rot = vc_file.text(doc_rot, "t", 40, 60, "ABCD", size=20, justify="Left", angle=90)
         assert [round(v, 6) for v in n_rot["kind"]["xf"]] == [0.0, -1.0, 1.0, 0.0, 40.0, 60.0], n_rot["kind"]["xf"]
         assert vc_file.text_info(n_rot)["angle"] == 90.0
+        assert n_rot.get("bbox_angle") == 90.0, n_rot.get("bbox_angle")   # app 的检查器读它
+        assert "bbox_angle" not in vc_file.text(doc_rot, "t0", 40, 60, "AB", size=20), "0° 不该写 bbox_angle"
         n_rot["kind"]["xf"] = vc_file.rot_xf(40, 60, -30)
         assert abs(vc_file.text_info(n_rot)["angle"] + 30.0) < 1e-9
 

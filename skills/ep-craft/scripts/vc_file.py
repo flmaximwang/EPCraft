@@ -216,7 +216,9 @@ def polyline(doc, name, points, rgb=(0.0, 0.0, 0.0), width=0.5):
 
 def text(doc, name, x, y, s, size=8.0, font="Arial", rgb=(0.0, 0.0, 0.0), justify="Center", angle=0.0):
     """点文字。(x, y) 是锚点：y 是基线，x 按 justify（Left/Center/Right）对齐；angle = 逆时针度，
-    绕锚点转（90 = 从下往上读）。字号只写 size、从不缩放。"""
+    绕锚点转（90 = 从下往上读）。字号只写 size、从不缩放。
+    和矩形一样，旋转还要写成节点上的 bbox_angle（= angle_of_xf(xf)，0 时 app 自己也不写），
+    否则检查器把标签当 0°（0.19 实测，ep-vz7）。"""
     if justify not in ("Left", "Center", "Right"):
         raise RuntimeError("text justify 只收 Left/Center/Right（收到 %r）" % (justify,))
     n = copy.deepcopy(doc["tpl"]["text"])
@@ -231,6 +233,10 @@ def text(doc, name, x, y, s, size=8.0, font="Arial", rgb=(0.0, 0.0, 0.0), justif
     k["runs"] = [run]
     k["para"]["justify"] = justify
     k["para"].pop("justify_auto", None)
+    n.pop("bbox_angle", None)
+    ang = angle_of_xf(k["xf"])
+    if ang:
+        n["bbox_angle"] = ang
     return n
 
 

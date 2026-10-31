@@ -35,7 +35,7 @@ Status: implemented 2026-10-31 · Scope: `skills/ep-craft` · Written 2026-10-31
 3. **几何不变。** 输出节点仍须是四角 TL TR BR BL、`live.shape == "rectangle"`、`live.w/h` = 两边长、`h/w` = 预设比例。改的只是表示方式；`fig.png` 应与改前逐像素相同。
 4. **读回仍以锚点为准。** `rect_corners` / `crop.read_frame` 继续只读路径锚点，不依赖旋转字段——这样无论 app 用哪种表示存盘，裁切都读得回来。
 5. **`render` 仍然不依赖 app。** `specs/ep-craft-vectorcraft.md` 决策 2：Python 直接写 `.vectorcraft`，app 只负责导出。所以首选**在写文件时就产出 app 认的字段**；只有在测量证明该字段无法由文件写入时才退到「render 打开文档后补一步旋转」。
-6. **只改裁切框。** 泳道标签的旋转（90°）走的是 `text.create` + `object.rotate`，很可能有同一类问题，但那是另一件事：本 spec 只要求把它**量一遍并记进 `references/vectorcraft.md`**，不要求改。
+6. **标签同名问题已另票处理（ep-vz7，2026-10-31 完成）。** 泳道标签的旋转走 `text.create` + `object.rotate`，0.19 实测果然也带节点层 `bbox_angle:90`；`vc_file.text()` 照同一口径补写，检查器不再报 0°。实测与结论在 `references/vectorcraft.md` §1。
 
 ## 3. 实测（VectorCraft 0.19.0，2026-10-31，控制口 7797）
 
@@ -75,7 +75,7 @@ Status: implemented 2026-10-31 · Scope: `skills/ep-craft` · Written 2026-10-31
 ## 6. 不在范围
 
 - 胶面裁切框**位置与大小**的自动检测（那是另一件事：`--rect`，或用户在 Crop 画板上拖）。
-- 标签的旋转表示（决策 6：只测量、记录，不改代码）。
+- 标签的旋转表示本身（已由 ep-vz7 按同一口径修掉，见决策 6）。
 - 把裁切框改成非矩形/自由四边形——矩形是硬要求，`sync` 继续拒收变形框。
 
 ## 7. 顺带要记的实测事实（`references/vectorcraft.md`）
