@@ -17,14 +17,16 @@
 | `marker_lane` | 可选：梯子所在泳道（1 起）。追加到 `lanes.json` `marker_lanes` 候选的**末尾** |
 | `_preset` / `_source` / `_说明` | 预设库里用来挑预设（`--preset` 的关键词在 `_preset` 里匹配，须恰好命中 1 个）与留出处 |
 
-条带数之和（`rows` 求和）必须等于梯子泳道上叫出来的峰数，否则 render 拒绝并列出叫出来的 y（不硬配）。
+条带数之和（`rows` 求和）= **N** 就是 marker 道上要取几条带：render 在梯子道的剖面上取显著度**前 N 名**的局部极小，
+按这个顺序从上到下配 MW（梯子道不看噪声门槛 —— 那里的噪声量的是条带自己，见 §7）。取出来的 N 名还有两道闸门
+（断崖、下限，§7）；不过 → 换下一条候选 marker 泳道，全不过 → 草稿标定（§10），消息里列出取出的 y 与没过的那道闸门。
 
 ### lanes.json
 
 | 键 | 含义 |
 |---|---|
 | `labels` | **从左到右**，每条泳道一项：**字符串**，或 `{"text", "angle"}`（名字成为 Figure 上 `label lane n` 的初始文字；`angle` 只改这一条的角度）。`""` = 空白泳道：不画标签、MW 终端表不列。没列到的泳道（`labels` 比泳道少）也当 `""` |
-| `marker_lanes` | **候选梯子泳道**（1 起，按优先顺序，如 `[1, 2, 3]`）。render 依次试：第一条叫出的峰数对不上标签（例如胶边损坏）就换下一条，直到配上。**标定只用配上的那一条**（不是多管加权）；之后 marker 泳道由 band 线落在哪条泳道里决定（§5） |
+| `marker_lanes` | **候选梯子泳道**（1 起，按优先顺序，如 `[1, 2, 3]`）。render 依次试：第一条的剖面不像梯子（闸门不过，例如胶边损坏、道里只有纹理）就换下一条，直到配上。**标定只用配上的那一条**（不是多管加权）；之后 marker 泳道由 band 线落在哪条泳道里决定（§5） |
 
 ## 2. 胶体预设与成品尺寸
 
@@ -207,9 +209,13 @@ marker 标签表、**上一次的泳道中心**（给标签匹配用）、上一
   与用户在 IMG_1499 上手放的 15 道相比，中心平均差 **0.015 cm**、最大 **0.042 cm**（手放本身抖 ±0.03 cm）。
 - render 打印 `[i] 泳道种子：按加样孔定相，15 道，孔距 0.516 cm，首道中心 … cm（孔深 … 灰度级）`，并拿孔距与预设核对。
 
-**marker 线**：在 marker 泳道的剖面上叫带（§7），叫出来的峰 y 就是 `band <MW>` 线的位置，按 `labels`（含 `rows`）从上到下配 MW。
-老 stage 3 的行在 5 张照片上一律偏下 0.13–0.5 mm，已不用。峰数 ≠ 标签需要的行数 → 换下一条候选 marker 泳道；
-全部失败 → 拒绝，消息里列出叫出的 y（cm），例如 `marker 泳道 1 的剖面上叫出 10 条带（y = [...] cm），标签需要 11 行`。
+**marker 线**：在 marker 泳道的剖面上取**显著度前 N 名**的局部极小（N = `labels` 的 `rows` 之和，spec ep-9ji），
+它们的 y 就是 `band <MW>` 线，按这个顺序从上到下配 MW。老 stage 3 的行在 5 张照片上一律偏下 0.13–0.5 mm，已不用。
+**不用噪声门槛**：梯子道的噪声量的是条带自己（IMG_1586 第 3 道 σ = 17.2、门槛 4σ = 68.9，11 条带只过 1 条；
+其余道 σ = 0.4–2.2），而按显著度排的前 N 名在这张胶上恰好就是 11 条带（第 11 名 7.4，第 12 名 1.01，断崖 7.3×）。
+取到的 N 名要过两道闸门（§7）：第 N 名 ≥ 2 × 第 N+1 名、第 N 名 ≥ 1.5 灰度级。不过 → 换下一条候选 marker 泳道；
+全部不过 → 草稿标定（§10），消息例如 `marker 泳道 1 的剖面不像梯子：第 11 名显著度 0.26 < 下限 1.50 灰度级`，
+并列出取出的 y。`probe --markers ...` 会把每条候选道的前 N 名与闸门打出来，配不上时先跑它。
 
 **默认积分窗**：top = **0.15 cm**（让开孔底 U 形，否则每条剖面开头一根大尖峰），bottom = 胶面高 × **0.97**（让开胶底渐变）。
 
@@ -223,15 +229,27 @@ marker 标签表、**上一次的泳道中心**（给标签匹配用）、上一
    - **没有绝对墨量下限**（老 `min_loose_ink=6` 会把只深 3–4 级的淡道整条丢掉）。
    - 两峰最小间隔 0.05 cm（并带 21/20 kD 约隔 0.12 cm）；剖面两端各留一段不取峰（基线在端点被截断）。
    - 每条带报 `y_cm`、`prominence`、`snr`、`width_cm`（半高宽）、`strongest`（该道显著度最大的那条）。
+   - **以上是样品道**。marker 道不走这个门槛，见下面的「marker 道」一条。
    - 为什么不在 `ink` 上叫：滑动均值基线在浓带处下陷，浓带两旁成负瓣、两条浓带之间的平背景反成「鼓包」（合成 4 带梯子在 ink 上叫出 7 条，在原始灰度上正好 4 条）；
      浓带旁的淡带在 ink 上甚至是负的。闭运算基线试过也否了（平坦道上叫出假带）。
    - 为什么噪声要迭代剔除：相邻行差分法几乎处处掉到下限，把 1–2 级的纹理全当带；一次性 MAD 在密梯子上被条带撑大，11 条只叫出 8 条。
    - 实测：IMG_1496 梯子 11/11，淡样品带（泳道 5/6/13/14，SNR 5–11）叫得出，空道基本叫不出东西。
+   - **marker 道（`profiles.pick_marker`，spec ep-9ji）**：带数由标签给（N = `rows` 之和），取显著度**前 N 名**，
+     不用噪声门槛 —— 梯子道上噪声量的是条带本身（IMG_1586 第 3 道 σ 17.2、其余道 0.4–2.2；按 4σ 只会叫出 1 条，
+     2σ 叫出 8 条、1σ 10 条，20 kD 显著度只有 7.4 永远过不了）。两条闸门代替它：第 N 名 ≥ **2 ×** 第 N+1 名
+     （真梯子：IMG_1586 修好裁切框后 2.7×、旧裁剪 7.3×、合成 IMG_1496 3.8×；非梯子道 ≤ 1.7×）、
+     第 N 名 ≥ **1.5 灰度级**（空道 0.14–0.54）。
+     不过就换下一条候选道 / 出草稿；草稿的 band 线先放在这 N 名上。
 3. **标定（只有一种做法：两点间插值）**：`band <MW>` 线的 y ↔ MW。相邻两条 marker 带夹住的区间内，按 `log10(MW)`
    在**这两点之间**线性插值 —— marker 点上的值严格等于标签值，两点之间按这条胶自己的局部斜率走。**禁止全局拟合**：
    `log10(MW) = a + b·y` 最小二乘在 Tris-Tricine 胶上不成立（残差是系统的：250 kD 被压低约四成、10 kD 抬高约三成，
    R² 只有 0.95），而且这条直线在标记点之间也不经过真实值。标定里不存拟合系数、也不报 R²。
-4. **MW**：每条叫出的带按标定换算；超出 marker 范围的记 `mw_kda: null` + `extrapolated: true`（终端表里写「超出 marker 范围」，不给外推数字）。
+4. **MW**：样品道每条叫出的带按标定换算；超出 marker 范围的记 `mw_kda: null` + `extrapolated: true`（终端表里写「超出 marker 范围」，不给外推数字）。
+5. **marker 道（render 与 sync 同一份）不叫峰**（spec ep-9ji D4）：它的带 = `band <MW>` 线本身，剖面只用来
+   **吸附** —— 线 ±**0.06 cm** 内有局部极小就吸过去补 `prominence` / `width_cm`，`y_cm` = 极小位置、
+   `line_y_cm` = 线、`snapped: true`；吸不上（线在平地上、或两条线抢同一个极小）→ 按线的位置量、`snapped: false`、
+   报告 `notes` 里写一句。**线不动**：标定用线的 y，sync 不会为了吸附去挪线。每条带的 lane 上有
+   `band_source: "lines"`（样品道是 `"called"`）。marker 道的 `noise` 照旧算、照旧写，但不参与任何判定。
 
 终端表：标定一行；每条**有名字、不是 marker、没被 trim** 的泳道一行，`[主]` = 显著度最大的带。
 「浓」= 局部显著度（灰度级），不是积分量；预染 marker 的表观分子量与样品有系统偏差，汇报时别说成真实分子量。
@@ -245,11 +263,14 @@ marker 标签表、**上一次的泳道中心**（给标签匹配用）、上一
  "gel": {"width_cm": 8.6, "height_cm": 6.25, "px_per_cm": 118.11},
  "window": {"top_cm": 0.15, "bottom_cm": 6.06},
  "calibration": {"method": "interp", "marker_lane": 1, "points": [[0.42, 250], ...]},
- "params": {"base_half_cm": 0.3, "smooth_cm": 0.03, "min_sep_cm": 0.05, "k_noise": 4.0},
- "lanes": [{"lane": 1, "label": "M", "marker": true, "trimmed": false,
+ "params": {"base_half_cm": 0.3, "smooth_cm": 0.03, "min_sep_cm": 0.05, "k_noise": 4.0, "snap_cm": 0.06},
+ "lanes": [{"lane": 1, "label": "M", "marker": true, "trimmed": false, "band_source": "lines",
             "left_cm": 0.31, "right_cm": 0.67, "noise": 0.8,
             "profile": {"y_cm": [...], "gray": [...], "baseline": [...], "ink": [...]},
-            "bands": [{"y_cm": 2.1, "prominence": 4.1, "snr": 5.2, "width_cm": 0.06,
+            "bands": [{"y_cm": 2.1, "prominence": 4.1, "width_cm": 0.06, "mw_kda": 250.0,
+                       "extrapolated": false, "line_y_cm": 2.11, "snapped": true, "strongest": true}]},
+           {"lane": 2, "label": "S1", "marker": false, "band_source": "called", ...,
+            "bands": [{"y_cm": 2.4, "prominence": 4.1, "snr": 5.2, "width_cm": 0.06,
                        "mw_kda": 23.5, "extrapolated": false, "strongest": true}]}],
  "notes": ["泳道 16 还没有名字"]}
 ```
@@ -409,8 +430,9 @@ cd <本 skill 目录>
 python3 scripts/gel_photo.py doctor          # python / magick / 字体 / VectorCraft 版本与控制口 / 数据文件
 python3 scripts/gel_photo.py selftest        # 不读用户文件、不开 app；全绿即可（项数以当次输出为准）
 
-# 只探测（不写文件、不开 app）：胶面、孔距/首道/孔深、每道叫出的带 y
-python3 scripts/gel_photo.py probe photo.jpeg --gel-size data/gel_size.json [--gel-lanes N] [--rect x0,y0,x1,y1]
+# 只探测（不写文件、不开 app）：胶面、孔距/首道/孔深、每道叫出的带 y；给了 --markers 还打 marker 候选道的前 N 名与闸门
+python3 scripts/gel_photo.py probe photo.jpeg --gel-size data/gel_size.json [--gel-lanes N] [--rect x0,y0,x1,y1] \
+        [--markers data/markers.json --preset 3 --lanes lanes.json]
 
 # 出文档 + fig.png + fig.mw.json
 python3 scripts/gel_photo.py render photo.jpeg --out fig.vectorcraft \
@@ -425,8 +447,9 @@ python3 scripts/gel_photo.py sync fig.vectorcraft [--dry-run]
 python3 scripts/gel_photo.py edit fig.vectorcraft [--keep 2-7] [--marker-lane 2] [--shift-labels 1] [--label 9=M]
 ```
 
-marker 泳道叫出的带数与标签都对不上时，render 不再拒绝，而是出**草稿标定**（`[!] 草稿标定`）：取带数最接近的那条，
-多的把最近的两条并成一条、少的在最大空当正中插一条（不到 2 条就在积分窗里等距放），ep-meta 记 `draft: {called, need}`，
+marker 泳道配不上时（闸门不过、或剖面凑不出 N 个局部极小），render 不再拒绝，而是出**草稿标定**（`[!] 草稿标定`）：
+取最接近的那条道（闸门只差一点的优先），band 线先放在剖面上**显著度前 N 名**的局部极小上（多半就是梯子带，但没有验证；
+不足 N 条时多的把最近的两条并成一条、少的在最大空当正中插一条），ep-meta 记 `draft: {picked, need, gate}`（gate = 没过的那道闸门），
 `fig.mw.json` 的 `calibration.draft = true`、注的第一条说明 MW 不可信。sync 发现 band 线与上一次不同（MW 或 y 差 ≥ 0.005 cm）
 就去掉草稿标记。`--no-draft` = 老行为（拒绝）。
 
