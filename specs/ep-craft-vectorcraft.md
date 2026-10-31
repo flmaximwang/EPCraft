@@ -69,12 +69,13 @@ Object names are the binding between the document and the analysis. The agent on
 | `window` | Workbench | unlocked, non-printing | two horizontal lines `top`, `bottom`, full gel width | **move** |
 | `marker bands` | Workbench | unlocked, non-printing | horizontal lines `band <MW>` over the marker lane | **move, delete, rename** |
 | `trimmed` | Workbench | unlocked, non-printing | trim marks: short lines whose midpoint lies inside a lane (§4.5) | **draw, delete** |
-| `analysis` | Workbench | locked, non-printing, agent-owned | lane number tags `tag n`, ticks for detected sample bands `peak n.k` | no (rebuilt every sync) |
+| `analysis` | Workbench | locked, non-printing, agent-owned | lane number tags `tag n` | no (rebuilt every sync) |
+| `sample bands` | Workbench | unlocked, non-printing | ticks for sample bands, named `peak n.k` (n = lane, k = 1, 2, … top to bottom in that lane). A line the user draws is read by its midpoint x, whatever its name (§7.5) | **move, add, delete** |
 | `labels` | Figure | unlocked, printable | lane labels `label lane n`, marker labels `label band <MW>`, user-added free text (any other name, never touched) | **text and style**; position is agent-owned |
 | `profiles` | Profiles | locked, printable | `curve n`, axis, band markers, lane captions | no (rebuilt every sync) |
 | `ep-meta` | Workbench, off-page | hidden, locked, non-printing | one text object `ep-meta` holding the run metadata JSON (§4.6) | no |
 
-Line style: lanes cyan, window orange, marker bands magenta, 0.5 pt, so they are easy to grab and tell apart (it mirrors today's debug overlay).
+Line style: lanes cyan, window orange, marker bands magenta, sample band ticks green, 0.5 pt, so they are easy to grab and tell apart (it mirrors today's debug overlay).
 
 ### 4.3 Reading the Workbench (validation)
 
@@ -86,6 +87,8 @@ Line style: lanes cyan, window orange, marker bands magenta, 0.5 pt, so they are
 
 Lines that are not quite vertical or horizontal (because of a user's drag) are read by their midpoint x or y. They are not rejected.
 
+`sample bands` ticks are the one exception to "refuse": a tick whose midpoint falls outside every lane, or inside the marker lane, is ignored with a warning and does not stop `sync`. A mistyped tick must never cost the user the rest of the run.
+
 ### 4.4 Ownership on sync
 
 | Object | Agent writes | Agent never changes |
@@ -94,9 +97,10 @@ Lines that are not quite vertical or horizontal (because of a user's drag) are r
 | `label band <MW>` | y = its band line (mapped into the Figure); created/deleted with the band line | text, font, size, colour |
 | free text in `labels` | — | everything |
 | `gel seg k`, `splice k`, Figure artboard size | everything (crop from lane lines + kept lanes) | — |
+| `peak n.k` ticks | the layer is rebuilt (create/delete as one undo step) so the ticks in each lane equal that lane's auto-called bands plus its overrides (§7.5), named `peak n.k` | — the user's delete / move / draw is read back as an override and is never silently discarded |
 | `analysis`, `profiles` layers | everything | — |
 
-Lane numbering `n` is left-to-right among kept + trimmed lanes. When lanes are added or deleted, existing labels are matched by **nearest previous centre** (stored in `ep-meta`), so a label's custom text follows its lane.
+Lane numbering `n` is left-to-right among kept + trimmed lanes. When lanes are added or deleted, existing labels are matched by **lane order**: lane `i` keeps the name lane `i` had; a lane beyond the old count is new (`None`, the agent asks for its name); extra old names are dropped. There is no positional tolerance (issue #1: any tolerance eventually splits one lane in two). The per-lane peak overrides in `ep-meta` follow exactly the same rule, so a lane's edits move with it when a separator line is deleted and its right-hand neighbours shift left.
 
 ### 4.5 Trimming
 
@@ -104,7 +108,16 @@ Every lane is kept by default. To drop a lane from the Figure, the user draws a 
 
 ### 4.6 Run metadata
 
-What `sync` needs and can't read from geometry: the skill version, the photo path, the gel preset, the marker preset, px/cm of the embedded gel, dpi, the lane names given at render time, and the previous lane centres (for label matching). Stored in the `ep-meta` text object (§4.2), written by the file writer and updated with `text.setText`. V0 ruled out the alternatives: custom keys are dropped on save, and the File Info description is copied into the exported PNG.
+What `sync` needs and can't read from geometry: the skill version, the photo path, the gel preset, the marker preset, px/cm of the embedded gel, dpi, the lane names given at render time, the previous lane centres (diagnostics only, §4.4), the sample bands the last sync called automatically, and the user's overrides on them. Stored in the `ep-meta` text object (§4.2), written by the file writer and updated with `text.setText`. V0 ruled out the alternatives: custom keys are dropped on save, and the File Info description is copied into the exported PNG.
+
+The two band keys, both keyed by lane number as a string (cm, top down; the marker lane is absent):
+
+```json
+"peak_auto":      {"1": [2.10, 2.71], "2": [1.98, 3.02]},
+"peak_overrides": {"2": {"suppress": [3.02], "add": [4.41]}}
+```
+
+`peak_auto` is what the detector called in each lane in the last sync — **before** overrides, so the next sync can tell "the user deleted this" from "the detector stopped calling it". `peak_overrides` is the difference the user made (§7.5); a lane with no entry is fully automatic.
 
 ## 5. `.vectorcraft` file (format version 4, VectorCraft 0.14.0)
 
@@ -136,6 +149,17 @@ The same code runs in `render` (on detected geometry) and in `sync` (on the user
 2. **Bands per lane:** local darkenings of the lightly smoothed **raw grey** profile. **Local prominence** is how much darker the band is than the lighter of its two flanks within 0.15 cm. Not measured on `ink`: the sliding-mean baseline sags at strong bands, which leaves negative lobes beside them and turns the flat background between two strong bands into a ghost peak (a synthetic 4-band ladder gave 7 calls on `ink` and exactly 4 on raw grey). Not height above zero either: a faint band beside a strong one is negative on `ink`. A band is called when that prominence is ≥ 4 × the lane's **background** noise (MAD of the smoothed ink, iteratively excluding band rows and lobes). There is no absolute ink floor like `min_loose_ink=6`, so faint lanes still get their peaks. Each band reports prominence, SNR and width; the curve is the user's check. On IMG_1496 this calls 11/11 marker bands, finds the faint 3–4-grey-level sample bands, and calls nothing on empty lanes.
 3. **Calibration:** two-point interpolation only — inside the span between two neighbouring `band <MW>` lines, `log10(MW)` is linearly interpolated **between those two points**. A global fit (`log10(MW) = a + b·y` least squares) is forbidden: on Tris-Tricine gels it is systematically off (it pushes 250 kD down ~40 % and 10 kD up ~30 %) and it does not even pass through the marker values. The calibration stores the points only — no fit coefficients, no R².
 4. **MW per band**; a band whose y falls outside the marker span gets no number (`mw_kda: null`, `extrapolated: true`) — never extrapolate.
+5. **Sample band overrides (user edits win).** The `peak n.k` ticks in `sample bands` are the band list the user sees and edits; the profile and the detector are untouched by them.
+   - **Reading:** each tick belongs to the lane whose `[left_cm, right_cm]` contains its midpoint x, at its midpoint y. The name is not used (a hand-drawn line has no name).
+   - **Matching**, per lane, tolerance `TOL = 0.05 cm` (`profiles.MIN_SEP_CM` — two real bands are never that close). Pair the document's ticks with the expected ticks (last `peak_auto` minus this lane's `suppress`, plus its `add`) by nearest distance, greedily, smallest first.
+     - expected, missing in the document → an auto band goes into `suppress`; a hand-added band is removed from `add`;
+     - in the document, not expected → added to `add`.
+   - **Dragging a tick** is therefore a delete plus an add: the old y is suppressed and the new y is added. There is no "moved band" concept to keep in sync.
+   - An `add` y is used exactly as drawn — it is not snapped to the nearest local minimum; that is what the user correcting a detector means.
+   - A `suppress` that no longer matches any auto-called band (the detector moved it) is kept, and the sync summary says so (`道 3 的样品带 override 已经对不上`). Re-drawing the tick where the band now is cancels it through the normal diff.
+   - **Per-lane, not global:** a lane with no override keeps being updated by the detector on every sync. One lane's edits never freeze the others.
+   - **Overrides apply inside `analyze`:** suppressed bands are dropped; each `add` y is measured on the lane profile with the same formulas as an automatic band (prominence against the lighter flank within 0.15 cm, `snr = prominence / noise`, half-height width), and carries `"manual": true` in the report. `strongest` is chosen over all bands, manual ones included. Profiles artboard markers and the MW report follow the report, so they include manual bands; the report marks them (`✎`).
+   - `render` writes a fresh document and starts with `peak_overrides` empty; only `sync` carries overrides forward (§12). `sync --reset-peaks [N…]` clears them for the named lanes, or for all lanes when none are named.
 
 `fig.mw.json` (v2):
 
@@ -145,7 +169,7 @@ The same code runs in `render` (on detected geometry) and in `sync` (on the user
  "calibration": {"method": "interp", "marker_lane": 1, "points": [[0.42, 250], ...]},
  "lanes": [{"lane": 1, "label": "M", "trimmed": false, "left_cm": 0.31, "right_cm": 0.74,
             "profile": {"y_cm": [...], "gray": [...], "ink": [...]},
-            "bands": [{"y_cm": 2.1, "mw_kda": 23.5, "prominence": 4.1, "extrapolated": false}]}]}
+            "bands": [{"y_cm": 2.1, "mw_kda": 23.5, "prominence": 4.1, "snr": 4.3, "manual": false, "extrapolated": false}]}]}
 ```
 
 Coordinates are in cm on the gel face, as in the record (gel-prior §7). There are no photo pixels.
@@ -169,7 +193,7 @@ Only stage 1 (the gel face) still comes from the old pipeline. The Workbench is 
 ```bash
 python3 scripts/gel_photo.py render IMG.jpeg --gel-size data/gel_size.json --markers data/markers.json --preset N \
     --lanes lanes.json [--trim-lanes 1,2] [--dpi 300] [--port 7797] --out fig.vectorcraft
-python3 scripts/gel_photo.py sync fig.vectorcraft [--port 7797] [--dpi 300]
+python3 scripts/gel_photo.py sync fig.vectorcraft [--port 7797] [--dpi 300] [--reset-peaks [N ...]]
 python3 scripts/gel_photo.py probe IMG.jpeg ...    # prints the detection; no files
 python3 scripts/gel_photo.py doctor                # also checks VectorCraft.app and its version
 ```
@@ -190,6 +214,8 @@ python3 scripts/gel_photo.py doctor                # also checks VectorCraft.app
 - **Round trip, scripted (selftest, no app):** build a Workbench model → move lane 3's lines by +0.2 cm, delete `band 35`, add one separator line, put one trim mark in `trimmed` → `plan_sync()` gives the expected ops (label moves/creates/deletes, figure segments, MW refit), and leaves user text and style alone.
 - **Round trip, live (manual checklist, recorded in the ticket):** in VectorCraft, drag a lane line, rename a lane label and change its colour, delete a band line → `sync` → the label stays renamed and coloured but re-centres; the MW report and curves change; `fig.png` matches the window.
 - `sync` run twice in a row changes nothing the second time.
+- **Sample band editing (scripted, selftest):** delete one tick in lane 15, draw one in lane 12, drag one → the lane's `peak_overrides` gains `suppress`/`add` like §7.5 says; a rebuilt report drops the deleted band, lists the drawn one with `manual: true` and an MW from its y; lanes without edits still change when the detector inputs change; a second `plan_sync()` on the result is empty.
+- **Sample band editing (live, IMG_1586):** delete the 55.2 kDa call in lane 15 → it is gone from `fig.mw.json`, the terminal table and the MW table; draw a tick where the lane 12 faint band was missed → it appears; both survive a sync that moves an untouched lane.
 - IMG_1496 seeds the marker in lane 1 (V8).
 - `fig.mw.json` profiles have one sample per gel-image row within the window; `gray` matches an independent mean over the same pixels.
 

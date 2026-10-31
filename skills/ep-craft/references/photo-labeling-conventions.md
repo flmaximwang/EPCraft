@@ -102,7 +102,8 @@ Crop 的比例：pt / 原图像素 `s = width_cm·PT / 框宽px`，所以框画�
 | 图层 | 画板 | 锁 / 打印 | 对象 | 用户可改 |
 |---|---|---|---|---|
 | `gel` | 全部 | 锁定、打印 | Workbench：一张图 `gel`；Figure：每个保留段一个剪切组 `gel seg k` | 否 |
-| `analysis` | Workbench | 锁定、不打印 | 泳道号 `tag n`（灰），叫出来的带的短刻度 `peak n`（绿） | 否（每次 sync 重建） |
+| `analysis` | Workbench | 锁定、不打印 | 泳道号 `tag n`（灰） | 否（每次 sync 重建） |
+| `sample bands` | Workbench | 不锁、不打印 | 样品带的短刻度 `peak n.k`（绿，k = 道内自上而下的序号）；中点落在哪道就是哪道，名字不参与判断，用户画的线叫什么都可以 | **拖、加、删**（= 该道的 override，见 spec §7.5） |
 | `window` | Workbench | 不锁、不打印 | 两条横线 `top`、`bottom`（橙），伸出胶边 0.15 cm 方便抓 | **拖** |
 | `lanes` | Workbench | 不锁、不打印 | 竖线 `lane`（青），全窗高；是**分隔线**：相邻泳道共用一条，n 道 = n+1 条 | **拖、加、删** |
 | `trimmed` | Workbench | 不锁、不打印 | trim 标记：胶顶上方横跨泳道的灰色短线 `trim`，中点落在哪道就拿掉哪道 | **画、删** |
@@ -285,7 +286,7 @@ marker 标签表、**上一次的泳道中心**（给标签匹配用）、上一
 ## 9. `sync`
 
 ```bash
-python3 scripts/gel_photo.py sync fig.vectorcraft [--port 7797] [--dry-run] [--dpi 300]
+python3 scripts/gel_photo.py sync fig.vectorcraft [--port 7797] [--dry-run] [--dpi 300] [--reset-peaks [N ...]]
 ```
 
 ### 9a. 做什么

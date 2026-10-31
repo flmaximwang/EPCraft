@@ -413,6 +413,30 @@ def run():
     finally:
         fa.close()
     ok += 1
+    # 8b) 补图层（旧文档 sync 时建 sample bands）：layer.new 在撤销组里、在 create 之前；属性照
+    #     workbench.LAYERS 那一行（可见、不锁、不打印、颜色预设）；新刻度真的落进新层；
+    #     返回与 describe 都记上 layer。
+    fa = _fake()
+    try:
+        c = vc_control.Client(fa.port, timeout=5)
+        ops = [{"op": "layer", "name": "sample bands", "printable": False, "visible": True, "locked": False,
+                "color": 5},
+               {"op": "create", "layer": "sample bands", "spec": {
+                   "kind": "line", "layer": "sample bands", "name": "peak 2.1", "a": (1.0, 2.0), "b": (5.0, 2.0),
+                   "rgb": (0.1, 0.6, 0.1), "width": 0.5}}]
+        s = sync_exec.apply_ops_live(c, ops, DOCUMENT)
+        g = fa.between_group()
+        names = [cm for cm, _p in g]
+        assert names[0] == "layer.new" and names.index("layer.new") < names.index("shape.line"), names
+        assert g[0][1] == {"name": "sample bands", "top": True, "visible": True, "locked": False,
+                           "printable": False, "color": 5}, g[0]
+        lid = [i for i, L in fa.layers.items() if L["name"] == "sample bands"][0]
+        nid = s["created_ids"][0]
+        assert fa.obj[nid] == lid and "layer.move" not in names, "新刻度没落进补出来的图层"
+        assert s["layer"] == 1 and sync_exec.describe(s) == "layer 1, create 1", s
+    finally:
+        fa.close()
+    ok += 1
     ok += _crop_ops()
     ok += _crop_read()
     return ok

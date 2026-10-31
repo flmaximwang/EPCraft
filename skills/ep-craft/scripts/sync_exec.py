@@ -5,6 +5,7 @@
 语义与 figure.apply_ops_json 一一对应（那边改文件 JSON，这边发命令）：
 
     artboard  → artboard.setProps {index, x, y, width, height, moveArt:false}
+    layer     → layer.new {name, top:true, visible, locked, printable, color}（旧文档补 sample bands 层）
     delete    → edit.clear {ids}
     create    → 在规格的图层里新建（text.create / shape.line / path.create / 剪切组），再 object.setProps 起名
     move      → object.move {ids, dx, dy}
@@ -44,7 +45,8 @@ import vc_file
 
 
 LABEL = "ep-craft sync"
-OP_KINDS = ("relink", "artboard", "delete", "create", "move", "rename", "set_text", "stroke", "reshape", "backfill")
+OP_KINDS = ("relink", "artboard", "layer", "delete", "create", "move", "rename", "set_text", "stroke", "reshape",
+            "backfill")
 CROP_RGB, CROP_W = (0.0, 0.75, 0.25), 0.75           # 裁切框：绿、0.75 pt、无填充（与 render 写的一致）
 
 
@@ -63,19 +65,25 @@ def apply_ops_live(client, ops, document, label=LABEL):
     ops = [op for op in ops if op["op"] == "relink"] + [op for op in ops if op["op"] != "relink"]
 
     layers = {l["name"]: l for l in document["layers"]}
+    added = {op["name"] for op in ops if op["op"] == "layer"}
     for op in ops:
-        if op["op"] == "create" and op["layer"] not in layers:
+        if op["op"] == "create" and op["layer"] not in layers and op["layer"] not in added:
             raise vc_control.VCError("文档里没有图层 %r（create %r）" % (op["layer"], op["spec"].get("name")))
     state = _ui_state(client)
     created = []                                     # (新 id, 目标图层名)
     tmp = []                                         # relink 的临时 PNG（组结束后删）
-    layers = dict(layers)                            # backfill 新建的图层也记进来（落层核对要用）
+    layers = dict(layers)                            # backfill / layer 新建的图层也记进来（落层核对要用）
     try:
         with client.undo_group(label):
+            for op in ops:
+                if op["op"] == "layer":
+                    _new_layer(client, op, layers)   # create 的目标层要先存在（叠层顺序、落层核对都靠它）
             opened = _open_layers(client, layers, {op["layer"] for op in ops if op["op"] == "create"})
             try:
                 cur = [None]
                 for op in ops:
+                    if op["op"] == "layer":
+                        continue
                     if op["op"] == "relink":
                         _relink(client, op, tmp)
                     elif op["op"] == "backfill":
@@ -134,6 +142,19 @@ def _apply_one(client, op, layers, document, cur, created):
         new_id = _create(client, op["spec"], document)
         ex("object.setProps", {"id": new_id, "name": op["spec"]["name"]})
         created.append((new_id, op["layer"]))
+
+
+def _new_layer(client, op, layers):
+    """新建一个顶层图层（旧文档 sync 时补 sample bands）。属性与 workbench.LAYERS 那一行一致；
+    新层建在最上面。登记进 layers，后面的 create / 落层核对直接用它。"""
+    props = {"name": op["name"], "top": True, "visible": op.get("visible", True),
+             "locked": op.get("locked", False), "printable": op.get("printable", True)}
+    if op.get("color") is not None:
+        props["color"] = int(op["color"])
+    lid = client.execute("layer.new", props)["id"]
+    layers[op["name"]] = {"id": lid, "name": op["name"], "visible": bool(op.get("visible", True)),
+                          "locked": bool(op.get("locked", False)),
+                          "kind": {"printable": bool(op.get("printable", True))}}
 
 
 def _relink(client, op, tmp):

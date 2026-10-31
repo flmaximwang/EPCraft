@@ -1498,6 +1498,514 @@ def selftest():
     assert doc_edit.shifted(["", "M", "A", "B"], -1) == ["M", "A", "B", ""]
     ok += 1
 
+    # 122) 样品带刻度（ep-xfu.2，spec §4.2/§4.4）：render 的刻度都在 sample bands 图层（紧挨 analysis 上面、
+    #      解锁、不打印）、名字 peak n.k（k = 道内自上而下）、绿色 0.5 pt、仍以泳道中心 ±0.08 cm；marker 道
+    #      没有刻度；analysis 层只剩 tag n。add_workbench 的 peaks 入口同样按新图层与新名字写。
+    L5 = {l["name"]: l for l in d5["layers"]}
+    lay_names5 = [l["name"] for l in d5["layers"]]
+    assert lay_names5.index("sample bands") == lay_names5.index("analysis") + 1, lay_names5
+    assert vc_file.layer_flags(L5["sample bands"]) == (True, False, False)
+    an5 = vc_file.lay_children(L5["analysis"])
+    assert [n["name"] for n in an5] == ["tag %d" % i for i in range(1, 16)], [n["name"] for n in an5]
+    assert all(n["kind"]["type"] == "text" for n in an5)
+    ticks5 = vc_file.lay_children(L5["sample bands"])
+    assert all(re.match(r"^peak \d+\.\d+$", n["name"] or "") for n in ticks5), [n["name"] for n in ticks5]
+    by5 = {}
+    for n in ticks5:
+        lane, k = [int(v) for v in n["name"].split()[1].split(".")]
+        (x0, y0), (x1, y1) = vc_file.line_ends(n)
+        by5.setdefault(lane, []).append((k, (y0 + y1) / 2.0, x0, x1))
+        st = next(it for it in n["appearance"]["items"] if it["kind"] == "stroke")
+        assert st["width"] == 0.5 and abs(st["paint"]["color"]["g"] - 0.6) < 1e-9, st
+    want5 = {ln["lane"]: [b["y_cm"] for b in ln["bands"]]
+             for ln in rep5["lanes"] if not ln["marker"] and ln["bands"]}
+    assert set(by5) == set(want5), (sorted(by5), sorted(want5))
+    assert m5["marker_lane"] not in by5, "marker 道不该有样品带刻度"
+    wb5 = figure.wb_frame(d5)
+    PT5 = vc_file.PT_PER_CM
+    for lane, rows in by5.items():
+        rows.sort()
+        assert [k for k, *_ in rows] == list(range(1, len(rows) + 1)), rows       # 道内自上而下编号
+        ys = [y for _k, y, _x0, _x1 in rows]
+        assert all(a < b for a, b in zip(ys, ys[1:])), ys
+        assert all(abs(a - (wb5["gel_y"] + y * PT5)) < 1e-6 for a, y in zip(ys, want5[lane])), (lane, ys)
+        cx5 = wb5["gel_x"] + workbench.centres(m5)[lane - 1] * PT5
+        for _k, _y, x0, x1 in rows:
+            assert abs(x0 - (cx5 - 0.08 * PT5)) < 1e-6 and abs(x1 - (cx5 + 0.08 * PT5)) < 1e-6, (lane, x0, x1)
+    doc_w = vc_file.new_doc("w")
+    key_w, wpx_w, hpx_w = vc_file.add_image(doc_w, png5)
+    layers_w = workbench.make_layers(doc_w)
+    workbench.add_workbench(doc_w, layers_w, m5, key_w, wpx_w, hpx_w, x0=0.0,
+                            peaks=[(6, 3.0), (6, 2.0), (1, 2.5), (4, 2.685)], tags=False)
+    assert [n["name"] for n in vc_file.lay_children(layers_w["sample bands"])] == \
+        ["peak 4.1", "peak 6.1", "peak 6.2"], [n["name"] for n in vc_file.lay_children(layers_w["sample bands"])]
+    assert vc_file.lay_children(layers_w["analysis"]) == [], "analysis 层不该再有刻度"
+    ok += 1
+
+    # 123) ep-meta 的 peak_auto（spec §4.6）：render 与 sync 写刻度时都记「这一轮检测器叫出的样品带」
+    #      （id 键是泳道号字符串、自上而下、四位小数；marker 道与空道不列）；其它 ep-meta 键原样；
+    #      render 写出的文档第一次 sync 仍是 0 个操作，peak_auto 原样留着。
+    import gel_photo
+    raw5 = {}
+    profiles.analyze(m5, png5, names5, overrides={}, raw=raw5)    # 与 cmd_render 同一句（无 override）
+    pa5 = gel_photo._peak_auto(raw5, m5["marker_lane"])
+    want_pa = {str(ln["lane"]): [b["y_cm"] for b in ln["bands"]]
+               for ln in rep5["lanes"] if not ln["marker"] and ln["bands"]}
+    assert pa5 == want_pa, (pa5, want_pa)
+    assert str(m5["marker_lane"]) not in pa5
+    assert gel_photo._peak_auto({1: [0.5], 2: [1.234567, 0.23454], 3: []}, 1) == \
+        {"2": [0.2345, 1.2346]}, "cm 要四位小数、marker/空道不列"
+    m5r = copy.deepcopy(m5)
+    m5r["meta"].update(gel_photo._meta_state(m5r, raw5))          # 与 cmd_render 同一句
+    assert m5r["meta"]["peak_auto"] == pa5
+    assert {k: v for k, v in m5r["meta"].items() if k not in ("bands", "peak_auto")} == m5["meta"], "其它键被动了"
+    top_r, _b = vc_file.loads(vc_file.dumps(figure.build_document(m5r, rep5, png5, "t")))
+    d_r = top_r["document"]
+    meta_r = json.loads(vc_file.text_info(
+        vc_file.lay_children(vc_file.layer_by_name(d_r, "ep-meta"))[0])["text"])
+    assert meta_r["peak_auto"] == pa5 and meta_r["bands"] == m5r["meta"]["bands"], meta_r
+    back_r, _n = workbench.from_document(d_r)                     # sync 的口径：模型从文档读回
+    raw_r = {}
+    rep_r = profiles.analyze(back_r, png5, [None] * 15, raw=raw_r)
+    back_r["meta"].update(gel_photo._meta_state(back_r, raw_r))    # 与 cmd_sync 同一句
+    ops_r, meta_r2 = figure.plan_sync(d_r, back_r, rep_r)
+    assert ops_r == [], ops_r[:5]
+    assert meta_r2["peak_auto"] == pa5 and meta_r2["bands"] == meta_r["bands"], meta_r2
+    ok += 1
+
+    # 124) 旧文档（刻度还在 analysis 层、名字 peak <lane>，ep-meta 没有 peak_auto）：sync 时先建 sample bands
+    #      层、删掉 analysis 里的旧刻度、在同一个撤销组里按 peak n.k 重建；peak_auto 记上、其它键原样；
+    #      再 sync 一次 0 个操作。
+    import gel_photo as _gp
+    d_old = json.loads(json.dumps(d5))
+    L_old = {l["name"]: l for l in d_old["layers"]}
+    old_ids = []
+    for n in list(vc_file.lay_children(L_old["sample bands"])):
+        n["name"] = "peak %d" % int(n["name"].split()[1].split(".")[0])   # 旧版：同道所有刻度同名
+        old_ids.append(n["id"])
+        vc_file.lay_children(L_old["analysis"]).append(n)
+    d_old["layers"] = [l for l in d_old["layers"] if l["name"] != "sample bands"]
+    mt_old = [n for n in vc_file.lay_children(vc_file.layer_by_name(d_old, "ep-meta")) if n["name"] == "ep-meta"][0]
+    mo = json.loads(vc_file.text_info(mt_old)["text"])
+    mo.pop("peak_auto", None)
+    mt_old["kind"]["runs"][0]["text"] = json.dumps(mo, ensure_ascii=False, separators=(",", ":"))
+    assert "sample bands" not in {l["name"] for l in d_old["layers"]}
+    m_old, _n = workbench.from_document(d_old)
+    raw_old = {}
+    rep_old = profiles.analyze(m_old, png5, [None] * 15, raw=raw_old)
+    m_old["meta"].update(_gp._meta_state(m_old, raw_old))
+    top_old = {"format": "vectorcraft", "version": 4, "document": d_old, "images": top5["images"]}
+    ops_old, meta_old = figure.plan_sync(d_old, m_old, rep_old)
+    add_lay = [op for op in ops_old if op["op"] == "layer"]
+    assert len(add_lay) == 1 and add_lay[0]["name"] == "sample bands", add_lay
+    assert set(old_ids) <= {op["id"] for op in ops_old if op["op"] == "delete"}, "旧刻度没删"
+    made = [op["spec"] for op in ops_old if op["op"] == "create" and op["layer"] == "sample bands"]
+    assert made and all(re.match(r"^peak \d+\.\d+$", sp["name"]) for sp in made), [sp["name"] for sp in made]
+    assert all(op["spec"]["kind"] == "text" for op in ops_old if op["op"] == "create" and op["layer"] == "analysis")
+    assert meta_old["peak_auto"] == pa5, meta_old.get("peak_auto")
+    figure.apply_ops_json(top_old, ops_old)
+    L_new = {l["name"]: l for l in d_old["layers"]}
+    assert "sample bands" in L_new
+    assert [n["name"] for n in vc_file.lay_children(L_new["sample bands"])] == [sp["name"] for sp in made]
+    an_new = vc_file.lay_children(L_new["analysis"])
+    assert [n["name"] for n in an_new] == ["tag %d" % i for i in range(1, 16)] and \
+        not ({n["id"] for n in an_new} & set(old_ids)), "analysis 里还有旧刻度"
+    meta_old_txt = json.loads(vc_file.text_info(
+        [n for n in vc_file.lay_children(L_new["ep-meta"]) if n["name"] == "ep-meta"][0])["text"])
+    assert meta_old_txt["peak_auto"] == pa5, meta_old_txt.get("peak_auto")
+    keep_old = lambda m: {k: v for k, v in m.items() if k not in ("bands", "peak_auto")}   # noqa: E731
+    assert keep_old(meta_old_txt) == keep_old(mo), "其它 ep-meta 键被动了"
+    m_new, _n = workbench.from_document(d_old)                    # 迁移后：再 sync 一次 0 个操作
+    raw_new = {}
+    rep_new = profiles.analyze(m_new, png5, [None] * 15, raw=raw_new)
+    m_new["meta"].update(_gp._meta_state(m_new, raw_new))
+    ops_new, meta_new = figure.plan_sync(d_old, m_new, rep_new)
+    assert ops_new == [], ops_new[:5]
+    assert meta_new["peak_auto"] == pa5
+    ok += 1
+
+    # 125–129) 样品带 override（ep-xfu.4，spec §4.6 / §7.5）：analyze 认 {道: {suppress, add}}，
+    #      suppress 只去掉 MIN_SEP_CM 以内的检测器带、add 在画出的 y 上按 call_bands 的同一口径量
+    #      （manual=True、显著度 ≤ 0 记 0、MW 按 y 换算、参与 strongest 与排序）；无 override 时报告与
+    #      改动前逐字段相同；raw / peak_auto 始终是**抑制之前**的检测器叫带，手加带不混进去；
+    #      mw_report 给手加带标 ✎；Profiles 画板与 sample bands 刻度跟着报告走。
+    import gel_photo as _gp_ov
+    with tempfile.TemporaryDirectory() as td:
+        gp_ov = os.path.join(td, "gel.png")
+        rows_ov = [1.0, 2.0, 3.0, 4.0]
+        draw_ov = []
+        for y in rows_ov:                                                  # marker 道 1
+            draw_ov += ["-fill", "gray(60)", "-draw", "rectangle 40,%d 80,%d" % (y * 100 - 3, y * 100 + 2)]
+        draw_ov += ["-fill", "gray(60)", "-draw", "rectangle 140,247 180,252"]    # 样品道 2：浓带 y≈2.495
+        draw_ov += ["-fill", "gray(150)", "-draw", "rectangle 140,347 180,352"]   # 样品道 2：淡带 y≈3.495
+        _run([MAGICK, "-size", "860x625", "xc:gray(200)"] + draw_ov + ["-depth", "8", gp_ov])
+        png_ov = open(gp_ov, "rb").read()
+        mdl_ov = {"gel": {"width_cm": 8.6, "height_cm": 6.25},
+                  "window": {"top_cm": 0.0, "bottom_cm": 6.0},
+                  "lanes": [{"left_cm": 0.35, "right_cm": 0.85, "trimmed": False},
+                            {"left_cm": 1.35, "right_cm": 1.85, "trimmed": False},
+                            {"left_cm": 2.35, "right_cm": 2.85, "trimmed": False}],
+                  "bands": [{"mw": m, "y_cm": y} for m, y in zip((100.0, 50.0, 25.0, 12.5), rows_ov)],
+                  "marker_lane": 1, "meta": {}}
+        names_ov = ["M", "S", "X"]
+
+        # 125) 无 override（None 与 {} 一样）：报告等于改动前的老公式（基线在测试里重算），只多出
+        #      manual=False；raw 记每道抑制之前的检测器叫带（marker 与空道也在 raw 里，peak_auto 才筛）。
+        rep_none = profiles.analyze(mdl_ov, png_ov, names_ov)
+        assert rep_none == profiles.analyze(mdl_ov, png_ov, names_ov, overrides={})
+        baseline = _baseline_bands(mdl_ov, png_ov)
+        assert [[{k: v for k, v in b.items() if k != "manual"} for b in ln["bands"]]
+                for ln in rep_none["lanes"]] == baseline, "无 override 时报告变了"
+        assert all(b["manual"] is False for ln in rep_none["lanes"] for b in ln["bands"])
+        assert all(set(b) == {"y_cm", "prominence", "snr", "width_cm", "mw_kda", "extrapolated",
+                              "strongest", "manual"} for ln in rep_none["lanes"] for b in ln["bands"])
+        raw_none = {}
+        profiles.analyze(mdl_ov, png_ov, names_ov, raw=raw_none)
+        assert raw_none == {i: [b["y_cm"] for b in bands] for i, bands in enumerate(baseline, 1)}
+        auto2 = rep_none["lanes"][1]["bands"]
+        assert len(auto2) == 2 and abs(auto2[0]["y_cm"] - 2.5) < 0.02 and abs(auto2[1]["y_cm"] - 3.5) < 0.02, auto2
+        assert [b["manual"] for b in auto2] == [False, False] and auto2[0]["strongest"] is True
+        ok += 1
+
+        # 126) suppress：只去掉落在 MIN_SEP_CM（0.05 cm）以内的检测器带，邻带与别的道不动；
+        #      恰好 0.05 cm 记「以内」、0.10 cm 不算；raw 仍是抑制之前的两条。
+        y0, y1 = auto2[0]["y_cm"], auto2[1]["y_cm"]
+        raw_s = {}
+        rep_s = profiles.analyze(mdl_ov, png_ov, names_ov, overrides={2: {"suppress": [y0]}}, raw=raw_s)
+        assert [b["y_cm"] for b in rep_s["lanes"][1]["bands"]] == [y1], rep_s["lanes"][1]["bands"]
+        assert [b["manual"] for b in rep_s["lanes"][1]["bands"]] == [False]
+        assert rep_s["lanes"][0]["bands"] == rep_none["lanes"][0]["bands"], "marker 道被动了"
+        assert rep_s["lanes"][2]["bands"] == [], "空道被动了"
+        assert raw_s[2] == [y0, y1], raw_s
+        for dy, gone in ((0.05, True), (0.10, False)):
+            rep_t = profiles.analyze(mdl_ov, png_ov, names_ov,
+                                     overrides={"2": {"suppress": [round(y0 + dy, 4)]}})
+            ys_t = [b["y_cm"] for b in rep_t["lanes"][1]["bands"]]
+            assert (y0 not in ys_t) == gone and y1 in ys_t, (dy, ys_t)
+        ok += 1
+
+        # 127) add：在浓带自己的 y 上（先 suppress 再 add，= 拖动语义）量出的指标与自动带**逐值相同**
+        #      （同一套口径）；manual=True、MW 按 y 换算、按 y 插进排序；空白处补的带照列，显著度/SNR 记 0。
+        raw_d = {}
+        rep_d = profiles.analyze(mdl_ov, png_ov, names_ov,
+                                 overrides={"2": {"suppress": [y0], "add": [y0]}}, raw=raw_d)
+        bands_d = rep_d["lanes"][1]["bands"]
+        assert [b["y_cm"] for b in bands_d] == [y0, y1], "手加带没按 y 排序"
+        assert [b["manual"] for b in bands_d] == [True, False]
+        man, auto1 = bands_d[0], bands_d[1]
+        assert man["prominence"] == auto2[0]["prominence"] and man["snr"] == auto2[0]["snr"] and \
+            man["width_cm"] == auto2[0]["width_cm"], (man, auto2[0])
+        assert man["mw_kda"] == auto2[0]["mw_kda"] and man["extrapolated"] == auto2[0]["extrapolated"]
+        assert man["strongest"] is True and auto1["strongest"] is False, "手加带该是最强带（画得比另一条深）"
+        assert raw_d[2] == [y0, y1], "手加带混进了 raw"
+        rep_x = profiles.analyze(mdl_ov, png_ov, names_ov, overrides={"3": {"add": [2.5]}})
+        b3 = rep_x["lanes"][2]["bands"]
+        assert len(b3) == 1 and b3[0]["manual"] is True and b3[0]["y_cm"] == 2.5, b3
+        assert b3[0]["prominence"] == 0.0 and b3[0]["snr"] == 0.0 and b3[0]["width_cm"] > 0, b3[0]
+        assert b3[0]["mw_kda"] is not None and not b3[0]["extrapolated"] and b3[0]["strongest"] is True, b3[0]
+        ok += 1
+
+        # 128) peak_auto：抑制掉的带仍在（检测器原始叫带），手加带不在；marker 道 / 空道不列；
+        #      mw_report 给手加带标 ✎，[主] 与 SNR 格式不变。
+        pa_s = _gp_ov._peak_auto(raw_s, mdl_ov["marker_lane"])
+        assert pa_s == {"2": [y0, y1]}, pa_s
+        assert _gp_ov._peak_auto(raw_d, mdl_ov["marker_lane"]) == {"2": [y0, y1]}, "手加带进了 peak_auto"
+        assert "1" not in pa_s and "3" not in pa_s
+        assert _gp_ov._meta_state(mdl_ov, raw_s)["peak_auto"] == pa_s
+        table_s = format_report_v2(rep_s)
+        assert "✎" not in table_s, table_s
+        table_d = format_report_v2(rep_d)
+        line2 = next(x for x in table_d.splitlines() if x.strip().startswith("泳道  2 "))
+        assert "[主] ✎ " in line2 and "(SNR" in line2, line2
+        assert "✎" not in next(x for x in table_d.splitlines() if x.strip().startswith("泳道  3 "))
+        line3 = next(x for x in format_report_v2(rep_x).splitlines() if x.strip().startswith("泳道  3 "))
+        assert "[主] ✎ " in line3 and "SNR 0)" in line3, line3
+        ok += 1
+
+        # 129) Profiles 画板与 sample bands 刻度都从报告出带：道 3 空白处手加的带在 Profiles 上有
+        #      一条 band 3 标记、在 Workbench 上有一条 peak 3.1 刻度（y = 画出的 2.5 cm）。
+        d_ov = vc_file.loads(vc_file.dumps(
+            figure.build_document(mdl_ov, rep_x, png_ov, "t", layout="stack")))[0]["document"]
+        L_ov = {l["name"]: l for l in d_ov["layers"]}
+        t3 = [n for n in vc_file.lay_children(L_ov["sample bands"]) if (n.get("name") or "").startswith("peak 3.")]
+        assert len(t3) == 1, [n.get("name") for n in vc_file.lay_children(L_ov["sample bands"])]
+        (_x0_ov, ya_ov), (_x1_ov, yb_ov) = vc_file.line_ends(t3[0])
+        wb_ov = figure.wb_frame(d_ov)
+        assert abs((ya_ov + yb_ov) / 2.0 - (wb_ov["gel_y"] + 2.5 * vc_file.PT_PER_CM)) < 1e-6, "手加带的刻度不在 2.5 cm"
+        assert len([n for n in vc_file.lay_children(L_ov["profiles"]) if n.get("name") == "band 3"]) == 1, "Profiles 没画手加带"
+        ok += 1
+
+    # 130) sync 读 sample bands 刻度出 override（ep-xfu.3，spec §4.6 / §7.5）：删一条刻度 → 该道
+    #      suppress 恰好多这一个 y、邻带与别的道不动；报告 / MW 表不再列它，peak_auto 仍记着（抑制之前）；
+    #      摘要写「道 2 删 y=…」；再 sync 一次 0 个操作、peak_overrides 逐字节不变。
+    with tempfile.TemporaryDirectory() as td:
+        top, png = _peak_doc(td)
+        m0, rep0, ops0, meta0, s0, w0 = _peak_sync(top, png)
+        assert ops0 == [] and w0 == [], (ops0[:5], w0)          # render 出来的文档第一次 sync 不动
+        assert "peak_overrides" not in meta0, "没 override 却写了空对象"
+        # 旧文档还没有 peak_auto：刻度是检测器自己写的，不差分，已有 override 原样保留
+        legacy = {"lanes": m0["lanes"], "marker_lane": 1,
+                  "meta": {"peak_overrides": {"2": {"suppress": [1.0]}}}}
+        assert gel_photo._peak_override_state(legacy, [(1.85, 3.0, None)])[0] == {"2": {"suppress": [1.0]}}
+        y0, y1 = meta0["peak_auto"]["2"]
+        assert abs(y0 - 2.495) < 0.01 and set(meta0["peak_auto"]) == {"2", "3"}, meta0["peak_auto"]
+        t = _peak_tick(top, 2, 0)                                # 删掉道 2 的第一条刻度
+        figure.apply_ops_json(top, [{"op": "delete", "id": t[2]["id"]}])
+        m1, rep1, ops1, meta1, s1, opts1 = _peak_sync(top, png)
+        assert meta1["peak_overrides"] == {"2": {"suppress": [round(y0, 4)]}}, meta1["peak_overrides"]
+        assert s1 == "样品带：道 2 删 y=%.2f" % y0, s1
+        assert opts1 == []
+        bands1 = rep1["lanes"][1]["bands"]                       # 抑制的带没了，另一条还在
+        assert [b["y_cm"] for b in bands1] == [y1], bands1
+        assert meta1["peak_auto"] == meta0["peak_auto"], "peak_auto 不该被 suppress 掉"
+        old_mw = next(b["mw_kda"] for b in rep0["lanes"][1]["bands"] if abs(b["y_cm"] - y0) < 1e-9)
+        line2 = next(x for x in format_report_v2(rep1).splitlines() if x.strip().startswith("泳道  2 "))
+        assert ("%.1f" % old_mw) not in line2 and ("%.1f" % bands1[0]["mw_kda"]) in line2, (old_mw, line2)
+        assert rep1["lanes"][2]["bands"] == rep0["lanes"][2]["bands"], "别的道被动了"
+        m2, rep2, ops2, meta2, s2, _w2 = _peak_sync(top, png)    # 二次 sync：0 个操作、override 不变
+        assert ops2 == [], ops2[:5]
+        assert json.dumps(meta2["peak_overrides"]) == json.dumps(meta1["peak_overrides"])
+        assert s2 is None, s2
+    ok += 1
+
+    # 131) 画一条刻度 → add 多一个 y；拖一条 → 旧 y 进 suppress、新 y 进 add（同一次 sync 里）；
+    #      没碰过的道不写 override，检测器输入变了也照常自动更新（override 不冻结别的道）。
+    with tempfile.TemporaryDirectory() as td:
+        top, png = _peak_doc(td)
+        _peak_sync(top, png)
+        wb = figure.wb_frame(top["document"])                    # 道 4（空道）空白处画一条 y = 2.2
+        x, y = wb["gel_x"] + 3.85 * vc_file.PT_PER_CM, wb["gel_y"] + 2.2 * vc_file.PT_PER_CM
+        figure.apply_ops_json(top, [{"op": "create", "layer": "sample bands", "spec": {
+            "kind": "line", "layer": "sample bands", "name": "mine",
+            "a": (x - 0.08 * vc_file.PT_PER_CM, y), "b": (x + 0.08 * vc_file.PT_PER_CM, y),
+            "rgb": (0.1, 0.6, 0.1), "width": 0.5}}])
+        m1, rep1, _ops1, meta1, s1, _w1 = _peak_sync(top, png)
+        assert meta1["peak_overrides"] == {"4": {"add": [2.2]}}, meta1["peak_overrides"]
+        assert s1 == "样品带：道 4 补 y=2.20", s1
+        b4 = rep1["lanes"][3]["bands"]
+        assert len(b4) == 1 and b4[0]["manual"] is True and b4[0]["y_cm"] == 2.2, b4
+        t = _peak_tick(top, 2, 0)                                # 拖道 2 的第一条到 2.8
+        figure.apply_ops_json(top, [{"op": "move", "id": t[2]["id"], "dx": 0.0,
+                                     "dy": (2.8 - t[1]) * vc_file.PT_PER_CM}])
+        p2 = os.path.join(td, "gel2.png")                        # 道 3 的检测器输出也变了（带挪到窗下部）
+        _peak_gel(p2, lane3_py=397)
+        png2 = open(p2, "rb").read()
+        m2, rep2, _ops2, meta2, s2, _w2 = _peak_sync(top, png2)
+        assert meta2["peak_overrides"]["2"] == {"suppress": [round(t[1], 4)], "add": [2.8]}, meta2["peak_overrides"]
+        assert meta2["peak_overrides"]["4"] == {"add": [2.2]}, "没碰过的道 override 变了"
+        assert "3" not in meta2["peak_overrides"], "没碰过的道被写了 override"
+        b3 = rep2["lanes"][2]["bands"]
+        assert len(b3) == 1 and b3[0]["y_cm"] > 3.5 and b3[0]["manual"] is False, b3   # 新位置、仍全自动
+        assert s2 is not None and "道 2 删" in s2 and "道 2 补" in s2, s2
+        assert json.dumps(meta2["peak_overrides"]["4"]) == json.dumps(meta1["peak_overrides"]["4"])
+    ok += 1
+
+    # 132) marker 道 / 所有泳道之外的刻度（spec §4.3）：警告并忽略、不改 override；别的道照常 sync 时
+    #      sample bands 整层重建，这两条误画的线也不能被删；再 sync 一次 0 个操作。
+    with tempfile.TemporaryDirectory() as td:
+        top, png = _peak_doc(td)
+        _peak_sync(top, png)
+        wb = figure.wb_frame(top["document"])
+        fy = wb["gel_y"] + 5.0 * vc_file.PT_PER_CM
+        ids = []
+        for cx_cm in (0.85, 8.4):                                # marker 道中心；胶面里但所有泳道之外
+            before = {n["id"] for n in vc_file.lay_children(vc_file.layer_by_name(top["document"], "sample bands"))}
+            figure.apply_ops_json(top, [{"op": "create", "layer": "sample bands", "spec": {
+                "kind": "line", "layer": "sample bands", "name": "stray",
+                "a": (wb["gel_x"] + (cx_cm - 0.08) * vc_file.PT_PER_CM, fy),
+                "b": (wb["gel_x"] + (cx_cm + 0.08) * vc_file.PT_PER_CM, fy),
+                "rgb": (0.1, 0.6, 0.1), "width": 0.5}}])
+            ids.append(({n["id"] for n in vc_file.lay_children(
+                vc_file.layer_by_name(top["document"], "sample bands"))} - before).pop())
+        t = _peak_tick(top, 2, 0)                                # 同时删一条真刻度：重建真的发生
+        figure.apply_ops_json(top, [{"op": "delete", "id": t[2]["id"]}])
+        m1, rep1, ops1, meta1, s1, warns1 = _peak_sync(top, png)
+        assert len(warns1) == 2 and any("marker 泳道" in w for w in warns1) and \
+            any("不在任何泳道" in w for w in warns1), warns1
+        assert meta1["peak_overrides"] == {"2": {"suppress": [round(t[1], 4)]}}, meta1["peak_overrides"]
+        left = {n["id"] for n in vc_file.lay_children(vc_file.layer_by_name(top["document"], "sample bands"))}
+        assert set(ids) <= left, "误画的刻度被 sync 删掉了"
+        assert ops1, "删了一条真刻度却没重建"
+        m2, rep2, ops2, meta2, s2, _warns2 = _peak_sync(top, png)
+        assert ops2 == [], ops2[:5]
+        assert s2 is None and meta2["peak_overrides"] == meta1["peak_overrides"]
+    ok += 1
+
+    # 133) 道数减少（spec §4.4）：超出新道数的 override 丢掉、摘要说明；落在没了的那条道里的刻度
+    #      变成「道外」，按 §4.3 忽略并原样保留。
+    with tempfile.TemporaryDirectory() as td:
+        top, png = _peak_doc(td)
+        _peak_sync(top, png)
+        wb = figure.wb_frame(top["document"])
+        x, y = wb["gel_x"] + 3.85 * vc_file.PT_PER_CM, wb["gel_y"] + 2.2 * vc_file.PT_PER_CM
+        figure.apply_ops_json(top, [{"op": "create", "layer": "sample bands", "spec": {
+            "kind": "line", "layer": "sample bands", "name": "peak 4.1",
+            "a": (x - 0.08 * vc_file.PT_PER_CM, y), "b": (x + 0.08 * vc_file.PT_PER_CM, y),
+            "rgb": (0.1, 0.6, 0.1), "width": 0.5}}])
+        m1, rep1, _ops1, meta1, s1, _w1 = _peak_sync(top, png)
+        assert meta1["peak_overrides"] == {"4": {"add": [2.2]}}, meta1["peak_overrides"]
+        d = top["document"]                                      # 删掉最右那条泳道分隔线 → 4 道变 3 道
+        sep = vc_file.lay_children(vc_file.layer_by_name(d, "lanes"))
+        last = max(sep, key=lambda n: vc_file.line_ends(n)[0][0] + vc_file.line_ends(n)[1][0])
+        figure.apply_ops_json(top, [{"op": "delete", "id": last["id"]}])
+        m2, rep2, _ops2, meta2, s2, warns2 = _peak_sync(top, png)
+        assert len(m2["lanes"]) == 3
+        assert "4" not in (meta2.get("peak_overrides") or {}), meta2.get("peak_overrides")
+        assert s2 is not None and "道 4" in s2 and "消失" in s2, s2
+        assert any("不在任何泳道" in w for w in warns2), warns2
+        assert len(workbench.sample_ticks(d)) == 4, "被删泳道里的刻度没保住"   # 3 条报告刻度 + 1 条误画
+    ok += 1
+
+    # 134) --reset-peaks N（ep-xfu.5，spec §7.5 / §9）：只清点名道；这一轮不拿文档里那批旧刻度差分
+    #      （不然刚清掉的会立刻写回来），该道按纯自动重叫带并重建刻度：手加的那条刻度消失、被抑制的
+    #      自动带以 peak n.k 回来；别的道的 override 原样保留；摘要一句话。
+    with tempfile.TemporaryDirectory() as td:
+        top, png = _peak_doc(td)
+        _peak_sync(top, png)
+        wb = figure.wb_frame(top["document"])
+        x, y = wb["gel_x"] + 3.85 * vc_file.PT_PER_CM, wb["gel_y"] + 2.2 * vc_file.PT_PER_CM
+        figure.apply_ops_json(top, [{"op": "create", "layer": "sample bands", "spec": {
+            "kind": "line", "layer": "sample bands", "name": "mine",
+            "a": (x - 0.08 * vc_file.PT_PER_CM, y), "b": (x + 0.08 * vc_file.PT_PER_CM, y),
+            "rgb": (0.1, 0.6, 0.1), "width": 0.5}}])
+        t = _peak_tick(top, 2, 0)                                # 道 2：拖第一条到 2.8（= suppress + add）
+        figure.apply_ops_json(top, [{"op": "move", "id": t[2]["id"], "dx": 0.0,
+                                     "dy": (2.8 - t[1]) * vc_file.PT_PER_CM}])
+        _m1, _rep1, _ops1, meta1, _s1, w1 = _peak_sync(top, png)
+        assert w1 == []
+        assert meta1["peak_overrides"] == {"2": {"suppress": [round(t[1], 4)], "add": [2.8]},
+                                           "4": {"add": [2.2]}}, meta1["peak_overrides"]
+        auto2 = meta1["peak_auto"]["2"]
+        _m2, rep2, ops2, meta2, s2, w2 = _peak_sync(top, png, reset=[2])
+        assert w2 == [] and ops2, (w2, ops2[:5])
+        assert meta2["peak_overrides"] == {"4": {"add": [2.2]}}, meta2["peak_overrides"]
+        assert s2 == "样品带：清掉道 2 的 override", s2
+        b2 = rep2["lanes"][1]["bands"]                           # 道 2 = 纯自动的两条带
+        assert len(b2) == 2 and [b["manual"] for b in b2] == [False, False], b2
+        assert [round(b["y_cm"], 3) for b in b2] == [round(a, 3) for a in auto2], (b2, auto2)
+        b4 = rep2["lanes"][3]["bands"]                           # 道 4 的手加带还在
+        assert len(b4) == 1 and b4[0]["manual"] is True and b4[0]["y_cm"] == 2.2, b4
+        ticks2 = sorted((n for n in workbench.sample_ticks(top["document"]) if 1.35 <= n[0] <= 2.35),
+                        key=lambda n: n[1])
+        assert [n[2].get("name") for n in ticks2] == ["peak 2.1", "peak 2.2"], ticks2
+        assert [round(n[1], 3) for n in ticks2] == [round(a, 3) for a in auto2], ticks2
+        assert all(abs(n[1] - 2.8) > 0.1 for n in ticks2), "手加的刻度没被清掉"
+        assert len([n for n in workbench.sample_ticks(top["document"]) if 3.35 <= n[0] <= 4.35]) == 1, \
+            "道 4 的 override 被清掉了"
+        _m3, _rep3, ops3, meta3, s3, w3 = _peak_sync(top, png)   # 再 sync（不 reset）：0 个操作
+        assert ops3 == [] and w3 == [], (ops3[:5], w3)
+        assert meta3["peak_overrides"] == meta2["peak_overrides"]
+        assert s3 is None, s3
+    ok += 1
+
+    # 135) --reset-peaks 不带道号 = 全部道：清完 ep-meta 不再有 peak_overrides，有的道回纯自动、
+    #      没有的道仍空；摘要说明清掉几条泳道；再 sync 一次 0 个操作。
+    with tempfile.TemporaryDirectory() as td:
+        top, png = _peak_doc(td)
+        _peak_sync(top, png)
+        wb = figure.wb_frame(top["document"])
+        x, y = wb["gel_x"] + 3.85 * vc_file.PT_PER_CM, wb["gel_y"] + 2.2 * vc_file.PT_PER_CM
+        figure.apply_ops_json(top, [{"op": "create", "layer": "sample bands", "spec": {
+            "kind": "line", "layer": "sample bands", "name": "mine",
+            "a": (x - 0.08 * vc_file.PT_PER_CM, y), "b": (x + 0.08 * vc_file.PT_PER_CM, y),
+            "rgb": (0.1, 0.6, 0.1), "width": 0.5}}])
+        t = _peak_tick(top, 2, 0)                                # 道 2：删第一条 → suppress
+        figure.apply_ops_json(top, [{"op": "delete", "id": t[2]["id"]}])
+        _m1, _rep1, _ops1, meta1, _s1, _w1 = _peak_sync(top, png)
+        assert set(meta1["peak_overrides"]) == {"2", "4"}, meta1["peak_overrides"]
+        _m2, rep2, ops2, meta2, s2, w2 = _peak_sync(top, png, reset=[])
+        assert w2 == [] and ops2
+        assert "peak_overrides" not in meta2, meta2.get("peak_overrides")
+        assert s2 == "样品带：清掉全部 override（2 条泳道）", s2
+        assert [b["manual"] for b in rep2["lanes"][1]["bands"]] == [False, False], rep2["lanes"][1]["bands"]
+        assert rep2["lanes"][3]["bands"] == []
+        _m3, _rep3, ops3, meta3, s3, _w3 = _peak_sync(top, png)
+        assert ops3 == [], ops3[:5]
+        assert "peak_overrides" not in meta3
+        assert s3 is None, s3
+    ok += 1
+
+    # 136) --reset-peaks 给不存在的道号：警告并忽略（说清现在几条泳道），不清任何 override、不崩；
+    #      这一轮照常差分。
+    with tempfile.TemporaryDirectory() as td:
+        top, png = _peak_doc(td)
+        _peak_sync(top, png)
+        t = _peak_tick(top, 2, 0)
+        figure.apply_ops_json(top, [{"op": "delete", "id": t[2]["id"]}])
+        _m1, _rep1, _ops1, meta1, _s1, _w1 = _peak_sync(top, png)
+        assert meta1["peak_overrides"] == {"2": {"suppress": [round(t[1], 4)]}}
+        ticks_before = len(workbench.sample_ticks(top["document"]))
+        _m2, _rep2, ops2, meta2, s2, w2 = _peak_sync(top, png, reset=[9])
+        assert len(w2) == 1 and "9" in w2[0] and "4 条泳道" in w2[0], w2
+        assert meta2["peak_overrides"] == meta1["peak_overrides"], meta2["peak_overrides"]
+        assert ops2 == [] and s2 is None, (ops2[:5], s2)
+        assert len(workbench.sample_ticks(top["document"])) == ticks_before
+    ok += 1
+
+    # 137) --dry-run（spec §9）：只算出要做的 ops，不写 ep-meta、不动刻度；真跑才变。
+    #      --reset-peaks 的解析：不给 = None、不带道号 = []（全部）、带道号 = [3, 12]；--help 里有它。
+    with tempfile.TemporaryDirectory() as td:
+        top, png = _peak_doc(td)
+        _peak_sync(top, png)
+        t = _peak_tick(top, 2, 0)
+        figure.apply_ops_json(top, [{"op": "delete", "id": t[2]["id"]}])
+        _m1, _rep1, _ops1, meta1, _s1, _w1 = _peak_sync(top, png)
+        d = top["document"]
+        meta_before = json.dumps(workbench.from_document(d)[0]["meta"], sort_keys=True)
+        ticks_before = [(round(x, 4), round(y, 4), n.get("name")) for x, y, n in workbench.sample_ticks(d)]
+        _m, _rep, ops, _meta, s, _w = _peak_sync(top, png, reset=[2], apply=False)
+        assert ops, "dry-run 没算出 ops"
+        assert s == "样品带：清掉道 2 的 override", s
+        assert json.dumps(workbench.from_document(d)[0]["meta"], sort_keys=True) == meta_before, \
+            "dry-run 写了 ep-meta"
+        assert [(round(x, 4), round(y, 4), n.get("name")) for x, y, n in workbench.sample_ticks(d)] == ticks_before, \
+            "dry-run 动了刻度"
+        _m2, _rep2, ops2, meta2, _s2, _w2 = _peak_sync(top, png, reset=[2])
+        assert ops2 and "peak_overrides" not in meta2, meta2.get("peak_overrides")
+        assert json.dumps(workbench.from_document(d)[0]["meta"], sort_keys=True) != meta_before
+
+    import gel_photo as _gp_arg
+    seen = {}
+    orig_sync = _gp_arg.cmd_sync
+    _gp_arg.cmd_sync = lambda a: (seen.update(reset_peaks=a.reset_peaks) or 0)
+    try:
+        assert _gp_arg.main(["sync", "fig.vectorcraft", "--reset-peaks", "3", "12"]) == 0
+        assert seen["reset_peaks"] == [3, 12], seen
+        assert _gp_arg.main(["sync", "fig.vectorcraft", "--reset-peaks"]) == 0
+        assert seen["reset_peaks"] == [], seen
+        assert _gp_arg.main(["sync", "fig.vectorcraft"]) == 0
+        assert seen["reset_peaks"] is None, seen
+    finally:
+        _gp_arg.cmd_sync = orig_sync
+    help_buf = io.StringIO()
+    with contextlib.redirect_stdout(help_buf):
+        try:
+            _gp_arg.main(["sync", "--help"])
+        except SystemExit as e:
+            assert e.code == 0, e.code
+    assert "--reset-peaks" in help_buf.getvalue(), help_buf.getvalue()
+    ok += 1
+
+    # 138) suppress 对不上这一轮自动叫带时的摘要（spec §7.5）：检测器把被删的那条带挪走了 → 旧 suppress
+    #      保留、新位置也进 suppress，摘要把失配说出来。比的是**这一轮**的 call（不是上一轮 peak_auto）。
+    with tempfile.TemporaryDirectory() as td:
+        top, png = _peak_doc(td)
+        _peak_sync(top, png)
+        t = _peak_tick(top, 3, 0)
+        figure.apply_ops_json(top, [{"op": "delete", "id": t[2]["id"]}])
+        old_y = round(t[1], 4)
+        _m1, _rep1, _ops1, meta1, s1, _w1 = _peak_sync(top, png)
+        assert meta1["peak_overrides"] == {"3": {"suppress": [old_y]}}, meta1["peak_overrides"]
+        assert s1 == "样品带：道 3 删 y=%.2f" % old_y, s1
+        p2 = os.path.join(td, "gel2.png")                       # 检测器把这条带挪到窗下部
+        _peak_gel(p2, lane3_py=397)
+        _m2, rep2, _ops2, meta2, s2, _w2 = _peak_sync(top, open(p2, "rb").read())
+        assert meta2["peak_overrides"] == {"3": {"suppress": [old_y]}}, meta2["peak_overrides"]
+        b3 = rep2["lanes"][2]["bands"]                          # 检测器在新位置叫出的带照常出图
+        assert len(b3) == 1 and b3[0]["manual"] is False and b3[0]["y_cm"] > 3.5, b3
+        assert s2 and "已经对不上这一轮的自动叫带" in s2, s2
+    ok += 1
+
     print("selftest %d/%d 通过" % (ok, ok))
     return 0
 
@@ -1511,6 +2019,105 @@ def _walk_keys(o):
     elif isinstance(o, (list, tuple)):
         for v in o:
             yield from _walk_keys(v)
+
+
+def _baseline_bands(model, png):
+    """ep-xfu.4 之前的 analyze 的带 = 测试基线：同一套 profiles 公式，不认识 override、带里没有 manual。
+
+    返回 [[{y_cm, prominence, snr, width_cm, mw_kda, extrapolated, strongest}, …], …]，与 model["lanes"] 对齐。
+    """
+    w, h, gray = profiles.gel_gray(png)
+    ppc = w / float(model["gel"]["width_cm"])
+    top = max(0.0, model["window"]["top_cm"])
+    bottom = min(model["gel"]["height_cm"], model["window"]["bottom_cm"])
+    cal = build_cal([(b["y_cm"], b["mw"]) for b in model["bands"]])
+    out = []
+    for ln in model["lanes"]:
+        ys, gs = profiles.lane_profile(gray, w, h, ppc, ln["left_cm"], ln["right_cm"], top, bottom)
+        _base, _ink, sm = profiles.ink_trace(gs, ppc)
+        called, _noise = profiles.call_bands(ys, gs, sm, ppc)
+        cx = (ln["left_cm"] + ln["right_cm"]) / 2.0
+        bands = []
+        for bd in called:
+            mw, ex = estimate(bd["y_cm"], cx, [(cx, cal)])
+            bands.append(dict(bd, mw_kda=None if mw is None else round(mw, 2), extrapolated=bool(ex)))
+        if bands:
+            max(bands, key=lambda x: x["prominence"])["strongest"] = True
+        out.append([dict(b, strongest=b.get("strongest", False)) for b in bands])
+    return out
+
+
+PEAK_LANES_CM = (0.35, 1.35, 2.35, 3.35)          # 样品带测试的 4 条相邻泳道（第 i 条 = [a, a+1]）
+
+
+def _peak_gel(path, lane3_py=197):
+    """selftest 的样品带胶面图：marker 道（第 1 道）4 条带，第 2 道 2 条，第 3 道 1 条（位置可挪），第 4 道空。"""
+    draw = []
+    for y in (1.0, 2.0, 3.0, 4.0):
+        draw += ["-fill", "gray(60)", "-draw", "rectangle 40,%d 80,%d" % (y * 100 - 3, y * 100 + 2)]
+    draw += ["-fill", "gray(60)", "-draw", "rectangle 140,247 180,252"]          # 道 2：y≈2.495
+    draw += ["-fill", "gray(60)", "-draw", "rectangle 140,347 180,352"]          # 道 2：y≈3.495
+    draw += ["-fill", "gray(60)", "-draw", "rectangle 240,%d 280,%d" % (lane3_py - 3, lane3_py + 2)]
+    _run([MAGICK, "-size", "860x625", "xc:gray(200)"] + draw + ["-depth", "8", path])
+
+
+def _peak_doc(td):
+    """selftest：render 出的一份 4 道样品带文档（ep-meta 有 peak_auto，刻度已按报告写好）→ (top, png)。"""
+    import gel_photo
+    p = os.path.join(td, "gel.png")
+    _peak_gel(p)
+    png = open(p, "rb").read()
+    lanes = [{"left_cm": a, "right_cm": a + 1.0, "trimmed": False} for a in PEAK_LANES_CM]
+    mdl = {"gel": {"width_cm": 8.6, "height_cm": 6.25},
+           "window": {"top_cm": 0.0, "bottom_cm": 6.0},
+           "lanes": lanes,
+           "bands": [{"mw": mw, "y_cm": y}
+                     for mw, y in zip((100.0, 50.0, 25.0, 12.5), (1.0, 2.0, 3.0, 4.0))],
+           "marker_lane": 1,
+           "meta": {"profiles_layout": "stack", "lane_names": ["M", "S1", "S2", "S3"],
+                    "prev_centres_cm": workbench.centres({"lanes": lanes})}}
+    raw = {}
+    rep = profiles.analyze(mdl, png, ["M", "S1", "S2", "S3"], raw=raw)
+    mdl["meta"].update(gel_photo._meta_state(mdl, raw))
+    top, _b = vc_file.loads(vc_file.dumps(figure.build_document(mdl, rep, png, "t", layout="stack")))
+    return top, png
+
+
+def _peak_tick(top, lane, k):
+    """selftest：该道第 k 条（自上而下）样品带刻度 → (x_cm, y_cm, 节点)。"""
+    a = PEAK_LANES_CM[lane - 1]
+    ticks = sorted((t for t in workbench.sample_ticks(top["document"]) if a <= t[0] <= a + 1.0),
+                   key=lambda t: t[1])
+    return ticks[k]
+
+
+def _peak_sync(top, png, reset=None, apply=True):
+    """selftest：按 cmd_sync 的顺序跑一次（读模型 → --reset-peaks 清道 → 读刻度差分 override →
+    analyze → 记 peak_auto → plan_sync → 落 op）。reset 同 --reset-peaks：None = 没给、[] = 全部道、
+    [道号…] = 指定道；apply=False = --dry-run（算出 ops 但不改文档）。
+    返回 (模型, 报告, ops, ep-meta, 样品带摘要行, 警告行)。"""
+    import gel_photo
+    d = top["document"]
+    m, _notes = workbench.from_document(d)
+    old = dict(m["meta"])
+    reset_lanes, reset_all, warns = gel_photo._peak_reset_lanes(m, reset)
+    overrides, more_warns = gel_photo._peak_override_state(m, workbench.sample_ticks(d), reset_lanes)
+    warns += more_warns
+    if overrides:
+        m["meta"]["peak_overrides"] = overrides
+    else:
+        m["meta"].pop("peak_overrides", None)
+    raw = {}
+    rep = profiles.analyze(m, png, [None] * len(m["lanes"]),
+                           overrides=m["meta"].get("peak_overrides"), raw=raw)
+    m["meta"].update(gel_photo._meta_state(m, raw))
+    ops, meta = figure.plan_sync(d, m, rep, layout=m["meta"].get("profiles_layout") or figure.PROFILE_LAYOUT)
+    summary = gel_photo._peak_summary(old, m, reset_lanes, reset_all)
+    names = meta["lane_names"]                                   # 与 cmd_sync 一样：报告用文档里的泳道名
+    rep = dict(rep, lanes=[dict(ln, label=names[ln["lane"] - 1]) for ln in rep["lanes"]])
+    if apply:
+        figure.apply_ops_json(top, ops)
+    return m, rep, ops, meta, summary, warns
 
 
 def _synth_record():

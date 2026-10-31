@@ -92,7 +92,8 @@ def format_report_v2(rep):
         parts = []
         for b in ln["bands"]:
             mw = "超出 marker 范围" if b["mw_kda"] is None else "%.1f kDa" % b["mw_kda"]
-            parts.append("%s%s (SNR %.0f)" % ("[主] " if b["strongest"] else "", mw, b["snr"]))
+            parts.append("%s%s%s (SNR %.0f)" % ("[主] " if b["strongest"] else "",
+                                                "✎ " if b.get("manual") else "", mw, b["snr"]))
         lines.append("  泳道 %2d %-8s %s" % (ln["lane"], ln["label"], " | ".join(parts) or "（无条带）"))
     lines += ["  注：" + n for n in rep["notes"]]
     return "\n".join(lines)

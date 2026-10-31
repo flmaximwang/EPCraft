@@ -12,6 +12,8 @@ render（探测出来的线）和 sync（用户改过的线）走同一份代码
    **没有绝对墨量下限**（失效报告 §6 P2-2：本批样品带只深 3–4 灰度级，绝对阈值会把整条淡道丢掉）。
    两端留一段不取峰：top-hat 的基线在剖面端点被截断（conventions §2c 的老坑）。
 4. 标定：`band <MW>` 线的 y ↔ MW，**只做相邻两点之间的 log10(MW) 线性插值**（不做全局拟合），与 mw_report 同一套数学。
+5. 手改带：`overrides`（ep-meta 的 peak_overrides）抑制检测器叫出的带、在画出的 y 上按同一口径补带，
+   报告里每条带带 manual；`raw` 记抑制**之前**的检测器叫带，供 peak_auto 差分（spec §4.6、§7.5）。
 
 报告 v2 的坐标一律是胶面 cm（与 record 同口径），不存照片像素。
 """
@@ -112,6 +114,51 @@ def noise_of(sm):
     return sigma
 
 
+def _smoothed_dark(gs, px_per_cm):
+    """平滑后的 −灰度（越暗越大）。带的峰、显著度与半高宽都在它上面量（spec §7.2）。"""
+    n = len(gs)
+    sm_w = max(1, int(round(SMOOTH_CM * px_per_cm)))
+    pre = [0.0]
+    for v in gs:
+        pre.append(pre[-1] - v)
+    return [(pre[min(n, i + sm_w + 1)] - pre[max(0, i - sm_w)]) / (min(n, i + sm_w + 1) - max(0, i - sm_w))
+            for i in range(n)]
+
+
+def _measure_at(dark, i, fw, px_per_cm):
+    """在 dark 的第 i 行量一条带 → (显著度, 半高宽 cm)。
+
+    显著度 = 该处的暗度 − 两侧 FLANK_CM 内各自最浅点中**较深**的那个；半高宽按显著度的一半量。
+    call_bands 与手加带共用这一份口径（spec §7.2、§7.5）。
+    """
+    n = len(dark)
+    prom = dark[i] - max(min(dark[max(0, i - fw):i + 1]), min(dark[i:min(n, i + fw + 1)]))
+    half = dark[i] - prom / 2.0                               # 半高宽按局部显著度的一半量
+    a, b = i, i
+    while a > 0 and dark[a - 1] > half:
+        a -= 1
+    while b + 1 < n and dark[b + 1] > half:
+        b += 1
+    return prom, (b - a + 1) / px_per_cm
+
+
+def measure_band(ys, gs, y_cm, px_per_cm, noise):
+    """在一个给定 y 上按 call_bands 的同一口径量手加带 → {y_cm, prominence, snr, width_cm}（spec §7.5）。
+
+    y 用画出来的原值（不吸到最近的局部极小），指标在最接近的那一行上量。显著度 ≤ 0 记 0、带照常保留：
+    用户在空白处补一条也是他的意思，看得出 SNR 为 0。
+    """
+    dark = _smoothed_dark(gs, px_per_cm)
+    fw = max(2, int(round(FLANK_CM * px_per_cm)))
+    if not ys:
+        return {"y_cm": round(float(y_cm), 4), "prominence": 0.0, "snr": 0.0, "width_cm": 0.0}
+    i = min(range(len(ys)), key=lambda k: abs(ys[k] - y_cm))
+    prom, width = _measure_at(dark, i, fw, px_per_cm)
+    prom = max(0.0, prom)
+    return {"y_cm": round(float(y_cm), 4), "prominence": round(prom, 2),
+            "snr": round(prom / noise, 1), "width_cm": round(width, 4)}
+
+
 def call_bands(ys, gs, sm, px_per_cm, k=K_NOISE):
     """条带 → ([{y_cm, prominence, snr, width_cm}], noise)。
 
@@ -128,12 +175,7 @@ def call_bands(ys, gs, sm, px_per_cm, k=K_NOISE):
     noise = noise_of(sm)
     if n < 5:
         return [], noise
-    sm_w = max(1, int(round(SMOOTH_CM * px_per_cm)))
-    pre = [0.0]
-    for v in gs:
-        pre.append(pre[-1] - v)
-    dark = [(pre[min(n, i + sm_w + 1)] - pre[max(0, i - sm_w)]) / (min(n, i + sm_w + 1) - max(0, i - sm_w))
-            for i in range(n)]                                  # 平滑后的 −灰度：越暗越大
+    dark = _smoothed_dark(gs, px_per_cm)
     win = max(3, int(round(BASE_HALF_CM * px_per_cm)))
     fw = max(2, int(round(FLANK_CM * px_per_cm)))
     a_margin, b_margin = max(2, int(0.5 * win)), win
@@ -143,37 +185,44 @@ def call_bands(ys, gs, sm, px_per_cm, k=K_NOISE):
     for i in range(max(1, a_margin), min(n - 1, n - b_margin)):
         if not (dark[i] >= dark[i - 1] and dark[i] >= dark[i + 1] and (dark[i] > dark[i - 1] or dark[i] > dark[i + 1])):
             continue
-        prom = dark[i] - max(min(dark[max(0, i - fw):i + 1]), min(dark[i:min(n, i + fw + 1)]))
+        prom, width = _measure_at(dark, i, fw, px_per_cm)
         if prom >= thr:
-            cands.append((i, prom))
+            cands.append((i, prom, width))
     keep = []
-    for i, prom in cands:                                     # 平台/锯齿 → 合并邻近候选
+    for i, prom, width in cands:                              # 平台/锯齿 → 合并邻近候选
         if keep and i - keep[-1][0] <= min_sep:
             if prom > keep[-1][1]:
-                keep[-1] = (i, prom)
+                keep[-1] = (i, prom, width)
         else:
-            keep.append((i, prom))
+            keep.append((i, prom, width))
     out = []
-    for i, prom in keep:
-        half = dark[i] - prom / 2.0                           # 半高宽按局部显著度的一半量
-        a, b = i, i
-        while a > 0 and dark[a - 1] > half:
-            a -= 1
-        while b + 1 < n and dark[b + 1] > half:
-            b += 1
+    for i, prom, width in keep:
         out.append({"y_cm": round(ys[i], 4), "prominence": round(prom, 2),
-                    "snr": round(prom / noise, 1), "width_cm": round((b - a + 1) / px_per_cm, 4)})
+                    "snr": round(prom / noise, 1), "width_cm": round(width, 4)})
     return out, noise
 
 
 # ---------------------------------------------------------------- 整份报告
 
-def analyze(model, png, lane_names):
+def _override_ys(values):
+    """override 里的 y 列表 → float 列表；读坏的非数字整段忽略（ep-meta 是 agent 写的，不该因此崩）。"""
+    try:
+        return [float(v) for v in (values or [])]
+    except (TypeError, ValueError):
+        return []
+
+
+def analyze(model, png, lane_names, overrides=None, raw=None):
     """workbench 模型 + 胶面图 → 报告 v2 dict（spec §7）。lane_names 与 model["lanes"] 一一对应（None = 未命名）。
+
+    overrides = {泳道号: {"suppress": [y_cm…], "add": [y_cm…]}}（键 str 或 int 都认；没列出的道全自动）：
+    suppress 去掉检测器叫出的、落在 MIN_SEP_CM 以内的带；add 在画出的 y 上按 call_bands 的同一口径量一条带
+    （manual=True，不吸到最近的局部极小，spec §7.5）。raw 是 dict 时填入**抑制之前**的检测器叫带
+    {泳道号: [y_cm…]}，供 ep-meta 的 peak_auto 跟下一轮文档差分（§4.6）。
 
     分子量只在**相邻两条 marker 带之间**按 log10(MW) 线性插值（mw_report._log_at）：标记点上的值就是标签值，
     点之间按这条胶的局部斜率走。**不做全局拟合**（Tris-Tricine 上直线拟合会把 250 kD 压低四成、10 kD 抬高四成）。
-    超出 marker 范围的带记 mw_kda=None + extrapolated=True，不给数字。
+    超出 marker 范围的带记 mw_kda=None + extrapolated=True，不给数字；手加的带也一样。
     """
     w, h, gray = gel_gray(png)
     ppc = w / float(model["gel"]["width_cm"])
@@ -186,18 +235,30 @@ def analyze(model, png, lane_names):
     if len(pairs) < 3:
         raise RuntimeError("marker 条带线不足 3 条，无法标定")
     cal = build_cal(pairs)
+    ovs = overrides if isinstance(overrides, dict) else {}
     lanes, notes = [], []
     for i, ln in enumerate(model["lanes"], 1):
         ys, gs = lane_profile(gray, w, h, ppc, ln["left_cm"], ln["right_cm"], top, bottom)
         base, ink, sm = ink_trace(gs, ppc)
         called, noise = call_bands(ys, gs, sm, ppc)
+        if raw is not None:
+            raw[i] = [b["y_cm"] for b in called]              # 抑制之前：peak_auto 的差分基准
+        ov = ovs.get(i, ovs.get(str(i)))
+        ov = ov if isinstance(ov, dict) else {}
+        suppress = _override_ys(ov.get("suppress"))
+        adds = _override_ys(ov.get("add"))
+        merged = [(bd, False) for bd in called
+                  if not any(abs(bd["y_cm"] - sy) <= MIN_SEP_CM + 1e-9 for sy in suppress)]
+        merged += [(measure_band(ys, gs, ay, ppc, noise), True) for ay in adds]
+        merged.sort(key=lambda x: x[0]["y_cm"])               # 自上而下（手加带照它的 y 落位）
         cx = (ln["left_cm"] + ln["right_cm"]) / 2.0
         bands = []
-        for bd in called:
+        for bd, manual in merged:
             mw, ex = estimate(bd["y_cm"], cx, [(cx, cal)])
-            bands.append(dict(bd, mw_kda=None if mw is None else round(mw, 2), extrapolated=bool(ex)))
+            bands.append(dict(bd, mw_kda=None if mw is None else round(mw, 2),
+                              extrapolated=bool(ex), manual=manual))
         if bands:
-            max(bands, key=lambda x: x["prominence"])["strongest"] = True
+            max(bands, key=lambda x: x["prominence"])["strongest"] = True   # 手加带也参与
         name = lane_names[i - 1] if i - 1 < len(lane_names) else None
         lanes.append({
             "lane": i, "label": name, "marker": i == model["marker_lane"], "trimmed": bool(ln["trimmed"]),

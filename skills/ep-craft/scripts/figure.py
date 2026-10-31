@@ -12,7 +12,8 @@ V7 再把同一套 ops 翻成控制口命令。render 与 sync 因此不会各�
 所有权（spec §4.4，plan_sync 的硬规则）：
     标签（labels 层里 `label lane n` / `label band <MW>`）：agent 只动位置、改名、新建、删除，
         **从不写文字与样式**（文字、字体、字号、颜色归用户）；labels 层里别的名字的对象一律不碰；
-    analysis / profiles 两层：每次整层重建；
+    analysis / sample bands / profiles 三层：每次整层重建（sample bands 的 override 在 plan_sync 之前读，
+        这里只负责把最终的刻度列表 peak n.k 写回去）；
     gel 层：Figure 上的 `gel seg k`（剪切组）由 agent 管；Workbench 那张 `gel` 图不动；
     Workbench 的线（lanes / trimmed / window / marker bands）归用户，agent 只给 trimmed 里的 trim 标记换灰色、
         lanes 里的分隔线换回青色；
@@ -202,16 +203,18 @@ def targets(model, report, gel_key, gel_px, wb, labels=None, layout=None, measur
                       "size": it["size"], "angle": it["angle"], "justify": it["justify"], "rgb": it["rgb"],
                       "x": gx + it["anchor_cm"][0] * PT, "y": gy + it["anchor_cm"][1] * PT})
 
-    # ---- Workbench 上的分析层：泳道号、叫出来的带
+    # ---- Workbench 上的分析层：泳道号；样品带刻度在 sample bands 层（spec §4.2：marker 道不画刻度）
     wgx, wgy = wb["gel_x"], wb["gel_y"]
     for i, c in enumerate(cs, 1):
         specs.append({"kind": "text", "layer": "analysis", "name": "tag %d" % i, "text": str(i), "size": 6.0,
                       "x": wgx + c * PT, "y": wgy - 4, "justify": "Center", "rgb": (0.35, 0.35, 0.35)})
     for ln in report["lanes"]:
+        if ln["marker"]:
+            continue
         c = cs[ln["lane"] - 1]
-        for b in ln["bands"]:
+        for k, b in enumerate(sorted(ln["bands"], key=lambda x: x["y_cm"]), 1):   # k = 道内自上而下
             y = wgy + b["y_cm"] * PT
-            specs.append({"kind": "line", "layer": "analysis", "name": "peak %d" % ln["lane"],
+            specs.append({"kind": "line", "layer": "sample bands", "name": "peak %d.%d" % (ln["lane"], k),
                           "a": (wgx + (c - 0.08) * PT, y), "b": (wgx + (c + 0.08) * PT, y),
                           "rgb": (0.1, 0.6, 0.1), "width": 0.5})
 
@@ -478,6 +481,27 @@ def wb_frame(document):
             "gel_x": img["kind"]["xf"][4], "gel_y": img["kind"]["xf"][5]}
 
 
+def _foreign_tick_ids(document, model):
+    """sample bands 图层里不归 agent 管的顶层对象 → id 集合（spec §4.3 / §7.5）。
+
+    两类：中点落在 marker 道或所有泳道之外的刻度（用户误画，gel_photo 差分忽略并打警告）；
+    读不成单条直线的对象（组、文字、多段路径 —— gel_photo 也不认）。plan_sync 整层重建 sample bands
+    时不删它们：用户画错的线 / 组不能因为一次 sync 就没了。坐标同 workbench.sample_ticks（gel 图的 xf）。"""
+    lay = vc_file.layer_by_name(document, "sample bands")
+    if not lay:
+        return set()
+    tick_x = {n["id"]: x for x, _y, n in workbench.sample_ticks(document)}
+    out = set()
+    for n in vc_file.lay_children(lay):
+        if n["id"] not in tick_x:
+            out.add(n["id"])
+            continue
+        lane = workbench.lane_at(model, tick_x[n["id"]])
+        if lane is None or lane == model.get("marker_lane"):
+            out.add(n["id"])
+    return out
+
+
 def plan_sync(document, model, report, layout=None, measure_fn=None, tol=0.01):
     """活文档 + 用户改过之后读回的新模型 + 新报告 → (ops, 新 meta)。
 
@@ -539,11 +563,20 @@ def plan_sync(document, model, report, layout=None, measure_fn=None, tol=0.01):
     for sp in tg["specs"]:
         want.setdefault(sp["layer"], []).append(sp)
 
-    # ---- 整层重建：analysis、profiles（内容不变就不动，保证幂等）
-    for lay in ("analysis", "profiles"):
-        cur = [_spec_of(n, lay) for n in vc_file.lay_children(L[lay])]
+    # ---- 整层重建：analysis、sample bands、profiles（内容不变就不动，保证幂等）
+    #      旧文档没有 sample bands 层（刻度还在 analysis 里，名叫 peak <lane>）：先建层，再整层重建 ——
+    #      旧刻度随 analysis 的重建一起删掉，新刻度在同一个撤销组里建进新层。override 的读取在 plan_sync
+    #      之前（spec §7.5），这里只把最终的刻度列表写回去。
+    #      sample bands 里落在 marker 道 / 所有泳道之外的刻度是用户的误画：保留原样，不参与比较也不删。
+    foreign = _foreign_tick_ids(document, model)
+    if "sample bands" not in L:
+        ops.append(dict(workbench.layer_props("sample bands"), op="layer"))
+    for lay in ("analysis", "sample bands", "profiles"):
+        kids = vc_file.lay_children(L[lay]) if lay in L else []
+        keep = foreign if lay == "sample bands" else set()
+        cur = [_spec_of(n, lay) for n in kids if n["id"] not in keep]
         if not _same_specs(cur, want.get(lay, []), tol):
-            ops += [{"op": "delete", "id": n["id"]} for n in vc_file.lay_children(L[lay])]
+            ops += [{"op": "delete", "id": n["id"]} for n in kids if n["id"] not in keep]
             ops += [{"op": "create", "layer": lay, "spec": sp} for sp in want.get(lay, [])]
 
     # ---- Figure 的胶段
@@ -645,6 +678,14 @@ def apply_ops_json(top, ops):
         if o == "artboard":
             x, y, w, h = op["rect"]
             d["artboards"][op["index"]]["rect"] = {"x0": x, "y0": y, "x1": x + w, "y1": y + h}
+        elif o == "layer":
+            shim["next"] = nxt[0]
+            shim["top"] = {"document": d}                # add_layer 直接往 document["layers"] 追加
+            lay = vc_file.add_layer(shim, op["name"], printable=op.get("printable", True),
+                                    visible=op.get("visible", True), locked=op.get("locked", False),
+                                    color=op.get("color", 0))
+            nxt[0] = shim["next"]
+            L[op["name"]] = lay
         elif o == "delete":
             lay, grp = parent[op["id"]]
             kids = grp["kind"]["children"] if grp else vc_file.lay_children(lay)

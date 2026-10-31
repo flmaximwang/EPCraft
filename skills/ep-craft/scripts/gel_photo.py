@@ -61,7 +61,7 @@ REMOVED = {
     "--keep-lanes": "--trim-lanes（反过来写：要从 Figure 拿掉的泳道号），或在 VectorCraft 的 trimmed 图层里给那条泳道画一条短线（trim 标记）",
     "--svg": "fig.vectorcraft 本身就是矢量文档；要 SVG 就在 VectorCraft 里 File → Export",
     "--no-editor": "不再写 HTML 编辑器；编辑在 VectorCraft 里做",
-    "--debug": "检测结果都在 fig.vectorcraft 的 Workbench 画板上（lanes / window / marker bands / analysis 图层）",
+    "--debug": "检测结果都在 fig.vectorcraft 的 Workbench 画板上（lanes / window / marker bands / sample bands / analysis 图层）",
     "--record": "探测记录就是 Workbench 上的线（加 ep-meta）；数值在 fig.mw.json 里",
     "--pair-force": "带数对不上时 render 自动出草稿标定；在 Workbench 上改 band 线（拖、删、改名 band <MW>），然后 sync",
     "--marker-policy": "marker 泳道被 trim 时只用来标定、不画标签（固定行为）",
@@ -247,8 +247,9 @@ def cmd_render(args):
                                                 "草稿：位置是猜的" if model["meta"].get("draft") else "来自剖面上叫出的峰"))
     _check_pitch(sd, preset)
 
-    report = _mark_draft(model, profiles.analyze(model, png, names))
-    model["meta"].update(_meta_state(model, report))
+    raw = {}                                               # 检测器原始叫带（override 之前）→ peak_auto
+    report = _mark_draft(model, profiles.analyze(model, png, names, overrides={}, raw=raw))
+    model["meta"].update(_meta_state(model, raw))
     model["meta"]["crop"] = crop_meta                   # ep-meta 与 plan_sync 写回的同一份（第一次 sync = 0 个操作）
     doc = figure.build_document(model, report, png, os.path.basename(stem), layout=args.profiles, crop=crop_spec)
 
@@ -308,9 +309,27 @@ def _mark_draft(model, report):
     return report
 
 
-def _meta_state(model, report):
-    """写进 ep-meta 的「上一次」状态：sync 拿它说清楚这次改了什么（R² 不再有：标定不做全局拟合）。"""
-    return {"bands": [[b["mw"], b["y_cm"]] for b in model["bands"]]}
+def _meta_state(model, raw):
+    """写进 ep-meta 的「上一次」状态：sync 拿它说清楚这次改了什么（R² 不再有：标定不做全局拟合）。
+    另记这一轮检测器叫出的样品带 `peak_auto`（**override 之前**，analyze 填的 raw）：下一次 sync 拿文档里的
+    刻度跟它差分（spec §4.6、§7.5）—— 抑制掉的带也要留着，否则 sync 会把「用户删的」当成「检测器没叫」。"""
+    return {"bands": [[b["mw"], b["y_cm"]] for b in model["bands"]],
+            "peak_auto": _peak_auto(raw, model["marker_lane"])}
+
+
+def _peak_auto(raw, marker_lane):
+    """检测器叫出的样品带（**override 之前**）→ {"泳道号": [y_cm, …]}，cm 四位小数、自上而下。
+
+    raw = profiles.analyze 填的 {泳道号: [y_cm…]}（抑制之前）。marker 道不画刻度（band <MW> 线已管它），
+    也不记；没有带的道不列（缺键 = 空列表）。手加带不在 raw 里，所以不会混进 peak_auto。"""
+    out = {}
+    for lane, ys in raw.items():
+        if marker_lane is not None and int(lane) == int(marker_lane):
+            continue
+        ys = sorted(round(float(y), 4) for y in ys)
+        if ys:
+            out[str(lane)] = ys
+    return out
 
 
 def _ask_names(model):
@@ -318,6 +337,119 @@ def _ask_names(model):
                if n is None and i <= len(model["lanes"]) and not model["lanes"][i - 1]["trimmed"]]
     if missing:
         print("[?] 泳道 %s 还没有名字（标签是 \"?\"）—— 问用户，再改那几个标签的文字" % missing)
+
+
+TICK_TOL_CM = profiles.MIN_SEP_CM       # 刻度和期望带配对的容差（0.05 cm：两条真带不会这么近，spec §7.5）
+
+
+def _norm_overrides(raw):
+    """ep-meta 的 peak_overrides → {泳道号: {"suppress": [y…], "add": [y…]}}。
+
+    泳道号转 int；y 四位小数、升序、去重；空列表和空道丢掉（缺键 = 全自动）。读坏的值忽略 ——
+    ep-meta 是 agent 写的，用户手改坏了也不该让 sync 崩。"""
+    out = {}
+    if not isinstance(raw, dict):
+        return out
+    for k, v in raw.items():
+        try:
+            lane = int(k)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(v, dict):
+            continue
+        ent = {}
+        for key in ("suppress", "add"):
+            vals, src = set(), v.get(key)
+            for y in (src if isinstance(src, list) else []):
+                try:
+                    vals.add(round(float(y), 4))
+                except (TypeError, ValueError):
+                    continue
+            if vals:
+                ent[key] = sorted(vals)
+        if ent:
+            out[lane] = ent
+    return out
+
+
+def _peak_reset_lanes(model, reset):
+    """--reset-peaks 的道号 → (这一轮不差分的道号集合, 是否「全部道」, 警告行)。
+
+    reset = None（没给）/ []（--reset-peaks 不带道号 = 全部道）/ [道号…]。
+    不存在的道号警告并忽略（说清现在几条泳道）；重复的道号去重。"""
+    if reset is None:
+        return set(), False, []
+    n = len(model["lanes"])
+    if not reset:
+        return set(range(1, n + 1)), True, []
+    lanes, warns = set(), []
+    for lane in sorted(set(reset)):
+        if 1 <= lane <= n:
+            lanes.add(lane)
+        else:
+            warns.append("--reset-peaks：泳道 %d 不存在（现在只有 %d 条泳道）—— 忽略" % (lane, n))
+    return lanes, False, warns
+
+
+def _peak_override_state(model, ticks, reset_lanes=()):
+    """文档里的样品带刻度 + ep-meta 的上一轮 peak_auto → (新的 peak_overrides, 警告行)。
+
+    spec §7.5：刻度按中点 x 归道（名字不参与），marker 道 / 道外警告并忽略（原线由 plan_sync 保留）。
+    每道 expected = peak_auto − 已有 suppress + 已有 add，与刻度按最近距离贪心配对（容差 MIN_SEP_CM）；
+    期望有、刻度没有 → 自动带进 suppress / 手加带从 add 去掉；刻度没有期望 → 进 add
+    （拖动 = 旧 y 进 suppress + 新 y 进 add）。上一轮的 suppress 全部保留 —— 包括对不上这一轮自动带的
+    （检测器挪了位置时不能让用户删掉的带自己回来；失配的在 _summary 里说明）。
+    文档还没有 peak_auto（本功能之前 render 的）→ 不差分、原样保留：刻度是检测器自己写的，反推不出意图。
+    道数减少时超出新道数的 override 丢掉（道序号按 match_lanes 一一对应，见 §4.4）。
+    reset_lanes = 这一轮 --reset-peaks 清掉的道：不拿文档里的刻度差分（那批线正是产生这些 override 的，
+    差分会把刚清掉的立刻写回来），结果里也没有它们（= 回到纯自动）。
+    """
+    n = len(model["lanes"])
+    kept = {lane: ent for lane, ent in _norm_overrides(model["meta"].get("peak_overrides")).items()
+            if 1 <= lane <= n and lane not in reset_lanes}
+    warns, by_lane = [], {}
+    for x, y, _n in ticks:
+        lane = workbench.lane_at(model, x)
+        if lane is None:
+            warns.append("样品带刻度 y=%.2f cm 的中点不在任何泳道里 —— 忽略（原样保留）" % y)
+        elif lane == model["marker_lane"]:
+            warns.append("样品带刻度 y=%.2f cm 落在 marker 泳道 %d 里 —— 忽略（标定用 band <MW> 线，原样保留）"
+                         % (y, lane))
+        else:
+            by_lane.setdefault(lane, []).append(float(y))
+    auto = model["meta"].get("peak_auto")
+    if not isinstance(auto, dict):
+        return {str(lane): ent for lane, ent in kept.items()}, warns   # 没有差分基准（旧文档第一次 sync）
+    out = {}
+    for lane in range(1, n + 1):
+        if lane in reset_lanes:
+            continue                                   # --reset-peaks：这一轮直接回到纯自动
+        vals = auto.get(str(lane))
+        autos = [float(y) for y in vals if isinstance(y, (int, float))] if isinstance(vals, list) else []
+        old = kept.get(lane, {})
+        sup = list(old.get("suppress") or [])
+        expected = [(y, "auto") for y in autos
+                    if not any(abs(y - s) <= TICK_TOL_CM + 1e-9 for s in sup)]
+        expected += [(y, "add") for y in old.get("add") or []]
+        tick_ys = by_lane.get(lane, [])
+        pairs = sorted((abs(t - e), ti, ei) for ti, t in enumerate(tick_ys)
+                       for ei, (e, _k) in enumerate(expected) if abs(t - e) <= TICK_TOL_CM + 1e-9)
+        used_t, used_e = set(), set()
+        for _d, ti, ei in pairs:                   # 最近邻、贪心，从小到大；超过容差的不成对
+            if ti not in used_t and ei not in used_e:
+                used_t.add(ti)
+                used_e.add(ei)
+        new_sup = sup + [y for ei, (y, kind) in enumerate(expected) if kind == "auto" and ei not in used_e]
+        new_add = [y for ei, (y, kind) in enumerate(expected) if kind == "add" and ei in used_e]
+        new_add += [y for ti, y in enumerate(tick_ys) if ti not in used_t]
+        ent = {}
+        if new_sup:
+            ent["suppress"] = sorted({round(y, 4) for y in new_sup})
+        if new_add:
+            ent["add"] = sorted({round(y, 4) for y in new_add})
+        if ent:
+            out[str(lane)] = ent                       # 键是泳道号字符串（spec §4.6）
+    return out, warns
 
 
 # ---------------------------------------------------------------- sync
@@ -352,8 +484,22 @@ def cmd_sync(args):
     if model["meta"].get("draft") and not _same_bands(old.get("bands"), model["bands"]):
         model["meta"].pop("draft")                       # 用户动过 band 线：标定以他的线为准
         print("[i] band 线改过了：去掉草稿标记")
-    report = _mark_draft(model, profiles.analyze(model, png, [None] * len(model["lanes"])))
-    model["meta"].update(_meta_state(model, report))
+    # ---- 样品带：文档里的刻度 vs 上一轮 peak_auto → 逐道 override（spec §7.5）。必须在 analyze 之前：
+    #      这一轮的报告和重建的刻度都要用新 override；_meta_state 随后写的 peak_auto 仍是抑制之前的检测器叫带。
+    #      --reset-peaks：被清的道这一轮不差分（文档里那批刻度正是产生这些 override 的旧线，差分会把
+    #      刚清掉的立刻写回来），直接按纯自动重叫带；别的道照常差分。
+    reset_lanes, reset_all, reset_warns = _peak_reset_lanes(model, args.reset_peaks)
+    overrides, peak_warns = _peak_override_state(model, workbench.sample_ticks(dj), reset_lanes)
+    for w in reset_warns + peak_warns:
+        print("[!] %s" % w)
+    if overrides:
+        model["meta"]["peak_overrides"] = overrides
+    else:
+        model["meta"].pop("peak_overrides", None)        # 空的不写：缺键 = 全自动（与 render 一致）
+    raw = {}                                               # 检测器原始叫带（override 之前）→ peak_auto
+    report = _mark_draft(model, profiles.analyze(model, png, [None] * len(model["lanes"]),
+                                                overrides=model["meta"].get("peak_overrides"), raw=raw))
+    model["meta"].update(_meta_state(model, raw))
     ops, meta = figure.plan_sync(dj, model, report, layout=layout)
     ops = [op for op in cs["ops"] if op["op"] == "relink"] + ops + \
           [op for op in cs["ops"] if op["op"] != "relink"]          # relink 最先（sync_exec 也会保证）
@@ -362,7 +508,7 @@ def cmd_sync(args):
                   notes=[n for n in report["notes"] if not n.endswith("还没有名字")]
                   + ["泳道 %d 还没有名字" % ln["lane"] for ln in report["lanes"]
                      if names[ln["lane"] - 1] is None and not ln["trimmed"]])
-    for line in _summary(old, model, report, cs["lines"]):
+    for line in _summary(old, model, report, cs["lines"], reset_lanes, reset_all):
         print("[i] %s" % line)
     if args.dry_run:
         print(json.dumps(_printable(ops), ensure_ascii=False, indent=1))
@@ -440,7 +586,8 @@ def cmd_edit(args):
         print("[i] 文档里已经是这样了（0 个改动）")
     if args.no_sync:
         return 0
-    return cmd_sync(argparse.Namespace(doc=args.doc, port=args.port, dpi=args.dpi, dry_run=False))
+    return cmd_sync(argparse.Namespace(doc=args.doc, port=args.port, dpi=args.dpi, dry_run=False,
+                                       reset_peaks=None))
 
 
 def _gel_node(document):
@@ -612,8 +759,10 @@ def _printable(ops):
             for op in ops]
 
 
-def _summary(old, model, report, crop_lines=()):
-    """这次 sync 相对上一次改了什么（给用户看的几行）；crop_lines = Crop 画板那一步的行（重新裁切 / 补画板）。"""
+def _summary(old, model, report, crop_lines=(), reset_lanes=(), reset_all=False):
+    """这次 sync 相对上一次改了什么（给用户看的几行）；crop_lines = Crop 画板那一步的行（重新裁切 / 补画板）。
+
+    reset_lanes / reset_all = 这一轮 --reset-peaks 清掉的道（见 _peak_reset_lanes）。"""
     out = []
     prev = old.get("prev_centres_cm") or []
     new = workbench.centres(model)
@@ -638,7 +787,53 @@ def _summary(old, model, report, crop_lines=()):
     bd += ["band %g 新增" % mw for mw in nb if mw not in ob]
     if bd:
         out.append("marker 线：%s" % "，".join(bd))
+    pk = _peak_summary(old, model, reset_lanes, reset_all)
+    if pk:
+        out.append(pk)
     return (out or ["Workbench 没有改动"]) + list(crop_lines)
+
+
+def _peak_summary(old, model, reset_lanes=(), reset_all=False):
+    """样品带 override 相对上一轮的变化 → 一句（spec §7.5 的摘要）；没变 → None。
+
+    比较 ep-meta 里上一轮的 peak_overrides 与这一轮算出来的。道数减少时说一句被丢掉的 override；
+    对不上这一轮自动叫带的 suppress 也说明（它们原样保留，等 --reset-peaks）。
+    --reset-peaks 清掉的道先说一句「清掉道 X / 全部 override」，这些道的「恢复 / 撤」不再逐条列；
+    一条 override 都没清掉（本来就没有 / 道号不存在）→ 不写这一句。"""
+    prev = _norm_overrides(old.get("peak_overrides"))
+    cur = _norm_overrides(model["meta"].get("peak_overrides"))
+    n = len(model["lanes"])
+    skip = set(reset_lanes or ())
+    cleared = sorted(lane for lane in skip if lane <= n and lane in prev)
+    parts = []
+    if reset_all:
+        if cleared:
+            parts.append("清掉全部 override（%d 条泳道）" % len(cleared))
+    elif cleared:
+        parts.append("清掉道 %s 的 override" % "、".join(str(lane) for lane in cleared))
+    for lane in sorted(set(prev) | set(cur)):
+        if lane in skip:
+            continue
+        p, c = prev.get(lane, {}), cur.get(lane, {})
+        if lane > n:
+            if p:
+                parts.append("道 %d 的样品带 override 随泳道消失（现在只有 %d 条泳道）" % (lane, n))
+            continue
+        ps, cs = set(p.get("suppress") or []), set(c.get("suppress") or [])
+        pa, ca = set(p.get("add") or []), set(c.get("add") or [])
+        parts += ["道 %d 删 y=%.2f" % (lane, y) for y in sorted(cs - ps)]
+        parts += ["道 %d 恢复 y=%.2f" % (lane, y) for y in sorted(ps - cs)]
+        parts += ["道 %d 补 y=%.2f" % (lane, y) for y in sorted(ca - pa)]
+        parts += ["道 %d 撤 y=%.2f" % (lane, y) for y in sorted(pa - ca)]
+    auto = model["meta"].get("peak_auto")           # 这一轮的检测器叫带（_peak_summary 在 _meta_state 之后调用）
+    if isinstance(auto, dict):                     # 没有 peak_auto（旧文档第一次 sync）就无从判断失配
+        for lane in sorted(cur):
+            vals = auto.get(str(lane))
+            autos = [float(y) for y in vals if isinstance(y, (int, float))] if isinstance(vals, list) else []
+            for y in cur[lane].get("suppress") or []:
+                if not any(abs(y - a) <= TICK_TOL_CM + 1e-9 for a in autos):
+                    parts.append("道 %d 的样品带 override（y=%.2f）已经对不上这一轮的自动叫带" % (lane, y))
+    return ("样品带：%s" % "；".join(parts)) if parts else None
 
 
 # ---------------------------------------------------------------- probe
@@ -742,6 +937,9 @@ def main(argv=None):
     s.add_argument("--port", type=int, default=vc_control.DEFAULT_PORT, help="VectorCraft 控制口（默认 7797）")
     s.add_argument("--dpi", type=int, default=300, help="ep-meta 里没记 dpi 时用它")
     s.add_argument("--dry-run", action="store_true", help="只打印要做的改动，不动文档")
+    s.add_argument("--reset-peaks", nargs="*", type=int, default=None, metavar="N",
+                   help="清掉这些泳道的样品带 override，这次 sync 直接按纯自动重叫带、重写刻度："
+                        "--reset-peaks 3 12 只清道 3、12；--reset-peaks 不带道号清全部")
     s.set_defaults(func=cmd_sync)
 
     ed = sub.add_parser("edit", help="改进 Figure 的泳道 / 泳道名 / marker 泳道，然后 sync（不用手写控制口脚本）")

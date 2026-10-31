@@ -17,6 +17,7 @@
     trimmed 图层里的短线 → 中点落在哪条泳道里，那条泳道就不进 Figure（trim 标记）；
     window 图层里恰好两条横线 → 上、下；
     marker bands 图层里的横线 → 名字必须是 `band <MW>`；
+    sample bands 图层里的线 → 样品带刻度（名字 `peak n.k`；读回时按中点 x 判泳道，名字不参与，spec §7.5）；
     gel 图层里顶层的 image `gel` → Workbench 上胶面的位置与比例（pt ↔ cm 就从它的 xf 来）。
 线不必完全横平竖直：竖线取两端 x 的中点，横线取两端 y 的中点。
 
@@ -38,7 +39,8 @@ PT = vc_file.PT_PER_CM
 # 颜色预设只用 0–8（打得开的文档里用过的值；更大的没验过）
 LAYERS = [
     ("gel", True, True, True, 0),
-    ("analysis", False, True, True, 5),
+    ("analysis", False, True, True, 5),          # 只有泳道号 tag n（每次 sync 重建）
+    ("sample bands", False, True, False, 5),     # 样品带刻度 peak n.k：用户可删 / 拖 / 补（spec §7.5）
     ("window", False, True, False, 1),
     ("lanes", False, True, False, 2),
     ("trimmed", False, True, False, 6),
@@ -227,6 +229,14 @@ def make_layers(doc, skip=()):
             for name, p, v, lk, col in LAYERS if name not in skip}
 
 
+def layer_props(name):
+    """LAYERS 里的一行 → 建图层用的属性（旧文档 sync 时补 sample bands 用）。"""
+    for nm, printable, visible, locked, color in LAYERS:
+        if nm == name:
+            return {"name": nm, "printable": printable, "visible": visible, "locked": locked, "color": color}
+    raise WorkbenchError("LAYERS 里没有图层 %r" % name)
+
+
 def frame(model, x0, y0=0.0):
     """Workbench 画板与胶面在文档里的位置（pt）：{"artboard": (x, y, w, h), "gel_x", "gel_y"}。"""
     m = MARGIN_CM * PT
@@ -239,7 +249,8 @@ def add_workbench(doc, layers, model, gel_key, gel_w_px, gel_h_px, x0, y0=0.0, p
     """把模型画到 doc 上：Workbench 画板、整胶图、线、泳道号、ep-meta。返回 frame()。
 
     gel_key/gel_w_px/gel_h_px = vc_file.add_image 的结果（胶面图，宽对应 gel.width_cm）；
-    peaks = [(泳道号, y_cm), …] 样品条带的小刻度（V4 的分析结果；建模时可以没有）；
+    peaks = [(泳道号, y_cm), …] 样品条带的小刻度（V4 的分析结果；建模时可以没有）：
+        写进 sample bands 图层、名字 `peak <lane>.<k>`（k = 道内自上而下，1 起）；marker 道不画；
     tags=False 时不画泳道号（figure.build_document 让 targets() 统一画 analysis 层）。
     """
     fr = frame(model, x0, y0)
@@ -280,11 +291,17 @@ def add_workbench(doc, layers, model, gel_key, gel_w_px, gel_h_px, x0, y0=0.0, p
         kids(layers["marker bands"]).append(vc_file.line(
             doc, "band %s" % _fmt_mw(b["mw"]), (X(mk["left_cm"] - GRAB_CM), y), (X(mk["right_cm"] + GRAB_CM), y),
             RGB["band"], LINE_W))
+    by_lane = {}
     for lane, y_cm in peaks:
+        if int(lane) != model["marker_lane"]:            # marker 道由 band <MW> 线表示，不画刻度
+            by_lane.setdefault(int(lane), []).append(float(y_cm))
+    for lane in sorted(by_lane):
         ln = model["lanes"][lane - 1]
         cx = (ln["left_cm"] + ln["right_cm"]) / 2.0
-        kids(layers["analysis"]).append(vc_file.line(
-            doc, "peak %d" % lane, (X(cx - 0.08), Y(y_cm)), (X(cx + 0.08), Y(y_cm)), (0.1, 0.6, 0.1), LINE_W))
+        for k, y_cm in enumerate(sorted(by_lane[lane]), 1):
+            kids(layers["sample bands"]).append(vc_file.line(
+                doc, "peak %d.%d" % (lane, k), (X(cx - 0.08), Y(y_cm)), (X(cx + 0.08), Y(y_cm)),
+                (0.1, 0.6, 0.1), LINE_W))
     kids(layers["ep-meta"]).append(vc_file.text(
         doc, "ep-meta", fr["artboard"][0], fr["artboard"][1] + fr["artboard"][3] + 12,
         json.dumps(model["meta"], ensure_ascii=False, separators=(",", ":")), size=4, justify="Left"))
@@ -419,6 +436,36 @@ def _shared_lanes(lines, cx, errs):
         else:
             hit["trimmed"] = True
     return lanes
+
+
+def lane_at(model, x_cm):
+    """中点 x（cm）落在哪条泳道（1 起）：闭区间、从左往右第一条；道外 → None。
+
+    与 from_document 判 marker 条带线同一口径；样品带刻度按它归道（spec §7.5，名字不参与）。"""
+    return next((i for i, ln in enumerate(model["lanes"], 1) if ln["left_cm"] <= x_cm <= ln["right_cm"]), None)
+
+
+def sample_ticks(document):
+    """sample bands 图层的线 → [(中点 x_cm, 中点 y_cm, 节点)]（spec §7.5：名字不参与，按中点 x 归道）。
+
+    坐标与 from_document 同一口径：从 gel 图的 xf 把文档 pt 换成胶面 cm。图层不在 → []；
+    组里的线也读；不是单条直线的对象跳过（组、文字都不是刻度）。"""
+    lay = vc_file.layer_by_name(document, "sample bands")
+    gl = vc_file.layer_by_name(document, "gel")
+    imgs = [n for n in (vc_file.lay_children(gl) if gl else [])
+            if n["kind"].get("type") == "image" and n.get("name") == "gel"]
+    if not lay or len(imgs) != 1:
+        return []
+    gx, gy = imgs[0]["kind"]["xf"][4], imgs[0]["kind"]["xf"][5]
+    out = []
+    for _top, n in vc_file.walk({"layers": [lay]}):
+        k = n.get("kind", {})
+        subs = (k.get("path") or {}).get("subpaths") or []
+        if k.get("type") != "path" or len(subs) != 1:
+            continue
+        (x0, y0), (x1, y1) = vc_file.line_ends(n)
+        out.append((((x0 + x1) / 2.0 - gx) / PT, ((y0 + y1) / 2.0 - gy) / PT, n))
+    return out
 
 
 def validate(model, structural_only=False):
