@@ -216,7 +216,9 @@ def polyline(doc, name, points, rgb=(0.0, 0.0, 0.0), width=0.5):
 
 def text(doc, name, x, y, s, size=8.0, font="Arial", rgb=(0.0, 0.0, 0.0), justify="Center", angle=0.0):
     """点文字。(x, y) 是锚点：y 是基线，x 按 justify（Left/Center/Right）对齐；angle = 逆时针度，
-    绕锚点转（90 = 从下往上读）。字号只写 size、从不缩放。"""
+    绕锚点转（90 = 从下往上读）。字号只写 size、从不缩放。
+    和矩形一样，旋转还要写成节点上的 bbox_angle（= angle_of_xf(xf)，0 时 app 自己也不写），
+    否则检查器把标签当 0°（0.19 实测，ep-vz7）。"""
     if justify not in ("Left", "Center", "Right"):
         raise RuntimeError("text justify 只收 Left/Center/Right（收到 %r）" % (justify,))
     n = copy.deepcopy(doc["tpl"]["text"])
@@ -231,6 +233,10 @@ def text(doc, name, x, y, s, size=8.0, font="Arial", rgb=(0.0, 0.0, 0.0), justif
     k["runs"] = [run]
     k["para"]["justify"] = justify
     k["para"].pop("justify_auto", None)
+    n.pop("bbox_angle", None)
+    ang = angle_of_xf(k["xf"])
+    if ang:
+        n["bbox_angle"] = ang
     return n
 
 
@@ -286,6 +292,9 @@ def rect(doc, name, corners, rgb=(0.0, 0.0, 0.0), width=0.5):
     live.w = |TR−TL|，live.h = |BL−TL|，live.xf 把矩形自身坐标（u∈[0,w]、v∈[0,h]、y 向下）
     映到页面：x' = a u + c v + e，(a, b) = 上边方向，(c, d) = 左边方向，(e, f) = TL；
     逆时针转 θ 就是 [cos, −sin, sin, cos, TLx, TLy]。锚点按 TL TR BR BL 存（app 转/缩都保序）。
+    角度还要写进节点上的 bbox_angle：app 的检查器和选择框读的是它，不是 xf（实测 0.19.0——
+    只写 xf 时检查器报 0°、选择框画成直立外接框，与斜着的形状对不上）。口径就是 angle_of_xf(xf)；
+    app 自己在角度为 0 时不写这个字段，所以 0 也省掉。
     不是矩形（角不直、对边不等）→ 报错，不悄悄改形。"""
     if len(corners) != 4:
         raise RuntimeError("rect 要 4 个角 TL TR BR BL（收到 %d）" % len(corners))
@@ -320,6 +329,10 @@ def rect(doc, name, corners, rgb=(0.0, 0.0, 0.0), width=0.5):
     n["kind"]["path"]["subpaths"] = [{"anchors": [{"p": [a * u + c * v + x0, b * u + d * v + y0]}
                                                   for u, v in pts], "closed": True}]
     n["kind"]["live"].update(w=w, h=h, xf=xf)
+    n.pop("bbox_angle", None)                       # 模板带的旧角度不能留下
+    ang = angle_of_xf(xf)
+    if ang:
+        n["bbox_angle"] = ang
     return n
 
 

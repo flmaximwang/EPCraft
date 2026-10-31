@@ -27,6 +27,7 @@ import workbench
 import profiles
 import well_grid
 import figure
+import doc_edit
 
 
 def test_import_direction():
@@ -38,7 +39,7 @@ def test_import_direction():
     scripts = os.path.dirname(os.path.abspath(__file__))
     # 管线：stage 1（gel_area）→ 泳道种子（well_grid）→ 剖面/条带（profiles）→ 模型（workbench）
     #       → 文档与 sync 计划（figure）→ 控制口执行（sync_exec）→ CLI（gel_photo）。只许依赖前面的。
-    later = ["well_grid", "profiles", "workbench", "figure", "sync_exec", "gel_photo"]
+    later = ["well_grid", "profiles", "workbench", "figure", "doc_edit", "sync_exec", "gel_photo"]
     rules = {"gel_area": set(later), "gel_detect": set(later)}
     for i, mod in enumerate(later):
         rules[mod] = set(later[i + 1:])
@@ -547,6 +548,8 @@ def selftest():
         for (u, v), g in zip(((0, 0), (lv["w"], 0), (lv["w"], lv["h"]), (0, lv["h"])), got):
             assert math.hypot(a * u + c * v + e - g[0], b * u + d * v + f - g[1]) <= 1e-6, (n["name"], lv)
         assert abs(vc_file.angle_of_xf(lv["xf"]) - deg) < 1e-6, (deg, lv["xf"])
+        # app 的检查器/选择框读的是节点上的 bbox_angle（0 时 app 自己也不写）
+        assert n.get("bbox_angle") == (vc_file.angle_of_xf(lv["xf"]) or None), (n["name"], n.get("bbox_angle"), lv["xf"])
         assert n["kind"]["path"]["subpaths"][0]["closed"] is True and "clipping" not in n["kind"]
         app = {it["kind"]: it for it in n["appearance"]["items"]}
         assert app["fill"]["paint"] == {"type": "none"}, app
@@ -1316,6 +1319,8 @@ def selftest():
         n_rot = vc_file.text(doc_rot, "t", 40, 60, "ABCD", size=20, justify="Left", angle=90)
         assert [round(v, 6) for v in n_rot["kind"]["xf"]] == [0.0, -1.0, 1.0, 0.0, 40.0, 60.0], n_rot["kind"]["xf"]
         assert vc_file.text_info(n_rot)["angle"] == 90.0
+        assert n_rot.get("bbox_angle") == 90.0, n_rot.get("bbox_angle")   # app 的检查器读它
+        assert "bbox_angle" not in vc_file.text(doc_rot, "t0", 40, 60, "AB", size=20), "0° 不该写 bbox_angle"
         n_rot["kind"]["xf"] = vc_file.rot_xf(40, 60, -30)
         assert abs(vc_file.text_info(n_rot)["angle"] + 30.0) < 1e-9
 
@@ -1406,6 +1411,91 @@ def selftest():
                         + [{"left_cm": prev15[i] - 0.26, "right_cm": prev15[i] + 0.26, "trimmed": False}
                            for i in range(1, 15)]}
     assert workbench.lane_names_after(fake_m, prev15, names15) == names15, "拖边后名字没留住"
+    ok += 1
+
+    # 120) 草稿标定：带数对不上时 from_image(draft=True) 不拒绝 —— 少了在最大空当插、多了并最近的两条、
+    #      不到 2 条在积分窗里等距放；meta.draft 记下叫出几条、要几条；MW 仍随 y 向下单调减小。
+    assert workbench.draft_rows([1.0, 2.0, 4.0], 4, 0.2, 5.0) == [1.0, 2.0, 3.0, 4.0]
+    assert workbench.draft_rows([1.0, 1.1, 2.0, 4.0], 3, 0.2, 5.0) == [1.05, 2.0, 4.0]
+    assert workbench.draft_rows([], 3, 1.0, 5.0) == [2.0, 3.0, 4.0]
+    assert workbench.rows_needed(["250", {"text": "21/20 kD", "rows": 2}, "10"]) == 4
+    with tempfile.TemporaryDirectory() as td:
+        gd = os.path.join(td, "gel.png")
+        _synth_wells(gd, first_cm=0.70, pitch_cm=0.52, ladder_rows_cm=[1.0, 1.6, 2.3, 3.1])
+        pngd = open(gd, "rb").read()
+        mk6 = ["100", "70", "50", "25", "15", "10"]
+        try:
+            workbench.from_image(pngd, 8.6, 6.25, 15, 0.52, ["M"] + [""] * 14, mk6, 1)
+            raise AssertionError("不给 draft 时带数不符应当拒绝")
+        except workbench.MarkerCountError as e:
+            assert e.need == 6 and len(e.rows) == 4, (e.need, e.rows)
+        md, _sd = workbench.from_image(pngd, 8.6, 6.25, 15, 0.52, ["M"] + [""] * 14, mk6, 1,
+                                       meta={"skill": "ep-craft"}, draft=True)
+        assert md["meta"]["draft"] == {"called": 4, "need": 6}, md["meta"].get("draft")
+        assert [b["mw"] for b in md["bands"]] == [100.0, 70.0, 50.0, 25.0, 15.0, 10.0]
+        ys = [b["y_cm"] for b in md["bands"]]
+        assert ys == sorted(ys) and len(set(ys)) == 6, ys
+        assert not workbench.validate(md), workbench.validate(md)
+    ok += 1
+
+    # 121) edit（doc_edit.plan_edit）：在 render 出的文档上改 trim / marker 泳道 / 泳道名 → ops 落到文件 JSON
+    #      （apply_ops_json，与控制口执行器一一对应）后读回就是要的样子；同样的改动再规划一次 = 0 个操作；
+    #      没有标签对象的空道改名 → 写进 ep-meta，随后的 sync 按 lane_angles 新建（90° 的胶上新标签也是 90°）。
+    with tempfile.TemporaryDirectory() as td:
+        ge = os.path.join(td, "gel.png")
+        _synth_wells(ge, first_cm=0.70, pitch_cm=0.52, ladder_rows_cm=[1.0, 1.6, 2.3, 3.1])
+        pnge = open(ge, "rb").read()
+        names_e = ["M", "A", "B"] + [""] * 12
+        mk_e = ["100 kD", "50 kD", "25 kD", "10 kD"]
+        me, _sd = workbench.from_image(pnge, 8.6, 6.25, 15, 0.52, names_e, mk_e, 1,
+                                       meta={"skill": "ep-craft", "label_angle": {"lane": 90.0, "marker": 0.0}})
+        repe = profiles.analyze(me, pnge, names_e)
+        tope, _b = vc_file.loads(vc_file.dumps(figure.build_document(me, repe, pnge, "t")))
+        de = tope["document"]
+        m0, _n = workbench.from_document(de)
+        assert doc_edit.current_names(de, m0) == names_e, doc_edit.current_names(de, m0)
+        ops, lines = doc_edit.plan_edit(de, m0, trim=[1] + list(range(8, 16)), marker_lane=2,
+                                        names={2: "WT", 4: "KO"})
+        assert lines and any(o["op"] == "create" for o in ops), ops
+        figure.apply_ops_json(tope, ops)
+        m1, _n = workbench.from_document(tope["document"])
+        assert [i for i, ln in enumerate(m1["lanes"], 1) if ln["trimmed"]] == [1] + list(range(8, 16))
+        assert m1["marker_lane"] == 2, m1["marker_lane"]
+        assert [b["y_cm"] for b in m1["bands"]] == [b["y_cm"] for b in m0["bands"]]
+        assert doc_edit.current_names(tope["document"], m1)[:4] == ["M", "WT", "B", "KO"]
+        assert doc_edit.plan_edit(tope["document"], m1, trim=[1] + list(range(8, 16)), marker_lane=2,
+                                  names={2: "WT", 4: "KO"}) == ([], [])
+        rep1 = profiles.analyze(m1, pnge, [None] * 15)
+        ops_s, meta_s = figure.plan_sync(tope["document"], m1, rep1)
+        made = [o["spec"] for o in ops_s if o["op"] == "create" and o["spec"]["name"] == "label lane 4"]
+        assert len(made) == 1 and made[0]["text"] == "KO" and abs(made[0]["angle"] - 90.0) < 1e-9, made
+        assert meta_s["lane_names"][:4] == ["M", "WT", "B", "KO"], meta_s["lane_names"][:4]
+        # marker 泳道换到胶的另一侧（左 → 右）：已有的右对齐 marker 标签按它自己的对齐落位，整个框在胶右边外面
+        figure.apply_ops_json(tope, ops_s)
+        m2, _n = workbench.from_document(tope["document"])
+        ops2, _l = doc_edit.plan_edit(tope["document"], m2, marker_lane=7)
+        figure.apply_ops_json(tope, ops2)
+        m3, _n = workbench.from_document(tope["document"])
+        ops3, _meta3 = figure.plan_sync(tope["document"], m3, profiles.analyze(m3, pnge, [None] * 15))
+        figure.apply_ops_json(tope, ops3)
+        d3 = tope["document"]
+        clips = [c for n in vc_file.lay_children(vc_file.layer_by_name(d3, "gel")) if n["name"].startswith("gel seg ")
+                 for c in n["kind"]["children"] if c["kind"].get("clipping")]
+        gel_r = max(a["p"][0] for c in clips for a in c["kind"]["path"]["subpaths"][0]["anchors"])
+        bl = [vc_file.text_info(n) for n in vc_file.lay_children(vc_file.layer_by_name(d3, "labels"))
+              if n["name"].startswith("label band ")]
+        assert len(bl) == 4 and all(t["justify"] == "Right" for t in bl), [t["justify"] for t in bl]
+        for t in bl:
+            left = t["x"] - figure.measure(t["text"], t["size"])[0]
+            assert left >= gel_r + figure.MARKER_GAP_PT - 0.01, (t["text"], left, gel_r)
+        for bad in ({"trim": [16]}, {"trim": list(range(1, 16))}, {"marker_lane": 0}, {"names": {16: "x"}}):
+            try:
+                doc_edit.plan_edit(de, m0, **bad)
+                raise AssertionError("越界没拒绝：%r" % bad)
+            except workbench.WorkbenchError:
+                pass
+    assert doc_edit.shifted(["", "M", "A", "B"], 1) == ["", "", "M", "A"]
+    assert doc_edit.shifted(["", "M", "A", "B"], -1) == ["M", "A", "B", ""]
     ok += 1
 
     print("selftest %d/%d 通过" % (ok, ok))
