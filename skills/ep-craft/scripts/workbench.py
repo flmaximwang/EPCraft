@@ -66,11 +66,14 @@ class WorkbenchError(RuntimeError):
 
 
 class MarkerCountError(WorkbenchError):
-    """marker 泳道叫出的带数 ≠ 标签要的行数。rows = 叫出的 y（cm，升序），need = 标签要的行数。"""
+    """marker 泳道配不上标签。rows = 取出的 y（cm，升序），need = 标签要的行数。
 
-    def __init__(self, msg, rows, need):
+    reason = pick_marker 闸门没过时的原因（band 数对得上但剖面不像梯子）；带数不对时为 ""。
+    """
+
+    def __init__(self, msg, rows, need, reason=""):
         WorkbenchError.__init__(self, msg)
-        self.rows, self.need = list(rows), int(need)
+        self.rows, self.need, self.reason = list(rows), int(need), reason
 
 
 def rows_needed(marker_labels):
@@ -131,9 +134,12 @@ def from_image(png, gel_width_cm, gel_height_cm, lane_count, pitch_prior_cm, lan
     """胶面图（stage 1 的产物，PNG 字节）→ Workbench 模型。不用老 stage 2/3（V8）：
 
     泳道 = well_grid 的等距梳子（相位与间距由胶面顶上的加样孔定）；
-    marker 条带线 = marker 泳道剖面上叫出来的峰（profiles.call_bands）—— 比老 stage 3 的行准：
-    老行在 5 张 DGC 照片上一律偏下 0.13–0.5 mm（V4 实测）。
-    draft=True：带数对不上时不拒绝，按 draft_rows 凑够条数，meta 记 draft = {called, need}（草稿标定）。
+    marker 条带线 = marker 泳道剖面上**显著度最高的 need 个局部极小**（profiles.pick_marker，spec ep-9ji）：
+    带数由标签给（rows 之和），不用噪声门槛 —— 梯子道的噪声量的是条带自己（IMG_1586 第 3 道 σ = 17.2，
+    11 条带只过 1 条）。位置比老 stage 3 的行准：老行在 5 张 DGC 照片上一律偏下 0.13–0.5 mm（V4 实测）。
+    pick_marker 的闸门（断崖 + 下限）不过 → MarkerCountError，reason 里写是哪条闸门；
+    draft=True：不拒绝，band 线先放在这 need 名上（不足才按 draft_rows 补），meta 记
+    draft = {picked, need, gate}（草稿标定）。
     返回 (模型, 种子信息 dict：pitch_cm / first_cm / source / depth / note)。
     """
     w, h, gray = profiles.gel_gray(png)
@@ -151,16 +157,29 @@ def from_image(png, gel_width_cm, gel_height_cm, lane_count, pitch_prior_cm, lan
     # 读回（from_document）只能从图量高，两边口径不一致时，刚 render 完的文档第一次 sync 就会「改」画板与剪切框。
     gel = {"width_cm": float(gel_width_cm), "height_cm": h * float(gel_width_cm) / w}
     top, bottom = window if window else (TOP_GUARD_CM, gel["height_cm"] * (1.0 - BOTTOM_GUARD))
+    need = rows_needed(marker_labels)
+    m = dict(meta or {})
+    info = None
     if marker_rows_cm is None:
         ml = lanes[int(marker_lane) - 1]
         ys, gs = profiles.lane_profile(gray, w, h, ppc, ml["left_cm"], ml["right_cm"], top, bottom)
-        _b, _ink, sm = profiles.ink_trace(gs, ppc)
-        marker_rows_cm = [b["y_cm"] for b in profiles.call_bands(ys, gs, sm, ppc)[0]]
-    m = dict(meta or {})
-    need = rows_needed(marker_labels)
-    if draft and len(marker_rows_cm) != need:
-        m["draft"] = {"called": len(marker_rows_cm), "need": need}
+        marker_rows_cm, info = profiles.pick_marker(ys, gs, ppc, need)
+        marker_rows_cm = [r["y_cm"] for r in marker_rows_cm]
+    if info is not None:                                       # 断崖倍数 / 闸门结果：render 打印、写进 ep-meta
+        m["marker_gate"] = {k: info[k] for k in ("ok", "ratio", "nth", "next", "n_cands", "reason")}
+    if draft and (len(marker_rows_cm) != need or (info is not None and not info["ok"])):
+        m["draft"] = {"picked": len(marker_rows_cm), "need": need,
+                      "gate": None if info is None or info["ok"] else info["reason"]}
         marker_rows_cm = draft_rows(marker_rows_cm, need, top, bottom)
+    elif info is not None and not info["ok"]:
+        raise MarkerCountError(
+            "marker 泳道 %d 的剖面不像梯子：%s。\n"
+            "取出的 %d 条（y cm）= %s，下一条候选的显著度 = %s。\n"
+            "改 markers 的 labels（并带写成 {\"text\": \"21/20 kD\", \"rows\": 2}，缺的带删掉那条标签），"
+            "换一条 marker 泳道（lanes.json 的 marker_lanes），或手工给 marker 行（probe 能看每道的前几名）。"
+            % (int(marker_lane), info["reason"], len(marker_rows_cm),
+               [round(y, 2) for y in marker_rows_cm], info.get("next")),
+            marker_rows_cm, need, reason=info["reason"])
     m["seed"] = {k: sd[k] for k in ("pitch_cm", "first_cm", "source", "depth")}
     model = _assemble(gel, lanes, marker_rows_cm, lane_names, marker_labels, marker_lane, (top, bottom), m,
                       "的剖面上叫出")

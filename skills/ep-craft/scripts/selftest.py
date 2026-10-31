@@ -943,6 +943,87 @@ def selftest():
     assert weak, "反证失效：一次性 MAD 也能叫全，这条测试就护不住迭代"
     ok += 1
 
+    # 67b) marker 道不靠噪声门槛（ep-9ji）：梯子道的噪声量的是条带自己（IMG_1586 第 3 道 σ = 17.2，
+    #      门槛 4σ = 68.9，11 条带只有 1 条过线），所以带数改由标签给（need）、取显著度前 need 名，
+    #      能不能信交给「断崖 + 下限」两条闸门：
+    #      · 真梯子（fixtures/marker-lane-img1586.json，IMG_1586 第 3 道实测剖面）→ 11 条，与用户手放的
+    #        band 线相差 ≤ 0.03 cm（含 20 kD，显著度只有 7.4）；第 12 名是 1.01，断崖 7.3×。
+    #      · 同一张胶的空道剖面（只有纹理）→ 闸门不过（下限），调用方换下一条道或出草稿。
+    #      · 要 12 条 → 第 12 名是纹理，下限挡住；要 100 条 → 候选不够。
+    #      · 合成梯子（67 的 IMG_1496 剖面）→ 11 条，断崖 3.8×，比 IMG_1586 紧，GAP_RATIO 不能高过它。
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "fixtures", "marker-lane-img1586.json")) as f:
+        fx = json.load(f)
+    nfx = len(fx["gray"])
+    yfx = [fx["y0_cm"] + i * (fx["y1_cm"] - fx["y0_cm"]) / (nfx - 1) for i in range(nfx)]
+    rows, info = profiles.pick_marker(yfx, fx["gray"], fx["px_per_cm"], 11)
+    assert info["ok"] and len(rows) == 11, info
+    cal = fx["calibration_cm"]
+    assert all(abs(r["y_cm"] - y) <= 0.03 for r, y in zip(rows, cal)), [(r["y_cm"], y) for r, y in zip(rows, cal)]
+    weakest = min(r["prominence"] for r in rows)
+    assert 6.5 < weakest < 8.5 and abs(rows[8]["y_cm"] - cal[8]) <= 0.03, (weakest, rows[8])   # 20 kD 那对里的一条
+    _b, _ink, sm = profiles.ink_trace(fx["gray"], fx["px_per_cm"])
+    old_thr = profiles.K_NOISE * profiles.noise_of(sm)
+    assert old_thr > 4 * weakest, (old_thr, weakest)          # 老门槛会把它否掉 —— 这条夹具护的就是这个差
+    assert info["ratio"] > profiles.GAP_RATIO and info["next"] < 1.5, info
+    assert profiles.pick_marker(yfx, fx["gray"], fx["px_per_cm"], 12)[1]["ok"] is False
+    many, minfo = profiles.pick_marker(yfx, fx["gray"], fx["px_per_cm"], 100)
+    assert not minfo["ok"] and len(many) == minfo["n_cands"] < 100 and "局部极小" in minfo["reason"], minfo
+    for ln in fx["other_lanes"]:                              # 空道/样品道上的纹理：一律不过
+        ny = len(ln["gray"])
+        yr = [ln["y0_cm"] + i * (ln["y1_cm"] - ln["y0_cm"]) / (ny - 1) for i in range(ny)]
+        rs, inf = profiles.pick_marker(yr, ln["gray"], fx["px_per_cm"], 11)
+        assert len(rs) == 11 and not inf["ok"] and "下限" in inf["reason"], (ln["lane"], inf)
+    srow, sinfo = profiles.pick_marker(ys_, dense, ppc_, len(ladder))
+    assert len(srow) == len(ladder) and all(abs(r["y_cm"] - y) <= 0.015 for r, (y, _d) in zip(srow, ladder)), srow
+    assert profiles.GAP_RATIO < sinfo["ratio"], sinfo       # 闸门要落在两张胶的断崖之下
+    ok += 1
+
+    # 67c) marker 道的报告不叫峰（ep-9ji D4）：marker 道的带 = `band <MW>` 线，吸附到 ±SNAP_CM 内最近的
+    #      局部极小补 prominence / width_cm；线本身不动（y 记在 line_y_cm，标定仍用线）——
+    #      否则 render 后第一次 sync 会生成移动操作。吸附不上（线在平地上、或两条线抢同一个极小）→
+    #      按线的位置量、snapped=False、notes 里说明。样品道照旧叫峰（band_source=called）。
+    with tempfile.TemporaryDirectory() as td:
+        gl = os.path.join(td, "gel.png")
+        lrows = [1.0, 1.6, 2.3, 3.1]
+        _synth_wells(gl, first_cm=0.70, pitch_cm=0.52, ladder_rows_cm=lrows)
+        pngl = open(gl, "rb").read()
+        namesl = ["M"] + [""] * 14
+        mlab = ["100", "70", "50", "25", "15", "10"][:4]
+        wm, _sd = workbench.from_image(pngl, 8.6, 6.25, 15, 0.565, namesl, mlab, 1)
+
+        def marker_lane(mdl):
+            rep = profiles.analyze(mdl, pngl, namesl)
+            ml_ = [o for o in rep["lanes"] if o["marker"]][0]
+            return rep, ml_, sorted(ml_["bands"], key=lambda b: b["y_cm"])
+
+        rep, ml_, bd = marker_lane(wm)
+        assert ml_["band_source"] == "lines" and [b["mw_kda"] for b in bd] == [100.0, 70.0, 50.0, 25.0], bd
+        assert all(b["snapped"] and abs(b["y_cm"] - b["line_y_cm"]) < 1e-9 for b in bd), bd
+        assert all(o["band_source"] == "called" for o in rep["lanes"] if not o["marker"])
+        assert all("snr" in b for o in rep["lanes"] if not o["marker"] for b in o["bands"])
+
+        m2 = copy.deepcopy(wm)                                    # 线偏 0.02 cm → 仍吸附，报告 y 回到极小
+        m2["bands"][1]["y_cm"] = round(m2["bands"][1]["y_cm"] + 0.02, 4)
+        _r, _l, bd2 = marker_lane(m2)
+        assert bd2[1]["snapped"] and abs(bd2[1]["y_cm"] - wm["bands"][1]["y_cm"]) < 0.005, bd2[1]
+        assert abs(bd2[1]["line_y_cm"] - m2["bands"][1]["y_cm"]) < 1e-9, bd2[1]
+
+        m3 = copy.deepcopy(wm)                                    # 两条线抢一个极小：离得远的那条让出
+        m3["bands"][0]["y_cm"] = round(m3["bands"][0]["y_cm"] + 0.04, 4)
+        m3["bands"][1]["y_cm"] = round(m3["bands"][0]["y_cm"] - 0.005, 4)
+        rep3, _l, bd3 = marker_lane(m3)
+        assert sum(b["snapped"] for b in bd3) == 3, bd3
+        assert any("抢同一个" in n for n in rep3["notes"]), rep3["notes"]
+
+        m4 = copy.deepcopy(wm)                                    # 线落在平地上（3.695 / 3.835 两个极小之间）
+        m4["bands"][2]["y_cm"] = 3.77
+        rep4, _l, bd4 = marker_lane(m4)
+        flat = [b for b in bd4 if b["mw_kda"] == 50.0][0]
+        assert not flat["snapped"] and abs(flat["y_cm"] - 3.77) < 1e-9, flat
+        assert any("没有局部极小" in n for n in rep4["notes"]), rep4["notes"]
+    ok += 1
+
     # 68) 报告 v2 端到端（V4）：magick 造一张 4 条 marker 带 + 一条淡样品带的胶面 →
     #     gray 与独立求平均一致；标定点 = band 线；样品带 MW 落在两条 marker 之间且符合内插；
     #     删一条 band 线改变拟合；v2 键齐全、坐标是 cm、没有照片/像素口径的禁键。
@@ -1020,8 +1101,8 @@ def selftest():
     ok += 1
 
     # 70) from_image（V8）：只用胶面图建 Workbench —— 泳道来自孔，marker 线来自 marker 泳道剖面上
-    #     叫出的峰（不再用老 stage 3 的行；那些行在 DGC 照片上一律偏下 0.13–0.5 mm）；
-    #     叫出的带数与标签行数不符 → 拒绝，并把叫出来的 y 列给用户看。
+    #     显著度最高的 N 个局部极小（ep-9ji：不再用噪声门槛；位置比老 stage 3 的行准 —— 老行在
+    #     DGC 照片上一律偏下 0.13–0.5 mm）；剖面不像梯子（闸门不过）→ 拒绝，并取出的 y 列给用户看。
     with tempfile.TemporaryDirectory() as td:
         gel9 = os.path.join(td, "gel.png")
         rows_cm = [1.0, 1.6, 2.3, 3.1]
@@ -1036,9 +1117,15 @@ def selftest():
         assert m9["marker_lane"] == 1 and len(m9["lanes"]) == 15
         try:
             workbench.from_image(png9, 8.6, 6.25, 15, 0.52, names9, ["100", "50", "25", "10", "5"], 1)
-            raise AssertionError("带数不符没拒绝")
-        except workbench.WorkbenchError as e:
-            assert "叫出 4 条带" in str(e) and "3.1" in str(e), e              # 把叫出来的 y 列给用户
+            raise AssertionError("要 5 条、第 5 条是纹理，没拒绝")
+        except workbench.MarkerCountError as e:
+            assert "不像梯子" in str(e) and "3.1" in str(e) and e.reason, e    # 把取出的 y 列与闸门给用户
+            assert len(e.rows) == 5 and e.need == 5, (e.rows, e.need)          # 行数对得上，是闸门挡的
+        try:                                                              # 要的条数越多，闸门越先挡在「下限」
+            workbench.from_image(png9, 8.6, 6.25, 15, 0.52, names9, [str(k) for k in range(1, 31)], 1)
+            raise AssertionError("要 30 条、剖面凑不出 30 条真带，没拒绝")
+        except workbench.MarkerCountError as e:
+            assert e.reason and e.need == 30, e
     ok += 1
 
     # 71) 一维排字 spread（V5）：保持顺序、相邻中心距 ≥ 半尺寸之和 + gap、孤立的不动、
@@ -1413,8 +1500,9 @@ def selftest():
     assert workbench.lane_names_after(fake_m, prev15, names15) == names15, "拖边后名字没留住"
     ok += 1
 
-    # 120) 草稿标定：带数对不上时 from_image(draft=True) 不拒绝 —— 少了在最大空当插、多了并最近的两条、
-    #      不到 2 条在积分窗里等距放；meta.draft 记下叫出几条、要几条；MW 仍随 y 向下单调减小。
+    # 120) 草稿标定：剖面不像梯子时 from_image(draft=True) 不拒绝 —— 少了在最大空当插、多了并最近的两条、
+    #      不到 2 条在积分窗里等距放；meta.draft 记下取了几条、要几条、哪条闸门没过（ep-9ji）；
+    #      MW 仍随 y 向下单调减小。不给 draft 时同一张图要拒绝（行数是 need，挡在闸门）。
     assert workbench.draft_rows([1.0, 2.0, 4.0], 4, 0.2, 5.0) == [1.0, 2.0, 3.0, 4.0]
     assert workbench.draft_rows([1.0, 1.1, 2.0, 4.0], 3, 0.2, 5.0) == [1.05, 2.0, 4.0]
     assert workbench.draft_rows([], 3, 1.0, 5.0) == [2.0, 3.0, 4.0]
@@ -1428,10 +1516,11 @@ def selftest():
             workbench.from_image(pngd, 8.6, 6.25, 15, 0.52, ["M"] + [""] * 14, mk6, 1)
             raise AssertionError("不给 draft 时带数不符应当拒绝")
         except workbench.MarkerCountError as e:
-            assert e.need == 6 and len(e.rows) == 4, (e.need, e.rows)
+            assert e.need == 6 and len(e.rows) == 6 and e.reason, (e.need, e.rows, e.reason)
         md, _sd = workbench.from_image(pngd, 8.6, 6.25, 15, 0.52, ["M"] + [""] * 14, mk6, 1,
                                        meta={"skill": "ep-craft"}, draft=True)
-        assert md["meta"]["draft"] == {"called": 4, "need": 6}, md["meta"].get("draft")
+        dr = md["meta"]["draft"]
+        assert dr["picked"] == 6 and dr["need"] == 6 and dr["gate"], dr
         assert [b["mw"] for b in md["bands"]] == [100.0, 70.0, 50.0, 25.0, 15.0, 10.0]
         ys = [b["y_cm"] for b in md["bands"]]
         assert ys == sorted(ys) and len(set(ys)) == 6, ys

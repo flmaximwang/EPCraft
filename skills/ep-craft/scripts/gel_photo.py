@@ -7,7 +7,8 @@
                                                   写 fig.vectorcraft，用 VectorCraft 导出 fig.png，写 fig.mw.json
     sync    fig.vectorcraft                       读用户在 VectorCraft 里改过的 Workbench（活文档）→ 重算 →
                                                   原地更新标签/曲线/Figure → 存盘 → 重新导出 fig.png / fig.mw.json
-    probe   <图> [--gel-size ...]                 只探测，打印胶面、泳道种子、每道叫出的带；不写文件
+    probe   <图> [--gel-size ...] [--markers M]   只探测，打印胶面、泳道种子、每道叫出的带、
+                                                  marker 候选道的前 N 名与闸门；不写文件
     doctor                                        环境自检（python / magick / 字体 / VectorCraft）
     selftest                                      不读用户文件、不开 app 的自检
 
@@ -233,18 +234,26 @@ def cmd_render(args):
     if model is None:
         if args.no_draft or not counts:
             raise err
-        # 草稿：带数最接近的那条（并列取先写的）凑够条数，band 线让用户拖到位 —— 不当真
-        ml, e = min(counts, key=lambda c: abs(len(c[1].rows) - c[1].need))
+        # 草稿：最接近的那条（闸门全过的优先，其次带数差的绝对值最小）凑够条数 —— 位置有参考价值，但不验证
+        ml, e = min(counts, key=lambda c: (getattr(c[1], "reason", "") != "", abs(len(c[1].rows) - c[1].need)))
         model, sd = build(ml, draft=True)
-        print("[!] 草稿标定：没有一条 marker 泳道叫出的带数与标签对得上（泳道 %d 叫出 %d 条，要 %d 条）。"
-              "band 线是按顺序猜的位置，MW 不可信 —— 在 Workbench 上把每条 band <MW> 线拖到梯子上对应的带"
-              "（梯子上没有的就删掉），然后 sync；band 线动过之后草稿标记自动去掉。"
-              % (ml, len(e.rows), e.need))
+        print("[!] 草稿标定：没有一条 marker 泳道对得上（泳道 %d：%s）。"
+              "band 线先放在剖面上最强的 %d 个局部极小上（多半就是梯子带，但没有验证）—— 在 Workbench 上对一遍，"
+              "不对的拖到梯子上对应的带（梯子上没有的就删掉），然后 sync；band 线动过之后草稿标记自动去掉。"
+              % (ml, getattr(e, "reason", "") or ("取出的带数与标签不合：%d 条，要 %d 条" % (len(e.rows), e.need)),
+                 len(e.rows)))
     print("[i] 泳道种子：%s，%d 道，孔距 %.3f cm，首道中心 %.3f cm（孔深 %.0f 灰度级）%s" % (
         {"wells": "按加样孔定相", "even": "看不清孔，预设间距居中"}[sd["source"]], lane_count, sd["pitch_cm"],
         sd["first_cm"], sd["depth"], ("；" + sd["note"]) if sd["note"] else ""))
-    print("[i] marker 泳道 %d：%d 条 band 线（%s）" % (model["marker_lane"], len(model["bands"]),
-                                                "草稿：位置是猜的" if model["meta"].get("draft") else "来自剖面上叫出的峰"))
+    gate = model["meta"].get("marker_gate") or {}
+    if model["meta"].get("draft"):
+        how = "草稿：剖面最强 %d 个局部极小，未验证" % len(model["bands"])
+    else:
+        how = "剖面最强的 %d 个局部极小%s" % (len(model["bands"]),
+                                       "，第 %d 名 / 第 %d 名 = %.2f×" % (
+                                           len(model["bands"]), len(model["bands"]) + 1, gate["ratio"])
+                                       if gate.get("ratio") else "")
+    print("[i] marker 泳道 %d：%d 条 band 线（%s）" % (model["marker_lane"], len(model["bands"]), how))
     _check_pitch(sd, preset)
 
     report = _mark_draft(model, profiles.analyze(model, png, names))
@@ -656,12 +665,30 @@ def cmd_probe(args):
     _check_pitch(sd, preset)
     top = workbench.TOP_GUARD_CM
     bot = ga["height_cm"] * (1 - workbench.BOTTOM_GUARD)
-    for i, (a, b) in enumerate(sd["lanes"], 1):
+    # 泳道与 render 同口径：首尾相接（相邻中心中点分界），不是种子给的 0.7·pitch 窄窗 —— 剖面一致，probe 的数字才与 render 对得上
+    cells = workbench._cells([sd["first_cm"] + k * sd["pitch_cm"] for k in range(lane_count)],
+                             float(ga["width_cm"]), (), sd["pitch_cm"] / 2.0, sd["pitch_cm"] / 2.0)
+    profs = []
+    for i, ln in enumerate(cells, 1):
+        a, b = ln["left_cm"], ln["right_cm"]
         ys, gs = profiles.lane_profile(gray, w, h, ppc, a, b, top, bot)
+        profs.append((ys, gs))
         _b, _ink, sm = profiles.ink_trace(gs, ppc)
         calls, noise = profiles.call_bands(ys, gs, sm, ppc)
         print("  泳道 %2d  %.3f–%.3f cm  噪声 %.2f  条带 %2d：%s" % (
             i, a, b, noise, len(calls), [round(c["y_cm"], 2) for c in calls]))
+    if getattr(args, "markers", None):       # ep-9ji：marker 道不看噪声门槛，看前 N 名与断崖
+        _n, _ag, mk_labels, cand, mk_note = _lanes_and_markers(args, lane_count)
+        need = workbench.rows_needed(mk_labels)
+        print("[i] marker 配置：%s —— 标签要 %d 条" % (mk_note, need))
+        for ml in cand:
+            ys, gs = profs[ml - 1]
+            rows, info = profiles.pick_marker(ys, gs, ppc, need)
+            ratio = "%.2f×（第 %d 名 %.2f / 第 %d 名 %.2f）" % (
+                info["ratio"], need, info["nth"], need + 1, info["next"]) if info["ratio"] else "—"
+            print("  marker 候选 泳道 %2d：取到 %d 条，最短的一条 / 下一条 = %s  %s" % (
+                ml, len(rows), ratio, "通过" if info["ok"] else "不过（%s）" % info["reason"]))
+            print("      y cm：%s" % [round(r["y_cm"], 2) for r in rows])
     return 0
 
 
@@ -709,8 +736,11 @@ def main(argv=None):
             else:
                 a.add_argument(flag, dest=dest, default=None, help=argparse.SUPPRESS)
 
-    p = sub.add_parser("probe", help="只探测：胶面、按加样孔放的泳道、每道叫出的带；不写文件")
+    p = sub.add_parser("probe", help="只探测：胶面、按加样孔放的泳道、每道叫出的带、marker 道的前 N 名；不写文件")
     p.add_argument("image")
+    p.add_argument("--markers", help="marker 配置 JSON（给了就打印 marker 候选道的前 N 名与闸门）")
+    p.add_argument("--preset", help="从 marker 预设库里选一个（与 render 同）")
+    p.add_argument("--lanes", help="泳道配置 JSON（marker_lanes 决定先试哪几道）")
     add_detect(p)
     p.set_defaults(func=cmd_probe)
 
