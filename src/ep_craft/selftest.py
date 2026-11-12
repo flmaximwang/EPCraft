@@ -2297,6 +2297,38 @@ def selftest():
         assert meta_leg["marker_confidence"]["ok"] is False, meta_leg
     ok += 1
 
+    # 142) 集成：真实空白图自动检测为零带；成组 Figure 标签只派生自实际存在的 band 线。
+    with tempfile.TemporaryDirectory() as td:
+        names_g = ["M"] + [""] * 14
+        blank_path = os.path.join(td, "blank.png")
+        _run([MAGICK, "-size", "860x625", "xc:gray(200)", "-depth", "8", blank_path])
+        with open(blank_path, "rb") as f:
+            blank_png = f.read()
+        zero, _ = workbench.from_image(blank_png, 8.6, 6.25, 15, 0.52, names_g, ["100", "50"], 1)
+        assert zero["bands"] == [], zero["bands"]
+        zero_rep = _gp._mark_low_confidence(zero, profiles.analyze(zero, blank_png, names_g))
+        zero_doc = vc_file.loads(vc_file.dumps(figure.build_document(zero, zero_rep, blank_png, "t")))[0]["document"]
+        assert workbench.from_document(zero_doc)[0]["marker_lane"] == 1
+
+        gel_path = os.path.join(td, "grouped.png")
+        _synth_wells(gel_path, first_cm=0.70, pitch_cm=0.52, ladder_rows_cm=[1.0, 2.4])
+        with open(gel_path, "rb") as f:
+            grouped_png = f.read()
+        grouped, _ = workbench.from_image(grouped_png, 8.6, 6.25, 15, 0.52, names_g,
+                                          [{"text": "100/50/25 kD", "rows": 2}], 1,
+                                          marker_rows_cm=[1.0, 2.4])
+        for remaining, expected in (([100, 50], ["100/50 kD"]), ([50], ["50 kD"]), ([], [])):
+            current = copy.deepcopy(grouped)
+            current["bands"] = [b for b in current["bands"] if b["mw"] in remaining]
+            report_g = _gp._mark_low_confidence(current, profiles.analyze(current, grouped_png, names_g))
+            assert set(current["meta"]["marker_confidence"]["notes"]) <= set(report_g["notes"])
+            doc_g = vc_file.loads(vc_file.dumps(figure.build_document(current, report_g, grouped_png, "t")))[0]["document"]
+            band_labels = [n for n in vc_file.lay_children(vc_file.layer_by_name(doc_g, "labels"))
+                           if n.get("name", "").startswith("label band ")]
+            assert [vc_file.text_info(n)["text"] for n in band_labels] == expected, band_labels
+            assert all("25" not in n["name"] for n in band_labels), band_labels
+    ok += 1
+
     print("selftest %d/%d 通过" % (ok, ok))
     return 0
 
