@@ -48,7 +48,7 @@
       "id": "should-trigger-05",
       "type": "should_trigger",
       "prompt": "分子量标签整体错位了一位：70 kD 那个标签跑到别的带上了。",
-      "expected_behavior": "先看 `fig.mw.json` 的 `calibration.low_confidence`：是 true 就说明这份的 marker 标定没过闸门（低置信），MW 本来就只算带标记的参考值。看 `ep-meta.marker_confidence`（`ok/picked/need/gate/notes`）判断是闸门没过、还是叫出的条数少（`picked < need`：尾部几个 MW 没挂上，所以标签整体错位）。否则多半是 band 线落在了错的峰上，或预设与梯子不符。纠正走 Workbench：把 `band <MW>` 线拖到对应的带上（或删掉梯子上没有的那条、改名），然后 `sync` —— 标定、MW、Figure 上的 marker 标签都跟着更新；这是可选的核对，不是必经步骤，低置信标记不会因为拖线自动消失。若是预设本身选错（同货号不同体系），换预设重新 render。不要去改脚本放宽检查。",
+      "expected_behavior": "先看 `fig.mw.json` 的 `calibration.low_confidence`：是 true 就说明这份的 marker 标定没过闸门（低置信），MW 本来就只算带标记的参考值。看 `ep-meta.marker_confidence`（`ok/picked/need/gate/ratio/nth/next/notes`（`ok = false` 可能是闸门没过、条数不够或劈峰提示））判断是闸门没过、还是叫出的条数少（`picked < need`：尾部几个 MW 没挂上，所以标签整体错位）。否则多半是 band 线落在了错的峰上，或预设与梯子不符。纠正走 Workbench：把 `band <MW>` 线拖到对应的带上（或删掉梯子上没有的那条、改名），然后 `sync` —— 标定、MW、Figure 上的 marker 标签都跟着更新；这是可选的核对，不是必经步骤，低置信标记不会因为拖线自动消失。若是预设本身选错（同货号不同体系），换预设重新 render。不要去改脚本放宽检查。",
       "notes": ""
     },
     {
@@ -246,6 +246,13 @@
       "prompt": "1464 A 保留 2-7，用 2 当 marker；1477_B 的 label 都向右移一位，新标签也要转 90 度。赶紧做，不要做之前确认一次，做之后又确认一次。",
       "expected_behavior": "不提问、不给 A/B 选项，直接用 `ep-craft workbench edit`：`ep-craft workbench edit IMG_1464_A.vectorcraft --keep 2-7 --marker-lane 2`、`ep-craft workbench edit IMG_1477_B.vectorcraft --shift-labels 1 --label 9=M`（新标签由 sync 按文档的泳道名角度建，自动 90°）。不手写控制口脚本、不先 --dry-run、不另外复查；按 edit/sync 打印的摘要一次性汇报。",
       "notes": "同一会话的后半段。"
+    },
+    {
+      "id": "edge-case-34",
+      "type": "edge_case",
+      "prompt": "我在 Workbench 上误删了梯子的 band 线，现在只剩 1 条了，sync 说「标定点不足 2 条」，还能交付吗？",
+      "expected_behavior": "能，照样交付：sync 不会因为 band 线少于 3 条拒绝（旧「至少 3 条」规则已废）。标定如实记成单点（`fig.mw.json` 的 `calibration.points` 只有那一条，0 条时是 `[]`），样品带全部 `mw_kda: null`，报告注「标定点不足 2 条（k 条 band 线）：样品分子量无法估计」；文档、Figure、band 表照出。低置信标记保持原样：sync 不因为拖/删线新增或清除它（`ep-meta.marker_confidence` 里 render 时的 `ok` / `picked` / `need` 不会变）。要给回数字就把漏掉的 `band <MW>` 线画回去（名字带分子量）再 sync；只有 2 条线时就是两点之间插值。绝不补造标定点、不插假线；线全删光也能读回 marker 道（`ep-meta.marker_lane`）。",
+      "notes": "0/1 条带 → 样品 MW 无法估计但仍交付；2 条 → 两点插值；导入导出那一端仍要求 ≥ 3 条。"
     }
   ]
 }

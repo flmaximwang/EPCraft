@@ -122,7 +122,7 @@ Crop 的比例：pt / 原图像素 `s = width_cm·PT / 框宽px`，所以框画�
 
 线宽 0.5 pt。`ep-meta` 里存：skill 版本、照片路径、胶体预设、marker 预设、dpi、Profiles 版式、render 时的泳道名、
 marker 标签表、**上一次的泳道中心**（给标签匹配用）、上一次的 band 线（给 sync 的改动摘要用）、种子信息、
-`marker_confidence`（自动检出 marker 的置信信息，§10a：`{"ok": bool, "picked": int, "need": int, "gate": null|原因, "notes": []}`）、
+`marker_confidence`（自动检出 marker 的置信信息，完整字段见 §10a）、"marker_lane"（最近一次被判定为 marker 的那条泳道号，`band` 线一条不剩时 sync 靠它来回读 `marker_lane`）、
 `label_angle`（新建标签的默认角：`{"lane", "marker"}`）、`lane_angles`（每条泳道的标签角度，按泳道顺序）。
 角度 0 不写这两个键（没有旋转的文档与旧版逐字节一致）。还有 `crop`（Crop 画板对应的裁切）：
 
@@ -181,7 +181,7 @@ marker 标签表、**上一次的泳道中心**（给标签匹配用）、上一
 | marker bands 图层里有竖线 | 竖线画错层 |
 | 条带线的中点不在任何泳道里 | band 线被拖到了最外两条分隔线之外 |
 | marker 条带线横跨了泳道 … | band 线分散在几条泳道里，应全在一条里 |
-| 只剩 k 条，标定至少要 3 条 | 删多了 |
+| marker 条带线只剩 k 条（k = 0/1/2） | **不报错**：照常 sync，标定点如实记空 / 单点 / 两点；样品 MW 估计不出（`mw_kda: null`，注「标定点不足 2 条…样品分子量无法估计」），文档 / Figure / band 表照出（低置信标记保持原样，sync 不新增也不清除，§10a）。若要补，把漏掉的 `band <MW>` 线画回去（命名带分子量） |
 | band A 在 band B 下面，但分子量不更小 | 名字或位置弄反了（MW 必须随 y 向下单调减小） |
 | 所有泳道都在 trimmed 里 | Figure 至少要留一条 |
 
@@ -252,7 +252,11 @@ marker 标签表、**上一次的泳道中心**（给标签匹配用）、上一
    在**这两点之间**线性插值 —— marker 点上的值严格等于标签值，两点之间按这条胶自己的局部斜率走。**禁止全局拟合**：
    `log10(MW) = a + b·y` 最小二乘在 Tris-Tricine 胶上不成立（残差是系统的：250 kD 被压低约四成、10 kD 抬高约三成，
    R² 只有 0.95），而且这条直线在标记点之间也不经过真实值。标定里不存拟合系数、也不报 R²。
-4. **MW**：样品道每条叫出的带按标定换算；超出 marker 范围的记 `mw_kda: null` + `extrapolated: true`（终端表里写「超出 marker 范围」，不给外推数字）。
+   **标定点少于 2 条也照样出报告**：0 条 → `calibration.points: []`；1 条 → 单点（**不外推**，唯一那点以外的位置一律算不出来）；
+   2 条 → 就在这两点之间插值（两点之外仍不外推）。0/1 条时样品带全部 `mw_kda: null`，
+   报告 `notes` 写「标定点不足 2 条（k 条 band 线）：样品分子量无法估计」；文档里的低置信标记照旧（sync 不因此新加、
+   也不会清掉，§10a）。
+4. **MW**：样品道每条叫出的带按标定换算；超出 marker 范围的记 `mw_kda: null` + `extrapolated: true`（终端表里写「超出 marker 范围」，不给外推数字）；标定点不足 2 条时同样 `mw_kda: null`，终端表里也不给数字，原因看报告注「标定点不足 2 条…」。
 5. **marker 道（sync 不叫峰，spec ep-9ji D4）**：文档里 marker 道的带 = `band <MW>` 线本身，剖面只用来
    **吸附** —— 线 ±**0.06 cm** 内有局部极小就吸过去补 `prominence` / `width_cm`，`y_cm` = 极小位置、
    `line_y_cm` = 线、`snapped: true`；吸不上（线在平地上、或两条线抢同一个极小）→ 按线的位置量、`snapped: false`、
@@ -470,13 +474,25 @@ render 的 marker 道检出**从不拒绝**：候选道逐条试，第一条过�
 没有配对、没有凑数（不再并线 / 插线凑够 N 条）、也不再有「等用户拖线」这一步。
 
 - 终端：`[!] 低置信`（原因与 `picked/need` 一并打印），例如 `marker 泳道 1 未过标准：第 11 名显著度 0.26 < 下限 1.50 灰度级`。
-- `ep-meta.marker_confidence = {"ok": bool, "picked": int, "need": int, "gate": null|"原因", "notes": []}`
-  （替代旧版本里拆成两个键的标定标记与闸门信息）。`notes` 里可能有一条劈峰提示（下）。
+- `ep-meta.marker_confidence = {"ok": bool, "picked": int, "need": int, "gate": null|"原因", "ratio": float|null, "nth": float|null, "next": float|null, "notes": []}`
+  （替代旧版本里拆成两个键的标定标记与闸门信息）。`ok = false` 有三种来源：闸门没过、`picked < need`（条数少于 MW 槽位）、
+  或 `notes` 里有劈峰提示；`gate` 记第一条原因（闸门原因 / 「条数与 MW 槽不符…」/ 劈峰提示原文），没有则 `null`。
+  `ratio` / `nth` / `next` 是只读诊断值（第 N 名与第 N+1 名的显著度及其比值），终端打印与「全不过闸门时按断崖比值挑道」用，
+  不参与任何判定。
 - `fig.mw.json`：`calibration.low_confidence: true`（字段更名，语义不变），报告的**第一条注**写明「低置信：
   marker 道未过标准」之类的措辞 —— MW 照常给，只是不背书。
 - **拖线纯是可选纠错**：用户在 Workbench 上把 `band <MW>` 线拖 / 删 / 改名，然后 `sync`，标定与 Figure 标签跟着更新。
   这不叫「认证」：sync 不清除也不新增低置信标记（它只沿用 render 时记下的 `marker_confidence`）。
-- **劈峰只提示不代劳**（Q17，将错就错）：检出 ≥ 3 条时，若最小相邻间距 < 0.5 × 相邻间距中位数，
+- **停在一两口带也照样交付**：`band <MW>` 线只剩 0 / 1 / 2 条时 sync 不拒绝（旧规则「至少 3 条」已废）。标定点如实写：
+  0 条 → `calibration.points: []`；1 条 → 单点（不外推）；2 条 → 就按这两点之间插值。0/1 条插不出值，
+  样品带 `mw_kda: null`（终端表里不给数字）、报告注原话「标定点不足 2 条（k 条 band 线）：样品分子量无法估计」。
+  文档里的低置信标记保持不变（sync 不新增也不清除）：render 时条数本来就不够（`picked < need`）的，`fig.mw.json` 里
+  这条「无法估计」的注会排在低置信首注之后；render 时本来是正常的文档，删线只多出这条「无法估计」的注，不会忽然多一个
+  低置信标记 —— 别把它说成新警告。交付时照实说「MW 估计不出」。
+  给不出数就说给不出，**不补造标定、不插假线**。
+- **线一条不剩也能读回 marker 道**：`marker_lane` 记在 `ep-meta` 里；`marker bands` 图层 0 条线时 sync 用它，
+  不会因为「量不到线」就失败（`ep-meta` 里也没有才报错，提示重新 render 或补 `marker_lane`）。
+- **劈峰只提示不代劳**（Q17，将错就错）：检出 ≥ 3 条时，若最小相邻间距 < 0.4 × 相邻间距中位数，
   `notes` 加一条 `识别条带偏多：y≈a 与 y≈b 疑似同一带劈成双峰，请微调`。不并峰、不拦截、不替用户改线；
   把这条提示原样转告用户即可。
 
@@ -577,7 +593,7 @@ ep-craft workbench import fig.vectorcraft --input workbench.json [--no-sync] [--
 | `marker_lane` | 1 起，`1 … len(lanes)`。 |
 | `low_confidence` | 低置信标记（字段更名，语义不变）。导出带来源值；导入只在来源为 `true` 时把目标标为低置信，来源为 `false` **不会清掉**目标已有的标记——导入永远不「认证」标定。 |
 | `lanes[]` | 从左到右；相邻泳道共用边界（`lanes[i].left_cm == lanes[i-1].right_cm`，容差 1e-4）；`left/right_cm` 每道宽 ≥ 0.02 cm；至少一条未 trim。`trimmed` 必填布尔；`name` 可省略（省略 = 保留目标文档该道现有的名字），`null` = 占位的 `?`，`""` = 空白道。 |
-| `bands[]` | marker 带线，自上而下；至少 3 条，`mw > 0`，`y_cm` 严格递增、`mw` 严格递减，不能有重复 y。`mw` 就是 `band <MW>` 线上的数字（§5）。 |
+| `bands[]` | marker 带线，自上而下；`mw > 0`，`y_cm` 严格递增、`mw` 严格递减，不能有重复 y。`mw` 就是 `band <MW>` 线上的数字（§5）。**导入校验仍要求 ≥ 3 条**（sync 本身允许 0/1/2 条，见 §10a；把只有两条带的文档导出再导入会被这一端拒绝）。 |
 | `sample_bands[]` | **可选**；导出只在文档有 `sample bands` 图层时出现。每条 `{lane, y_cm}`，`lane` 是 1 起的非 marker 泳道，重复的 y 会去重。省略 = 导入不动刻度；给了就按它重建刻度。 |
 
 **不导出、导入时原样保留**：胶面图与它的 key、Crop 框、各画板、Figure / Profiles / 标签的几何、`ep-meta` 里的照片 / dpi / 预设等其它键。`peak_auto` 不导出；导入会按 `sample_bands` 相对文档的 `peak_auto` 重算 `peak_overrides`，让随后默认的 `sync` 复现导入的刻度。泳道名导出的是标签的当前文字（与 `ep-meta.lane_names`、`label lane n` 的 text 同一份）。
@@ -588,7 +604,7 @@ ep-craft workbench import fig.vectorcraft --input workbench.json [--no-sync] [--
 
 - 顶层必须是 JSON 对象；`schema` / `version` 精确匹配 v1；必须有 `schema`、`version`、`gel`、`window`、`lanes`、`bands`、`marker_lane`。未知键忽略。
 - 所有数字必须是有限的 JSON number（布尔、NaN、Infinity 都拒绝）。
-- `gel` 尺寸 > 0，且与目标文档相差 ≤ 0.01 cm；`window` 见上；`lanes` 非空、几何连续、至少一条保留；`marker_lane` 在范围内；`bands` 见上；`sample_bands` 的泳道在范围内且不是 marker 道。
+- `gel` 尺寸 > 0，且与目标文档相差 ≤ 0.01 cm；`window` 见上；`lanes` 非空、几何连续、至少一条保留；`marker_lane` 在范围内；`bands` 见上（导出/导入这一端要求 ≥ 3 条）；`sample_bands` 的泳道在范围内且不是 marker 道。
 - 活文档本身必须读得通（`workbench.from_document`）；读不通就拒绝，绝不在坏文档上「半修」。
 - 有 `sample_bands` **且与文档现有刻度不同**、而文档没有 `peak_auto`（无法把它换算成 override、默认 sync 复现不了）→ 拒绝，什么都不改；刻度没变则允许通过。
 
