@@ -20,7 +20,8 @@ from .magick_io import MAGICK, _run, read_ppm, to_gray
 from .gel_detect import bg_plane, components, detect_gel, ink_mask
 from .lane_select import layout as lane_layout, parse_keep, strips as lane_strips
 from .geometry import load_dims_after, rotate_pt, rotated_rect_bbox
-from .mw_report import build_cal, estimate, format_report_v2, marker_pairs, parse_mw, write_v2
+from .mw_report import (build_cal, estimate, expand_marker_mws, format_report_v2, parse_mw,
+                        split_peak_note, write_v2)
 from . import vc_file
 from . import vc_control
 from . import workbench
@@ -28,6 +29,7 @@ from . import profiles
 from . import well_grid
 from . import figure
 from . import doc_edit
+from . import workbench_io
 
 
 def test_import_direction():
@@ -161,9 +163,20 @@ def selftest():
     # 17) 分子量：只在**相邻两条 marker 带之间**插值（禁止全局拟合）。
     #     marker 点上的值必须严格等于标签值；区间外不给数字；弯曲的梯子按局部斜率走，不被一条直线抹平。
     assert parse_mw("21/20 kD") == [21.0, 20.0] and parse_mw("250 kD") == [250.0] and parse_mw("M") == []
+    # 17b) 出生即 MW（ep-bdt）：标签展开成 MW 槽位序列，数字按序填；数字不够 →
+    #      尾部槽 None（不落线）+ 一条提示；数字有余 → 只用前 n 个。
     ents = [{"text": "100 kD"}, {"text": "21/20 kD", "rows": 2}, {"text": "10 kD"}]
-    pr = marker_pairs(ents, [1, 2, 1], [10, 20, 24, 30], lambda e, d: dict(e))
-    assert pr == [(10, 100.0), (20, 21.0), (24, 20.0), (30, 10.0)], pr
+    mws, notes = expand_marker_mws(ents, lambda e, d: dict(e))
+    assert mws == [100.0, 21.0, 20.0, 10.0] and not notes, (mws, notes)
+    mws, notes = expand_marker_mws([{"text": "100 kD"}, {"text": "50 kD", "rows": 3}], lambda e, d: dict(e))
+    assert mws == [100.0, 50.0, None, None] and len(notes) == 1 and "只有 1 个" in notes[0], (mws, notes)
+    mws, notes = expand_marker_mws([{"text": "21/20 kD"}], lambda e, d: dict(e))
+    assert mws == [21.0] and notes and "只占 1 行" in notes[0], (mws, notes)
+    # 17c) 劈峰提示：最小相邻间距 < 0.4 × 中位数 → 点名最可疑的一对；不并峰、不拦截。
+    assert split_peak_note([1.0, 1.6, 2.3, 3.1]) is None
+    note = split_peak_note([1.0, 1.1, 1.7, 2.4, 3.1])
+    assert note and "识别条带偏多" in note and "y≈1.00" in note and "y≈1.10" in note, note
+    assert split_peak_note([1.0, 1.1]) is None                    # 少于 3 条不比间距
     cal = build_cal([(y, 10 ** (2.0 - 0.05 * (y - 10))) for y in (10, 20, 30, 40)])
     assert "fit" not in cal, cal                                   # 标定里没有任何拟合曲线
     for y in (10, 20, 30, 40):                                     # 标记点上 = 标签值
@@ -768,12 +781,17 @@ def selftest():
     assert mdl["meta"]["lane_names"] == names and len(mdl["meta"]["prev_centres_cm"]) == 15
     pair = workbench.from_record(rec, names, ["250 kD", {"text": "21/20 kD", "rows": 2}], 1)
     assert [b["mw"] for b in pair["bands"]] == [250.0, 21.0, 20.0], pair["bands"]
-    for labels, frag in ((["250", "100", "50", "10"], "不硬配"), (["250", "ladder", "50"], "没有分子量")):
-        try:
-            workbench.from_record(rec, names, labels, 1)
-            raise AssertionError("坏 marker 标签 %r 没报错" % labels)
-        except workbench.WorkbenchError as e:
-            assert frag in str(e), e
+    # 数量错配不拒绝（ep-bdt）：4 个标签、3 条带 → 只挂前 3 个 MW，记进 marker_confidence
+    more = workbench.from_record(rec, names, ["250", "100", "50", "10"], 1)
+    assert [b["mw"] for b in more["bands"]] == [250.0, 100.0, 50.0], more["bands"]
+    conf = more["meta"]["marker_confidence"]
+    assert conf["picked"] == 3 and conf["need"] == 4 and conf["ok"] is False, conf
+    assert any("只挂前 3 个" in n for n in conf["notes"]), conf["notes"]
+    try:                                                            # 标签里没数字 → 仍是配置错误
+        workbench.from_record(rec, names, ["250", "ladder", "50"], 1)
+        raise AssertionError("坏 marker 标签没报错")
+    except workbench.WorkbenchError as e:
+        assert "没有分子量" in str(e), e
     ok += 1
 
     # 61) Workbench 往返（V3）：模型 → 文档 → 文件字节 → 读回 == 原模型（cm 误差 < 1e-3）；
@@ -881,12 +899,12 @@ def selftest():
         for a_ in a0:
             a_["p"][0] -= shift * vc_file.PT_PER_CM
     bl[0]["name"], bl[1]["name"] = "band 50", "band 100"                   # MW 随 y 变大
-    vc_file.lay_children(B2["marker bands"]).remove(bl[2])                 # 只剩 2 条
+    vc_file.lay_children(B2["marker bands"]).remove(bl[2])                 # 只剩 2 条（2 条本身合法）
     try:
         workbench.from_document(bad2)
-        raise AssertionError("MW 不单调 / 不足 3 条没报错")
+        raise AssertionError("MW 不单调没报错")
     except workbench.WorkbenchError as e:
-        assert "分子量不更小" in str(e) and "至少要 3 条" in str(e), e
+        assert "分子量不更小" in str(e) and "至少要 3 条" not in str(e), e
     ok += 1
 
     # 64) 泳道名按**序号**跟着泳道走（V11）：第 i 格的标签属于第 i 格，不做位置/容差配对 ——
@@ -964,7 +982,7 @@ def selftest():
     #      能不能信交给「断崖 + 下限」两条闸门：
     #      · 真梯子（fixtures/marker-lane-img1586.json，IMG_1586 第 3 道实测剖面）→ 11 条，与用户手放的
     #        band 线相差 ≤ 0.03 cm（含 20 kD，显著度只有 7.4）；第 12 名是 1.01，断崖 7.3×。
-    #      · 同一张胶的空道剖面（只有纹理）→ 闸门不过（下限），调用方换下一条道或出草稿。
+    #      · 同一张胶的空道剖面（只有纹理）→ 闸门不过（下限），调用方换下一条道或整体标低置信。
     #      · 要 12 条 → 第 12 名是纹理，下限挡住；要 100 条 → 候选不够。
     #      · 合成梯子（67 的 IMG_1496 剖面）→ 11 条，断崖 3.8×，比 IMG_1586 紧，GAP_RATIO 不能高过它。
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -982,6 +1000,7 @@ def selftest():
     old_thr = profiles.K_NOISE * profiles.noise_of(sm)
     assert old_thr > 4 * weakest, (old_thr, weakest)          # 老门槛会把它否掉 —— 这条夹具护的就是这个差
     assert info["ratio"] > profiles.GAP_RATIO and info["next"] < 1.5, info
+    assert split_peak_note(cal) is None, "真梯子（间距比 0.46）不该报「识别条带偏多」"
     assert profiles.pick_marker(yfx, fx["gray"], fx["px_per_cm"], 12)[1]["ok"] is False
     many, minfo = profiles.pick_marker(yfx, fx["gray"], fx["px_per_cm"], 100)
     assert not minfo["ok"] and len(many) == minfo["n_cands"] < 100 and "局部极小" in minfo["reason"], minfo
@@ -1131,17 +1150,16 @@ def selftest():
         assert [b["mw"] for b in m9["bands"]] == [100.0, 50.0, 25.0, 10.0]
         assert all(abs(b["y_cm"] - y) < 0.02 for b, y in zip(m9["bands"], rows_cm)), m9["bands"]
         assert m9["marker_lane"] == 1 and len(m9["lanes"]) == 15
-        try:
-            workbench.from_image(png9, 8.6, 6.25, 15, 0.52, names9, ["100", "50", "25", "10", "5"], 1)
-            raise AssertionError("要 5 条、第 5 条是纹理，没拒绝")
-        except workbench.MarkerCountError as e:
-            assert "不像梯子" in str(e) and "3.1" in str(e) and e.reason, e    # 把取出的 y 列与闸门给用户
-            assert len(e.rows) == 5 and e.need == 5, (e.rows, e.need)          # 行数对得上，是闸门挡的
-        try:                                                              # 要的条数越多，闸门越先挡在「下限」
-            workbench.from_image(png9, 8.6, 6.25, 15, 0.52, names9, [str(k) for k in range(1, 31)], 1)
-            raise AssertionError("要 30 条、剖面凑不出 30 条真带，没拒绝")
-        except workbench.MarkerCountError as e:
-            assert e.reason and e.need == 30, e
+        # 闸门只管置信度（ep-bdt）：要 5 条、第 5 条是纹理 → 照样出模型，marker_confidence 标 ok=False
+        m70, _sd70 = workbench.from_image(png9, 8.6, 6.25, 15, 0.52, names9, ["100", "50", "25", "10", "5"], 1)
+        c70 = m70["meta"]["marker_confidence"]
+        assert c70["ok"] is False and c70["picked"] == 5 and c70["need"] == 5 and c70["gate"], c70
+        assert [b["mw"] for b in m70["bands"]] == [100.0, 50.0, 25.0, 10.0, 5.0], m70["bands"]
+        # 要的条数比剖面能给的还多：叫出几条挂几条，不抛错
+        m71, _sd71 = workbench.from_image(png9, 8.6, 6.25, 15, 0.52, names9, [str(k) for k in range(30, 0, -1)], 1)
+        c71 = m71["meta"]["marker_confidence"]
+        # 30 个槽，剖面里噪声峰够 30 个 → 照样挂满，但下限闸门不过 → 低置信（不抛错、不冒充可信）
+        assert c71["need"] == 30 and c71["picked"] == 30 and c71["ok"] is False and "下限" in c71["gate"], c71
     ok += 1
 
     # 71) 一维排字 spread（V5）：保持顺序、相邻中心距 ≥ 半尺寸之和 + gap、孤立的不动、
@@ -1516,31 +1534,59 @@ def selftest():
     assert workbench.lane_names_after(fake_m, prev15, names15) == names15, "拖边后名字没留住"
     ok += 1
 
-    # 120) 草稿标定：剖面不像梯子时 from_image(draft=True) 不拒绝 —— 少了在最大空当插、多了并最近的两条、
-    #      不到 2 条在积分窗里等距放；meta.draft 记下取了几条、要几条、哪条闸门没过（ep-9ji）；
-    #      MW 仍随 y 向下单调减小。不给 draft 时同一张图要拒绝（行数是 need，挡在闸门）。
-    assert workbench.draft_rows([1.0, 2.0, 4.0], 4, 0.2, 5.0) == [1.0, 2.0, 3.0, 4.0]
-    assert workbench.draft_rows([1.0, 1.1, 2.0, 4.0], 3, 0.2, 5.0) == [1.05, 2.0, 4.0]
-    assert workbench.draft_rows([], 3, 1.0, 5.0) == [2.0, 3.0, 4.0]
+    # 120) 数量错配 + 闸门失败不再是错误（ep-bdt）：k<N → 只挂前 k 个 MW、picked<need 记进
+    #      marker_confidence；多出来的带不落线；尾部空槽不落线；劈峰只提示、不并峰。
     assert workbench.rows_needed(["250", {"text": "21/20 kD", "rows": 2}, "10"]) == 4
     with tempfile.TemporaryDirectory() as td:
         gd = os.path.join(td, "gel.png")
         _synth_wells(gd, first_cm=0.70, pitch_cm=0.52, ladder_rows_cm=[1.0, 1.6, 2.3, 3.1])
         pngd = open(gd, "rb").read()
-        mk6 = ["100", "70", "50", "25", "15", "10"]
-        try:
-            workbench.from_image(pngd, 8.6, 6.25, 15, 0.52, ["M"] + [""] * 14, mk6, 1)
-            raise AssertionError("不给 draft 时带数不符应当拒绝")
-        except workbench.MarkerCountError as e:
-            assert e.need == 6 and len(e.rows) == 6 and e.reason, (e.need, e.rows, e.reason)
-        md, _sd = workbench.from_image(pngd, 8.6, 6.25, 15, 0.52, ["M"] + [""] * 14, mk6, 1,
-                                       meta={"skill": "ep-craft"}, draft=True)
-        dr = md["meta"]["draft"]
-        assert dr["picked"] == 6 and dr["need"] == 6 and dr["gate"], dr
-        assert [b["mw"] for b in md["bands"]] == [100.0, 70.0, 50.0, 25.0, 15.0, 10.0]
-        ys = [b["y_cm"] for b in md["bands"]]
-        assert ys == sorted(ys) and len(set(ys)) == 6, ys
+        namesd = ["M"] + [""] * 14
+        # 6 个 MW 槽、只给 4 条带 → 前 4 个槽按序落线，后 2 个不落线（不是错误）
+        md, _sd = workbench.from_image(pngd, 8.6, 6.25, 15, 0.52, namesd, ["100", "70", "50", "25", "15", "10"],
+                                       1, marker_rows_cm=[1.0, 1.6, 2.3, 3.1])
+        assert [b["mw"] for b in md["bands"]] == [100.0, 70.0, 50.0, 25.0], md["bands"]
+        conf = md["meta"]["marker_confidence"]
+        assert conf["picked"] == 4 and conf["need"] == 6 and conf["ok"] is False, conf
+        assert any("只挂前 4 个" in n for n in conf["notes"]), conf["notes"]
         assert not workbench.validate(md), workbench.validate(md)
+        # 带比槽多：多出的不落线
+        mo, _sd = workbench.from_image(pngd, 8.6, 6.25, 15, 0.52, namesd, ["100", "50", "10"], 1,
+                                       marker_rows_cm=[1.0, 1.6, 2.3, 3.1])
+        assert [b["mw"] for b in mo["bands"]] == [100.0, 50.0, 10.0], mo["bands"]
+        mco = mo["meta"]["marker_confidence"]
+        assert mco["picked"] == 3 and mco["need"] == 3 and mco["ok"] is False, mco
+        assert any("多 1 条" in n for n in mco["notes"]), mco["notes"]
+        # rows 2 但只有一个数字：第 2 个槽是 None —— 不落线，后面的槽不会因此挪位
+        mk_rows = [{"text": "100", "rows": 2}, "70", "50"]
+        mr, _sd = workbench.from_image(pngd, 8.6, 6.25, 15, 0.52, namesd, mk_rows, 1,
+                                       marker_rows_cm=[1.0, 1.6, 2.3, 3.1])
+        assert [b["mw"] for b in mr["bands"]] == [100.0, 70.0, 50.0], mr["bands"]
+        mcr = mr["meta"]["marker_confidence"]
+        assert mcr["picked"] == 3 and mcr["need"] == 4, mcr
+        assert any("后面 1 行没有 MW" in n for n in mcr["notes"]), mcr["notes"]
+    # 低置信标记：marker_confidence.ok = false → fig.mw.json 的 calibration.low_confidence = true，
+    # 报告首注换成「低置信，可人工核对」；ok 的报告不带这个键（旧文档 sync 后逐字节不变）
+    from . import gel_photo as _gp
+    rep_low = _gp._mark_low_confidence({"meta": {"marker_confidence": {"ok": False, "gate": "断崖不够"}}},
+                                      {"calibration": {"method": "interp", "marker_lane": 1, "points": []},
+                                       "notes": ["别的提示"]})
+    assert rep_low["calibration"]["low_confidence"] is True
+    assert "置信度低" in rep_low["notes"][0] and "别的提示" in rep_low["notes"], rep_low["notes"]
+    rep_ok = _gp._mark_low_confidence({"meta": {"marker_confidence": {"ok": True}}},
+                                     {"calibration": {"method": "interp", "marker_lane": 1, "points": []},
+                                      "notes": []})
+    assert "low_confidence" not in rep_ok["calibration"] and not rep_ok["notes"], rep_ok
+    # 劈峰：两条带挨得只有相邻带距的 1/6 → 提示「识别条带偏多」，两条带照样各占一个槽（不并峰、不拦截）
+    with tempfile.TemporaryDirectory() as td:
+        gs = os.path.join(td, "gel.png")
+        _synth_wells(gs, first_cm=0.70, pitch_cm=0.52, ladder_rows_cm=[1.0, 1.1, 1.7, 2.4, 3.1])
+        pngs = open(gs, "rb").read()
+        ms, _sds = workbench.from_image(pngs, 8.6, 6.25, 15, 0.52, namesd, ["100", "70", "50", "25", "10"], 1,
+                                        marker_rows_cm=[1.0, 1.1, 1.7, 2.4, 3.1])
+        assert len(ms["bands"]) == 5, ms["bands"]
+        assert any("识别条带偏多" in n for n in ms["meta"]["marker_confidence"]["notes"]), \
+            ms["meta"]["marker_confidence"]["notes"]
     ok += 1
 
     # 121) edit（doc_edit.plan_edit）：在 render 出的文档上改 trim / marker 泳道 / 泳道名 → ops 落到文件 JSON
@@ -2116,8 +2162,150 @@ def selftest():
         assert s2 and "已经对不上这一轮的自动叫带" in s2, s2
     ok += 1
 
+    # 139) 0 / 1 / 2 条 band 线都能交付（ep-blz 验收）：0 条 = 空白图（pick_marker 的 ranked 为空也不能崩，
+    #      整条链 build_document → from_document（marker 泳道靠 ep-meta 回退）→ export/import 往返都要通）；
+    #      1 条 = 唯一标定点留在报告里但插不出值、样品 mw_kda 全 None；2 条 = 正常两点插值（范围内给 MW、
+    #      范围外 None）。不补造带：带数就是用户给的条数。
+    with tempfile.TemporaryDirectory() as td:
+        gb = os.path.join(td, "blank.png")
+        _run([MAGICK, "-size", "860x625", "xc:gray(200)", "-depth", "8", gb])
+        pngb = open(gb, "rb").read()
+        namesb = ["M"] + [""] * 14
+        _rows0, info0 = profiles.pick_marker(*_blank_profile(), px_per_cm=100.0, need=3)
+        assert _rows0 == [] and info0["ok"] is False and "局部极小只有 0 个" in info0["reason"], info0
+
+        def _roundtrip(m, png, names, nb, low):
+            """建文档 → 读回 → 导出/导入，断言带数不变、marker 泳道靠 ep-meta 回退。
+            low = 这份文档是不是应该带低置信标记（带数 < 2 → 是）。"""
+            rep = profiles.analyze(m, png, names)
+            doc = vc_file.loads(vc_file.dumps(figure.build_document(m, rep, png, "t")))[0]["document"]
+            back, _note = workbench.from_document(doc)
+            assert back["marker_lane"] == 1 and len(back["bands"]) == nb, back
+            data = json.loads(json.dumps(workbench_io.build_export(doc, back)))
+            assert len(data["bands"]) == nb, data["bands"]
+            good = workbench_io.validate_export(data, back)
+            assert len(good["bands"]) == nb, good["bands"]
+            low_doc = vc_file.loads(vc_file.dumps(figure.build_document(
+                m, _gp._mark_low_confidence(m, rep), png, "t")))[0]["document"]
+            data_low = json.loads(json.dumps(workbench_io.build_export(low_doc, workbench.from_document(low_doc)[0])))
+            assert data_low["low_confidence"] is low, data_low
+            assert workbench_io.plan_import(low_doc, workbench.from_document(low_doc)[0], data_low)[0] is not None
+            return rep
+
+        for rows, nb in (([], 0), ([1.6], 1)):
+            mb, _sdb = workbench.from_image(pngb, 8.6, 6.25, 15, 0.52, namesb, ["100", "50"], 1,
+                                            marker_rows_cm=rows)
+            assert len(mb["bands"]) == nb, mb["bands"]
+            assert mb["meta"]["marker_lane"] == 1, mb["meta"]
+            assert mb["meta"]["marker_confidence"]["ok"] is False, mb["meta"]["marker_confidence"]
+            repb = _roundtrip(mb, pngb, namesb, nb, low=True)                    # 带数 < 2 → 低置信文档照样导出
+            assert len(repb["calibration"]["points"]) == nb, repb["calibration"]
+            assert any("标定点不足 2 条" in n for n in repb["notes"]), repb["notes"]
+            for ln in repb["lanes"]:
+                if ln["marker"]:
+                    continue                       # marker 道的带是线，MW 就是标签值，不靠插值
+                assert all(b["mw_kda"] is None for b in ln["bands"]), ln["bands"]
+
+        # 2 条：换成有 marker 带和样品带的合成胶（空白图上没有样品带，验证不了「范围内有值」）
+        g2 = os.path.join(td, "gel2.png")
+        _synth_wells(g2, first_cm=0.70, pitch_cm=0.52, ladder_rows_cm=[1.0, 2.4])
+        png2 = open(g2, "rb").read()
+        m2b, _s2b = workbench.from_image(png2, 8.6, 6.25, 15, 0.52, namesb, ["100", "50"], 1,
+                                        marker_rows_cm=[1.0, 2.4])
+        assert [b["mw"] for b in m2b["bands"]] == [100.0, 50.0], m2b["bands"]
+        assert m2b["meta"]["marker_confidence"]["ok"] is True, m2b["meta"]["marker_confidence"]
+        rep2 = _roundtrip(m2b, png2, namesb, 2, low=False)
+        assert len(rep2["calibration"]["points"]) == 2, rep2["calibration"]
+        inb = [b["mw_kda"] for ln in rep2["lanes"] if not ln["marker"] for b in ln["bands"]
+               if 1.0 <= b["y_cm"] <= 2.4]
+        assert any(v is not None for v in inb), inb                         # 两点之间：插得出值
+        assert all(b["mw_kda"] is None for ln in rep2["lanes"] if not ln["marker"] for b in ln["bands"]
+                   if b["y_cm"] < 1.0 or b["y_cm"] > 2.4)                     # 区间外：不外推
+    ok += 1
+
+    # 140) 拖 band 线**不认证**标定（ep-bdt 契约）：低置信文档把 band 线挪 0.1 cm 后读回，
+    #      marker_confidence.ok 仍是 false、报告仍带 low_confidence 与具体提示 —— 没有「改过线就清标记」的自动分支。
+    with tempfile.TemporaryDirectory() as td:
+        gd_ = os.path.join(td, "gel.png")
+        _synth_wells(gd_, first_cm=0.70, pitch_cm=0.52, ladder_rows_cm=[1.0, 1.6, 2.3])
+        pngd_ = open(gd_, "rb").read()
+        md_, _sd_ = workbench.from_image(pngd_, 8.6, 6.25, 15, 0.52, namesd, ["100", "70", "50"], 1,
+                                         marker_rows_cm=[1.0, 1.6, 2.3])
+        md_["meta"]["marker_confidence"] = {"ok": False, "picked": 3, "need": 3, "gate": "断崖不够",
+                                            "notes": ["marker 泳道 1 的剖面上叫出 4 条带，比标签的 3 个 MW 槽多 1 条"]}
+        repd_ = profiles.analyze(md_, pngd_, namesd)
+        docd_ = vc_file.loads(vc_file.dumps(figure.build_document(md_, repd_, pngd_, "t")))[0]
+        bl_ = [n for n in vc_file.lay_children(vc_file.layer_by_name(docd_["document"], "marker bands"))
+               if n["name"] == "band 70"]
+        for a_ in bl_[0]["kind"]["path"]["subpaths"][0]["anchors"]:
+            a_["p"][1] += 0.1 * vc_file.PT_PER_CM                          # 用户把这条线往下拖 0.1 cm
+        mback, _nbk = workbench.from_document(docd_["document"])
+        confd_ = mback["meta"]["marker_confidence"]
+        assert confd_["ok"] is False and confd_["gate"] == "断崖不够", confd_
+        rep_low_ = _gp._mark_low_confidence(mback, profiles.analyze(mback, pngd_, namesd))
+        assert rep_low_["calibration"]["low_confidence"] is True
+        assert "置信度低" in rep_low_["notes"][0]
+        assert any("多 1 条" in n for n in rep_low_["notes"]), rep_low_["notes"]   # 具体提示也进报告
+        assert rep_low_["notes"].count(rep_low_["notes"][0]) == 1                   # 去重
+    ok += 1
+
+    # 141) 旧字段兼容（ep-blz 验收）：旧文档 ep-meta 只有 draft=true → 读回转成 marker_confidence.ok=false
+    #      （不静默丢置信），导出只写 low_confidence；旧导出里叫 draft 的布尔值也认，输出仍只写新键。
+    with tempfile.TemporaryDirectory() as td:
+        gx_ = os.path.join(td, "gel.png")
+        _synth_wells(gx_, first_cm=0.70, pitch_cm=0.52, ladder_rows_cm=[1.0, 1.6, 2.3])
+        pngx_ = open(gx_, "rb").read()
+        mx_, _sx_ = workbench.from_image(pngx_, 8.6, 6.25, 15, 0.52, namesd, ["100", "70", "50"], 1,
+                                         marker_rows_cm=[1.0, 1.6, 2.3])
+        repx_ = profiles.analyze(mx_, pngx_, namesd)
+        topx_ = vc_file.loads(vc_file.dumps(figure.build_document(mx_, repx_, pngx_, "t")))[0]
+        mt_ = [n for n in vc_file.lay_children(vc_file.layer_by_name(topx_["document"], "ep-meta"))
+               if n["name"] == "ep-meta"][0]
+        mo_ = json.loads(vc_file.text_info(mt_)["text"])
+        mo_.pop("marker_confidence", None)
+        mo_["draft"] = True
+        mt_["kind"]["runs"][0]["text"] = json.dumps(mo_, ensure_ascii=False, separators=(",", ":"))
+        mleg, _nl = workbench.from_document(topx_["document"])
+        assert mleg["meta"].get("marker_confidence", {}).get("ok") is False, mleg["meta"]
+        assert "draft" not in mleg["meta"], mleg["meta"]
+        # main 上的真实旧格式是字典：draft = {picked, need, gate}，三个值都要搬过来
+        mo_["draft"] = {"picked": 2, "need": 3, "gate": "断崖不够"}
+        mt_["kind"]["runs"][0]["text"] = json.dumps(mo_, ensure_ascii=False, separators=(",", ":"))
+        mdict, _nd = workbench.from_document(topx_["document"])
+        cdict = mdict["meta"].get("marker_confidence") or {}
+        assert cdict.get("ok") is False and cdict.get("picked") == 2 and cdict.get("need") == 3, cdict
+        assert cdict.get("gate") == "断崖不够" and "draft" not in mdict["meta"], mdict["meta"]
+        data_leg = json.loads(json.dumps(workbench_io.build_export(topx_["document"], mleg)))
+        assert data_leg["low_confidence"] is True and "draft" not in data_leg, data_leg
+        old_exp = {"schema": workbench_io.SCHEMA, "version": workbench_io.VERSION,
+                   "gel": {"width_cm": 8.6, "height_cm": 6.25},
+                   "window": {"top_cm": 0.15, "bottom_cm": 6.06},
+                   "marker_lane": 1, "lanes": data_leg["lanes"], "bands": data_leg["bands"], "draft": True}
+        good_leg = workbench_io.validate_export(old_exp, mleg)
+        assert good_leg["low_confidence"] is True and "draft" not in good_leg, good_leg
+        old_exp_dict = dict(old_exp, draft={"picked": 2, "need": 3, "gate": "断崖不够"})   # 字典也认
+        good_leg2 = workbench_io.validate_export(old_exp_dict, mdict)
+        assert good_leg2["low_confidence"] is True and "draft" not in good_leg2, good_leg2
+        for invalid in (dict(old_exp, draft="true"), dict(old_exp, low_confidence=None)):
+            try:
+                workbench_io.validate_export(invalid, mleg)
+            except RuntimeError as exc:
+                assert "low_confidence 必须是 true/false" in str(exc), str(exc)
+            else:
+                raise AssertionError("旧字段兼容不应放过无效的置信字段类型")
+        _ops_leg, meta_leg, _l, _w = workbench_io.plan_import(topx_["document"], mleg, good_leg)
+        assert meta_leg["marker_confidence"]["ok"] is False, meta_leg
+    ok += 1
+
     print("selftest %d/%d 通过" % (ok, ok))
     return 0
+
+
+def _blank_profile():
+    """空白胶面（平灰 200）的一维剖面：profiles.pick_marker 的空图用例（ranked = []）。"""
+    ys = [k / 100.0 for k in range(int(6.25 * 100))]
+    gs = [200.0] * len(ys)
+    return ys, gs
 
 
 def _walk_keys(o):

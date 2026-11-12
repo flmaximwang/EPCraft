@@ -3,7 +3,7 @@
 """selftest_workbench_io：Workbench export/import 的纯数据自检（不开 VectorCraft、不读用户文件）。
 
 覆盖：导出字段/活标签名、schema 与有限数字校验、胶面尺寸绑定、泳道计数变化、window/band/trim/
-sample band 的真实几何 roundtrip、lane 名重定、草稿标记跨文档传播，以及旧文档缺 peak_auto 时
+sample band 的真实几何 roundtrip、lane 名重定、低置信标记跨文档传播，以及旧文档缺 peak_auto 时
 拒绝无法保证的 sample band 导入。导入计划用 figure.apply_ops_json（与活文档执行器一一对应）
 落到内存文档上，再用 workbench.from_document 读回，因此测的是真正的几何改动。
 """
@@ -32,7 +32,7 @@ def _png(w, h, rgb=(128, 128, 128)):
             + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
 
 
-def _build(lanes=None, bands=None, marker_lane=1, window=None, names=None, draft=None,
+def _build(lanes=None, bands=None, marker_lane=1, window=None, names=None, low_confidence=None,
            peaks=(), labels=None, meta_extra=None, gel=None):
     """内存 .vectorcraft 文档 + 模型：Workbench 画板、全部图层、gel 图、ep-meta、label lane n。"""
     lanes = lanes or [{"left_cm": 0.1, "right_cm": 1.2, "trimmed": False},
@@ -46,8 +46,8 @@ def _build(lanes=None, bands=None, marker_lane=1, window=None, names=None, draft
     centres = [round((ln["left_cm"] + ln["right_cm"]) / 2.0, 4) for ln in lanes]
     meta = {"lane_names": list(names), "prev_centres_cm": centres,
             "bands": [[float(b["mw"]), float(b["y_cm"])] for b in bands], "dpi": 127}
-    if draft:
-        meta["draft"] = True
+    if low_confidence:
+        meta["marker_confidence"] = {"ok": False, "picked": 3, "need": 3, "gate": "断崖不够", "notes": []}
     if meta_extra:
         meta.update(meta_extra)
     model = {"gel": dict(gel), "window": dict(window),
@@ -105,7 +105,7 @@ def test_export_shape():
     assert data["lanes"][2]["trimmed"] is False
     assert data["sample_bands"] == [{"lane": 2, "y_cm": 1.6}, {"lane": 2, "y_cm": 2.7},
                                     {"lane": 3, "y_cm": 2.0}]
-    assert data["draft"] is False
+    assert data["low_confidence"] is False
     # 没有 sample bands 图层的文档：键应当缺席（import 不碰刻度）
     lay = vc_file.layer_by_name(document, "sample bands")
     document["layers"] = [l for l in document["layers"] if l["id"] != lay["id"]]
@@ -193,7 +193,7 @@ def test_geometry_and_names_roundtrip():
     # 缺 peak_auto 的旧文档会拒绝；这份有 peak_auto → override 保证 sync 复现导入刻度
     m2_meta = doc_edit._meta(after)[1]
     assert m2_meta["peak_overrides"]["1"] == {"add": [1.9]}, m2_meta["peak_overrides"]
-    assert "draft" not in m2_meta
+    assert "marker_confidence" not in m2_meta
     # 再导一次应当完全等值
     data2 = _export(after, m2)
     assert data2["window"] == data["window"] and data2["marker_lane"] == data["marker_lane"]
@@ -226,25 +226,27 @@ def test_lane_count_change_rebases_names():
     assert ops2 == [], ops2
 
 
-def test_draft_flag_propagation():
-    _sdoc, sdoc, smodel = _build(draft=True)
+def test_low_confidence_flag_propagation():
+    _sdoc, sdoc, smodel = _build(low_confidence=True)
     source = _export(sdoc, smodel)
-    assert source["draft"] is True
+    assert source["low_confidence"] is True
 
-    _tdoc, tdoc, tmodel = _build(draft=False)
+    _tdoc, tdoc, tmodel = _build(low_confidence=False)
     clean = workbench_io.validate_export(source, tmodel)
     ops, merged, lines, _w = workbench_io.plan_import(tdoc, tmodel, clean)
-    assert merged["draft"] is True                          # 源草稿 → 目标也是草稿
+    assert merged["marker_confidence"]["ok"] is False        # 源低置信 → 目标也是低置信
     assert merged["bands"] == [[b["mw"], b["y_cm"]] for b in clean["bands"]]
     after = _apply(tdoc, ops)
-    assert doc_edit._meta(after)[1]["draft"] is True
+    assert doc_edit._meta(after)[1]["marker_confidence"]["ok"] is False
 
-    # 反过来：导入非草稿永远不“证明”已有草稿
-    _tdoc2, tdoc2, tmodel2 = _build(draft=True)
+    # 反过来：导入非低置信永远不“证明”已有低置信标记（false 不清除）
+    _tdoc2, tdoc2, tmodel2 = _build(low_confidence=True)
     clean2 = workbench_io.validate_export(source, tmodel2)
-    clean2["draft"] = False
+    clean2["low_confidence"] = False
     ops2, merged2, _l, _w = workbench_io.plan_import(tdoc2, tmodel2, clean2)
-    assert merged2.get("draft") is True and "draft" in doc_edit._meta(_apply(tdoc2, ops2))[1]
+    assert merged2["marker_confidence"]["ok"] is False
+    assert doc_edit._meta(_apply(tdoc2, ops2))[1]["marker_confidence"]["ok"] is False
+
 
 
 def test_legacy_without_peak_auto_refuses_sample_edits():
@@ -275,7 +277,7 @@ def test_import_file_is_valid_json_only():
 
 TESTS = (test_export_shape, test_validate_rules, test_unmodified_roundtrip_is_noop,
          test_geometry_and_names_roundtrip, test_lane_count_change_rebases_names,
-         test_draft_flag_propagation, test_legacy_without_peak_auto_refuses_sample_edits,
+         test_low_confidence_flag_propagation, test_legacy_without_peak_auto_refuses_sample_edits,
          test_import_file_is_valid_json_only)
 
 
