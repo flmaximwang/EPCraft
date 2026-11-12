@@ -11,6 +11,7 @@ Tris-Tricine 胶上 log(MW) 对迁移距离不是直线，最小二乘会把 250
 """
 import math
 import re
+import statistics
 
 
 def parse_mw(text):
@@ -60,7 +61,7 @@ def split_peak_note(ys):
     if len(ys) < 3:
         return None
     gaps = [b - a for a, b in zip(ys, ys[1:])]
-    med = sorted(gaps)[len(gaps) // 2]
+    med = statistics.median(gaps)
     i = min(range(len(gaps)), key=lambda k: gaps[k])
     if gaps[i] >= SPLIT_GAP_RATIO * med:
         return None
@@ -74,6 +75,8 @@ def _log_at(cal, y):
     两点之间按这条胶自己的局部斜率走。区间外给 None（不拿端点斜率外推 —— 不可信）。
     """
     ps = cal["pairs"]
+    if len(ps) < 2:                            # 0 / 1 条标定线：插不出值，但唯一那个点仍留在报告里
+        return None, True
     if y < ps[0][0] or y > ps[-1][0]:
         return None, True
     for (y0, m0), (y1, m1) in zip(ps, ps[1:]):

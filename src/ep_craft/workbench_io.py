@@ -284,9 +284,8 @@ def validate_export(data, target_model):
     bands = []
     if not isinstance(raw_bands, list):
         errs.append("bands 必须是数组")
-    elif len(raw_bands) < 3:
-        errs.append("marker 条带线只有 %d 条，至少要 3 条" % len(raw_bands))
     else:
+        # 0 / 1 / 2 条 band 线都合法（ep-bdt）：标定点少 → 分子量估不出，报告标低置信，不是导出错误。
         prev_y = prev_mw = None
         for i, raw in enumerate(raw_bands, 1):
             if not isinstance(raw, dict):
@@ -305,9 +304,14 @@ def validate_export(data, target_model):
                 prev_mw = mw
             bands.append({"mw": mw, "y_cm": y})
 
-    low = data.get("low_confidence", False)
+    # 旧导出里这一项叫 draft（布尔）：兼容读入，输出永远只写 low_confidence。
+    # 旧文档的 ep-meta 里 draft 是字典，压到导出时也只当「有标记」= true。
+    low = data.get("low_confidence", data.get("draft", False))
     if not isinstance(low, bool):
-        errs.append("low_confidence 必须是 true/false（收到 %r）" % (low,))
+        if data.get("low_confidence") is None and data.get("draft"):
+            low = True
+        else:
+            errs.append("low_confidence 必须是 true/false（收到 %r）" % (low,))
 
     sample = data.get("sample_bands", _MISSING)
     sample_out = None

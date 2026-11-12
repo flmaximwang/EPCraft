@@ -232,7 +232,7 @@ def pick_marker(ys, gs, px_per_cm, need, gap_ratio=GAP_RATIO, min_prom=MARKER_MI
         info["reason"] = "局部极小只有 %d 个，要 %d 个" % (len(ranked), need)
     top = ranked[:need]
     rows = sorted((_band_row(ys, dark, px_per_cm, i, prom) for i, prom in top), key=lambda r: r["y_cm"])
-    if not top or not info["reason"]:
+    if top and not info["reason"]:                 # ranked 为空（空白图）时没有 top[-1]：只报 a 闸门的原因
         nth = top[-1][1]
         nxt = ranked[need][1] if len(ranked) > need else None   # 闸门 b：断崖
         info.update(nth=round(nth, 2), next=None if nxt is None else round(nxt, 2),
@@ -337,11 +337,13 @@ def analyze(model, png, lane_names, overrides=None, raw=None):
     top = max(0.0, model["window"]["top_cm"])
     bottom = min(model["gel"]["height_cm"], model["window"]["bottom_cm"])
     pairs = [(b["y_cm"], b["mw"]) for b in model["bands"]]
-    if len(pairs) < 3:
-        raise RuntimeError("marker 条带线不足 3 条，无法标定")
-    cal = build_cal(pairs)
+    # 标定点不足也照常出报告（票 ep-blz 验收）：2 条 = 只在两点之间插值；0/1 条 = 插不出值，
+    # 样品带 mw_kda 给 None、calibration.points 如实写空/单点，**不补造带**。
+    cal = build_cal(pairs) if len(pairs) >= 2 else {"pairs": sorted(pairs)}
     ovs = overrides if isinstance(overrides, dict) else {}
     lanes, notes = [], []
+    if len(pairs) < 2:
+        notes.append("标定点不足 2 条（%d 条 band 线）：样品分子量无法估计" % len(pairs))
     for i, ln in enumerate(model["lanes"], 1):
         ys, gs = lane_profile(gray, w, h, ppc, ln["left_cm"], ln["right_cm"], top, bottom)
         base, ink, sm = ink_trace(gs, ppc)

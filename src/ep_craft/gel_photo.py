@@ -315,12 +315,21 @@ LOW_CONFIDENCE_NOTE = "标定置信度低（marker 泳道的带位置没通过�
 
 
 def _mark_low_confidence(model, report):
-    """marker_confidence.ok = false → 报告也标上（calibration.low_confidence = true，注里放第一条）。返回 report。"""
+    """marker_confidence → 报告：ok = false 标 calibration.low_confidence，两种情况都把具体提示带进 notes。
+
+    低置信时通用注放第一条；ok 时只并 notes、不加警告。具体提示（多带 / 缺带 / 疑似劈峰）都进
+    report["notes"]（去重）—— fig.mw.json 的 notes 是用户唯一能看的地方，说清为什么不够，也记住
+    「多出的带没落线」这类事实。返回 report。"""
     conf = model["meta"].get("marker_confidence") or {}
-    if not conf.get("ok", True):
+    notes = [n for n in (conf.get("notes") or []) if n]
+    low = not conf.get("ok", True)
+    if low:
         report["calibration"]["low_confidence"] = True
-        report["notes"] = ([LOW_CONFIDENCE_NOTE] +
-                           [n for n in report["notes"] if n != LOW_CONFIDENCE_NOTE])
+        if conf.get("gate"):
+            notes.append(conf["gate"])
+        report["notes"] = list(dict.fromkeys([LOW_CONFIDENCE_NOTE] + notes + list(report["notes"])))
+    elif notes:
+        report["notes"] = list(dict.fromkeys(notes + list(report["notes"])))
     return report
 
 
@@ -504,15 +513,12 @@ def cmd_sync(args):
         model["meta"]["crop"] = cs["crop"]               # plan_sync 把整份 meta（含 crop）写回 ep-meta
     png = cs["png"]
     layout = old.get("profiles_layout") or figure.PROFILE_LAYOUT
-    # 用户动过 band 线（或改过名字/位置）→ 位置不再只是 detector 的猜测：把低置信标记去掉。
-    # 闸门（gate）记的是 detector 当时看到的剖面，也一并清；notes 里的历史提示保留（它们说的是事实）。
+    # 低置信标记**不会**因为拖过 band 线就自动清掉（ep-bdt 契约：拖线不认证标定）。
+    # 用户认为标定没问题，就自己把 band 线摆好并在 ep-meta 里把 marker_confidence.ok 改成 true；
+    # sync 只保证这一键存在且是 dict，读写的仍是文档里的那份。
     conf = model["meta"].get("marker_confidence")
     if not isinstance(conf, dict):
-        conf = {}
-    if not conf.get("ok", True) and not _same_bands(old.get("bands"), model["bands"]):
-        conf.update(ok=True, gate=None)
-        model["meta"]["marker_confidence"] = conf
-        print("[i] band 线改过了：去掉低置信标记")
+        model["meta"]["marker_confidence"] = {}
     # ---- 样品带：文档里的刻度 vs 上一轮 peak_auto → 逐道 override（spec §7.5）。必须在 analyze 之前：
     #      这一轮的报告和重建的刻度都要用新 override；_meta_state 随后写的 peak_auto 仍是抑制之前的检测器叫带。
     #      --reset-peaks：被清的道这一轮不差分（文档里那批刻度正是产生这些 override 的旧线，差分会把
@@ -556,13 +562,6 @@ def cmd_sync(args):
     model["meta"] = meta
     _ask_names(model)
     return 0
-
-
-def _same_bands(prev, bands, tol=0.005):
-    """ep-meta 里上一次的 band 线 [[mw, y], …] 与现在的一样（MW 相同、y 差 < tol cm）？"""
-    a = sorted((float(mw), float(y)) for mw, y in (prev or []))
-    b = sorted((float(x["mw"]), float(x["y_cm"])) for x in bands)
-    return len(a) == len(b) and all(p[0] == q[0] and abs(p[1] - q[1]) < tol for p, q in zip(a, b))
 
 
 # ---------------------------------------------------------------- edit

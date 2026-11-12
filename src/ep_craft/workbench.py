@@ -10,6 +10,7 @@
                                                              相邻泳道首尾相接（泳道 i 的 right = 泳道 i+1 的 left）
      "bands":  [{"mw", "y_cm"}],                             marker 条带线，自上而下
      "marker_lane": n,                                       1 起；由条带线落在哪条泳道里决定
+                                                             （0 条线时取 ep-meta 记的那个）
      "meta":   {...}}                                        ep-meta 文字对象里的运行元数据
 
 文档里的绑定靠**图层**，不靠对象名（用户新画的线没有名字也算）：
@@ -85,7 +86,7 @@ def from_record(rec, lane_names, marker_labels, marker_lane, marker_rows_cm=None
     marker_rows_cm= 手工标定的 marker 行（cm）；省略 = 用 record 里该泳道探到的条带；
     trim          = 要放进 trimmed 图层的泳道号；
     window        = (top_cm, bottom_cm)；省略 = 上沿让开加样孔 0.15 cm、下沿让开 3%。
-    条带数与标签需要的行数（rows 求和）对不上 → 拒绝（不硬配，同 render 的老闸门）。
+    标定行按 y 升序直接挂 MW 槽（ep-bdt）：0/1/2 行都收，数量对不上只记进 marker_confidence。
     """
     gel = {"width_cm": float(rec["gel"]["width_cm"]), "height_cm": float(rec["gel"]["height_cm"])}
     src = sorted(rec["lanes"], key=lambda ln: ln["x_cm"])
@@ -197,13 +198,22 @@ def _assemble(gel, lanes, marker_rows_cm, lane_names, marker_labels, marker_lane
 
     m.update(lane_names=list(lane_names),
              marker_labels=[_label_meta(e) for e in entries],
-             prev_centres_cm=[round((ln["left_cm"] + ln["right_cm"]) / 2.0, 4) for ln in lanes])
+             prev_centres_cm=[round((ln["left_cm"] + ln["right_cm"]) / 2.0, 4) for ln in lanes],
+             # ep-meta 记一份 marker 泳道：0 条 band 线时文档里没有线可量，读回只能靠它
+             marker_lane=int(marker_lane))
     # 置信信息：闸门（pick_marker）只决定这里，不决定成败。picked = 真落线的条数。
     # ratio / nth / next 是断崖诊断（render 全不过闸门时拿 ratio 挑道、终端打印用），不影响语义。
     g = gate or {}
-    m["marker_confidence"] = {"ok": bool(g.get("ok", True)) and len(rows) == len(mws),
-                              "picked": len(bands), "need": len(mws),
-                              "gate": None if g.get("ok", True) else g.get("reason"),
+    # ok = 闸门过 + 每个 MW 槽都挂上了 + 没有劈峰提示。只比 len(rows) == len(mws) 不够：
+    # rows 多于数字时计数可能相等，而槽里有 None → 实际落线更少。
+    full = len(rows) == len(mws) and all(mw is not None for mw in mws)
+    ok = bool(g.get("ok", True)) and full and not split
+    gate_reason = None if g.get("ok", True) else g.get("reason")
+    if not full and not gate_reason:
+        gate_reason = "检出 %d 条带、MW 槽 %d 个、实际落线 %d 条" % (len(rows), len(mws), len(bands))
+    if split and not gate_reason:
+        gate_reason = split
+    m["marker_confidence"] = {"ok": ok, "picked": len(bands), "need": len(mws), "gate": gate_reason,
                               "ratio": g.get("ratio"), "nth": g.get("nth"), "next": g.get("next"),
                               "notes": notes}
     model = {"gel": gel, "window": {"top_cm": round(float(top), 4), "bottom_cm": round(float(bottom), 4)},
@@ -366,6 +376,21 @@ def from_document(document):
     else:
         notes.append("没有 ep-meta 文字对象 —— 泳道名匹配退回按顺序")
 
+    # 旧文档的草稿标定（meta.draft）就是旧版的低置信标记：换成新键，不静默丢掉置信信息。
+    # 旧格式有两种：`draft = true`（布尔）和 `draft = {"picked","need","gate"}`（字典，main 上的实际形状）。
+    if "marker_confidence" not in meta:
+        legacy = meta.get("draft")
+        if legacy:
+            picked = need = gate = None
+            if isinstance(legacy, dict):
+                picked, need = legacy.get("picked"), legacy.get("need")
+                gate = legacy.get("gate") or "旧文档的草稿标定"
+            else:
+                gate = "旧文档的草稿标定"
+            meta["marker_confidence"] = {"ok": False, "picked": picked, "need": need,
+                                         "gate": gate, "notes": []}
+    meta.pop("draft", None)
+
     # 泳道
     lanes = _shared_lanes(lines, cx, errs)
 
@@ -400,6 +425,15 @@ def from_document(document):
             errs.append("marker 条带线横跨了泳道 %s —— 它们应当都落在 marker 那一条泳道里" % hits)
         else:
             model["marker_lane"] = hits[0]
+    elif not errs:
+        # 一条 band 线都没有：marker 泳道只能来自 ep-meta（没有线可量）。缺了就明确报错，
+        # 而不是让 sync 在一份刚 render 出来的低置信文档上失败。
+        ml_meta = meta.get("marker_lane")
+        if isinstance(ml_meta, int) and 1 <= ml_meta <= len(lanes):
+            model["marker_lane"] = ml_meta
+        else:
+            errs.append("marker bands 图层里一条 band 线都没有，ep-meta 也没记 marker 泳道 —— "
+                        "重新 render，或在 ep-meta 里补 marker_lane")
     errs += validate(model, structural_only=bool(errs))
     if errs:
         raise WorkbenchError("Workbench 有 %d 处要改（什么都没动）：\n- %s" % (len(errs), "\n- ".join(errs)))
@@ -484,8 +518,7 @@ def validate(model, structural_only=False):
     if structural_only:
         return errs
     bands = model["bands"]
-    if len(bands) < 3:
-        errs.append("marker 条带线只剩 %d 条，标定至少要 3 条" % len(bands))
+    # 0/1/2 条 band 线也能交付（低置信、样品 MW 无法估计）：标定条数不是结构性问题（ep-blz 验收）。
     for a, b in zip(bands, bands[1:]):
         if b["mw"] >= a["mw"]:
             errs.append("条带线 band %s（y=%.2f cm）在 band %s（y=%.2f cm）下面，但分子量不更小 —— "
