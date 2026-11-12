@@ -48,7 +48,7 @@
       "id": "should-trigger-05",
       "type": "should_trigger",
       "prompt": "分子量标签整体错位了一位：70 kD 那个标签跑到别的带上了。",
-      "expected_behavior": "先看 `fig.mw.json` 的 `calibration.draft`：是 true 就是草稿标定（梯子道剖面不像梯子时 render 放的 band 线 —— 剖面最强的 N 个局部极小，没验证），MW 本来就不可信。否则多半是 band 线落在了错的峰上，或预设与梯子不符。在 Workbench 上把 `band <MW>` 线拖到对应的带上（或删掉梯子上没有的那条、改名），然后 `sync`：标定、MW、Figure 上的 marker 标签都跟着更新。若是预设本身选错（同货号不同体系），换预设重新 render。不要去改脚本放宽检查。",
+      "expected_behavior": "先看 `fig.mw.json` 的 `calibration.low_confidence`：是 true 就说明这份的 marker 标定没过闸门（低置信），MW 本来就只算带标记的参考值。看 `ep-meta.marker_confidence`（`ok/picked/need/gate/notes`）判断是闸门没过、还是叫出的条数少（`picked < need`：尾部几个 MW 没挂上，所以标签整体错位）。否则多半是 band 线落在了错的峰上，或预设与梯子不符。纠正走 Workbench：把 `band <MW>` 线拖到对应的带上（或删掉梯子上没有的那条、改名），然后 `sync` —— 标定、MW、Figure 上的 marker 标签都跟着更新；这是可选的核对，不是必经步骤，低置信标记不会因为拖线自动消失。若是预设本身选错（同货号不同体系），换预设重新 render。不要去改脚本放宽检查。",
       "notes": ""
     },
     {
@@ -103,9 +103,9 @@
     {
       "id": "should-trigger-13",
       "type": "should_trigger",
-      "prompt": "render 报错说 marker 泳道配不上，列了一串 y 值，怎么办？",
-      "expected_behavior": "梯子道的剖面不像梯子（前 N 名过不了断崖/下限闸门，或凑不出 N 个局部极小），render 已经按 `marker_lanes` 逐条试过，都不行就出了**草稿标定**（`[!] 草稿标定`）：文档照样出来，band 线先放在最显著的 N 个局部极小上（多半对，但没验证）。不重试、不调查、不绕检查：交付时明说 MW 还不可信，请用户在 Workbench 上把每条 `band <MW>` 线拖到梯子对应的带（梯子上没有的删掉），说一声后 sync —— band 线一动草稿标记就去掉。草稿上的 MW 不当结果报。下次同类照片可以提前防：列全梯子孔（`marker_lanes`）、梯子确实少的带从 markers.json 里删、并带写 `rows: 2`。",
-      "notes": "老的 y_px 手动标定已移除；render 出来后的手动标定 = 在 Workbench 上调 band 线再 sync。"
+      "prompt": "render 打出「低置信」说 marker 泳道未过标准，列了一串 y 值，怎么办？",
+      "expected_behavior": "梯子道的剖面不像梯子（前 N 名过不了断崖/下限闸门，或凑不出 N 条），render 已经按 `marker_lanes` 逐条试过，全不过就取了断崖比值最好的那条道：文档照出，band 线按序挂 MW，MW 照报，只把整份标成**低置信**（`[!] 低置信`、`ep-meta.marker_confidence`、`fig.mw.json` 的 `calibration.low_confidence: true`）。不重试、不调查、不绕检查：照常交付并明说 MW 未过标准、低置信；拖 `band <MW>` 线只是可选纠错，不要求用户先拖线再说，低置信标记也不会因为拖线就去掉。若 `marker_confidence.notes` 里有「识别条带偏多：… 疑似同一带劈成双峰，请微调」，照原话转告，不自动并峰。下次同类照片可以提前防：列全梯子孔（`marker_lanes`）、梯子确实少的带从 markers.json 里删、并带写 `rows: 2`。",
+      "notes": "老的 y_px 手动标定与「先拒绝、再让用户拖线」的流程都已移除；render 出来后的核对 = 在 Workbench 上调 band 线再 sync（可选）。"
     },
     {
       "id": "should-trigger-14",
@@ -237,7 +237,7 @@
       "id": "edge-case-32",
       "type": "edge_case",
       "prompt": "标注这 3 张 SDS-PAGE 图片。marker: WJ103 / 11 条（10% Tris-Tricine）；胶预设 mini-gel 15 孔。1464：Marker 2、8；裁剪成 2 块：2～7 一块，8～15 一块；Label：空、M、Total、Sup、…（15 个）。1477：裁剪成 2 块 2～7、8～13。1478：裁掉空泳道。",
-      "expected_behavior": "信息已给齐，不再提问。直接 doctor → 写 5 份 lanes.json（同一张照片切两块 = 两次 render、各自 --out 与互补的 --trim-lanes，marker_lanes 把落在保留范围内的梯子孔放第一）→ 一个 shell 循环跑完 5 次 render → 一次 magick identify 查 dpi → 一次性汇报。不读 references、不 dump markers.json、不跑 --help、不搜盘找旧输出、不先 probe、不写任何诊断脚本、不看照片。某次 render 打出 `[!] 草稿标定`（梯子道剖面不像梯子）：不重试、不调查，照常交付，明说这份的 MW 还不可信、请用户把 band 线拖到梯子的带上再说一声；不报草稿上的 MW。不扫 --rect、不平移胶面框。",
+      "expected_behavior": "信息已给齐，不再提问。直接 doctor → 写 5 份 lanes.json（同一张照片切两块 = 两次 render、各自 --out 与互补的 --trim-lanes，marker_lanes 把落在保留范围内的梯子孔放第一）→ 一个 shell 循环跑完 5 次 render → 一次 magick identify 查 dpi → 一次性汇报。不读 references、不 dump markers.json、不跑 --help、不搜盘找旧输出、不先 probe、不写任何诊断脚本、不看照片。某次 render 打出 `[!] 低置信`（梯子道未过标准）：不重试、不调查，照常交付（文档、fig.png、MW 表都在），在汇报里点名这份的 MW 低置信、未过标准；不要求用户先拖 band 线，也不因为低置信就不报 MW。不扫 --rect、不平移胶面框。",
       "notes": "来自 2026-10-23 会话：agent 在第一次 render 前写了 10 个诊断脚本、花了 13 分钟，用户两次抱怨慢和无效确认。"
     },
     {

@@ -6,7 +6,7 @@ compatibility: macOS; python3 (stdlib only), ImageMagick 7 (`magick`), VectorCra
 
 # Electrophoresis Labeling
 
-Turn a phone photo of a gel into a labeled figure at true physical size. Detection makes a first guess; the user fixes it by dragging lines in VectorCraft; the agent re-reads the lines and updates labels, curves, the figure and the MW report in place.
+Turn a phone photo of a gel into a labeled figure at true physical size. Detection makes a first guess — including the ladder bands, each carrying its MW from birth; correcting it by dragging lines in VectorCraft is optional. The agent re-reads the lines and updates labels, curves, the figure and the MW report in place.
 
 ## Scope
 
@@ -81,7 +81,7 @@ Detection is a **first guess the user corrects by hand** in VectorCraft. The age
 2. **Check the environment**: `ep-craft doctor` (or `PYTHONPATH=src python3 -m ep_craft doctor` from the repo root). Missing `magick` → install ImageMagick 7 (`brew install imagemagick`). Missing VectorCraft → stop; it is required (it exports `fig.png`). Port 7797 "VectorCraft running without --control" → ask the user to save and quit VectorCraft first.
 3. **Write `lanes.json`** (`labels` left to right, strings, `""` = blank lane without a label; `marker_lanes`) from the template. Use a library marker preset, or a copied `markers.json` (`labels` top to bottom, `rows: 2` for a close pair).
    - **One photo cut into several figures** ("2–7 one figure, 8–15 another"): one `render` per figure with its own `--out` (`IMG_x_A.vectorcraft`, `IMG_x_B.vectorcraft`) and `--trim-lanes` = every lane *outside* that figure. Same `labels`; in `marker_lanes` put the ladder well **inside** the kept range first, then the other ladder wells as fallbacks.
-4. **Skip `probe`.** Go straight to `render`. Run `probe` (no files, no app; prints the gel face, well seed and every lane's called band y values) only once, after `render` refused, to read which lanes call how many bands.
+4. **Skip `probe`.** Go straight to `render`. Run `probe` (no files, no app; prints the gel face, well seed and every lane's called band y values) only once, after a render that printed a low-confidence marker or a `识别条带偏多` note, to read which lanes call how many bands. A marker count mismatch is not a refusal any more — the document is already written.
 5. **Render** (run from the repository root so the repo-relative preset paths resolve):
    ```bash
    ep-craft figure render <photo> --out fig.vectorcraft \
@@ -89,12 +89,12 @@ Detection is a **first guess the user corrects by hand** in VectorCraft. The age
        --gel-size src/ep_craft/data/gel_size.json [--trim-lanes 1,2] [--dpi 300] [--profiles stack|strips] \
        [--label-angle 90] [--marker-label-angle 0]
    ```
-   It launches VectorCraft with `--control 7797` if needed, opens the document, exports `fig.png`, writes `fig.mw.json` and prints the MW table. It takes the ladder lane's N most prominent local minima (N from the labels, no noise threshold — see `references/photo-labeling-conventions.md` §7 "marker 道"). If no candidate ladder lane passes the two gates (a clear gap below the N-th peak, and that peak at least 1.5 gray levels), it still writes the document with a **draft calibration** (`[!] 草稿标定`): band lines on those N strongest minima but unverified, MW not trustworthy (checkpoint below). `--no-draft` refuses instead. An existing `fig.vectorcraft` is backed up to `fig.vectorcraft.bak`.
+   It launches VectorCraft with `--control 7797` if needed, opens the document, exports `fig.png`, writes `fig.mw.json` and prints the MW table. It takes the ladder lane's N most prominent local minima (N from the labels, no noise threshold — see `references/photo-labeling-conventions.md` §7 "marker 道") and **hangs each MW on the k-th band in order, right where it was detected** — detection and calibration are one step; there is nothing to pair or drag afterwards. It still writes the document when the ladder lane fails the two confidence gates (a clear gap below the N-th peak, and that peak at least 1.5 gray levels) or when fewer than N bands were called: you get k band lines with the first k MWs and a **low-confidence** marker (`[!] 低置信`; `marker_confidence` in `ep-meta`, `calibration.low_confidence: true` in `fig.mw.json`, checkpoint below) — the MW values are still reported, just not vouched for. Dragging `band <MW>` lines is only an optional correction, never a required step. An existing `fig.vectorcraft` is backed up to `fig.vectorcraft.bak`.
 6. **Check the dpi only**: `magick identify -format "%x %wx%h\n" fig.png` (one call for all outputs). The visual check is the user's: the document is open in VectorCraft.
 7. **Hand over** `fig.png` and say the document is open in VectorCraft. On the **Workbench** artboard the user can:
    - drag the cyan **lane** lines: they are separators, so neighbouring lanes share one line (n lanes = n+1 lines, every gap between two neighbouring lines is a lane); add one line to split a lane, delete one to merge two;
    - drag the orange **top** / **bottom** window lines (shared by all lanes);
-   - drag, delete or rename the magenta **`band <MW>`** lines (the name is the calibration value);
+   - drag, delete or rename the magenta **`band <MW>`** lines (the name is the calibration value; correcting the ladder is optional and only worth it when you disagree with a band position);
    - draw a short line in the `trimmed` layer inside a lane to drop that lane from the Figure (delete the mark to restore; the lane lines stay in `lanes`);
    - on the **Figure**, freely change label text, font, size, colour and angle (rotate a label), and add free text in `labels`;
    - on **Crop**, move / rotate / Shift-scale the green `crop` frame over the photo to fix the gel-face crop (aspect stays the preset's; Workbench lines keep their gel-face cm).
@@ -118,7 +118,7 @@ Detection is a **first guess the user corrects by hand** in VectorCraft. The age
 | `gel preset required (--gel-size FILE)` | Ask for the gel preset. `--gel-cm` only overrides width/height inside a preset. |
 | `[!] scale: 加样孔孔距 … 预设 lane_pitch_cm …` (>10 %) | Width scale or preset is off, or the photo is cropped (`--gel-lanes N`). Ask; don't guess. |
 | `看不清孔，预设间距居中` (no visible wells) | Lanes are an even comb at the preset pitch, not anchored. Tell the user to check the lane lines on the Workbench (special cases §3). |
-| `marker 泳道 n 配不上` then `[!] 草稿标定` | No listed ladder lane passed the gates (its profile does not look like a ladder), so render wrote a draft calibration from the closest lane. **Don't retry or investigate**: hand over and tell the user, plainly, that the MW values are not valid yet and that they should drag each `band <MW>` line onto its ladder band on the Workbench (delete ones the ladder lacks), then say when. `sync` drops the draft flag as soon as any band line changed; until then `fig.mw.json` has `calibration.draft: true` and the report's first note says so. Never quote draft MW values as results. Never sweep `--rect` / crop shifts or write scripts to hunt for a window that "fits". |
+| `[!] 低置信` (with `marker 泳道 n 未过标准` / `picked < need`) | No candidate ladder lane cleared the confidence gates (its profile does not look like a ladder), or fewer bands were called than the labels name — render still wrote everything: k band lines carrying the first k MWs in order, MW table filled in, `marker_confidence` in `ep-meta`, `calibration.low_confidence: true` and the report's first note saying so. **Don't retry or investigate**: hand over and say plainly that these MW values are below the usual standard and unverified. Dragging each `band <MW>` line onto its real ladder band (and deleting bands the ladder lacks) on the Workbench is the *optional* correction; then `sync`. Check `marker_confidence.notes` for `识别条带偏多：… 疑似同一带劈成双峰，请微调` — relay it as advice, don't merge peaks yourself and don't refuse. Never sweep `--rect` / crop shifts or write scripts to hunt for a window that "fits". |
 | `VectorCraft 在运行，但端口 7797 上没有控制口` | VectorCraft was opened normally. Ask the user to save and quit it, then re-run; the skill relaunches it with `--control`. |
 | render: `开着 fig.vectorcraft 而且有没存的改动` | The document is open with unsaved edits. Ask the user: save it (then `sync` is probably what they want) or pass another `--out`. |
 | sync: `Workbench 有 N 处要改（什么都没动）` | Nothing was changed. Relay every listed fix (fewer than 2 lane lines, a vertical line or a stray mark in `trimmed`, two lane lines on top of each other, window not exactly two horizontal lines or top below bottom, a band line not named `band <MW>`, band lines outside or across lanes, fewer than 3 bands, MW not decreasing downwards). Meanings: conventions §5. After the user fixes them, `sync` again. |
@@ -137,5 +137,5 @@ Detection is a **first guess the user corrects by hand** in VectorCraft. The age
 ## Done when
 
 - `fig.vectorcraft`, `fig.png` and `fig.mw.json` exist; `fig.png` has the intended dpi; the document is open in VectorCraft on the control port.
-- The reply includes the MW table (strongest band per lane; bands outside the ladder span are reported as having no number), the configs used, the script's warnings, which lanes are unnamed, and anything not verified. If lanes were spliced, it states the splice.
+- The reply includes the MW table (strongest band per lane; bands outside the ladder span are reported as having no number), the configs used, the script's warnings (including a low-confidence marker and any `识别条带偏多` note), which lanes are unnamed, and anything not verified. If lanes were spliced, it states the splice.
 - After every `sync`, the reply relays the printed change summary.
