@@ -251,8 +251,8 @@
       "id": "edge-case-34",
       "type": "edge_case",
       "prompt": "我在 Workbench 上误删了梯子的 band 线，现在只剩 1 条了，sync 说「标定点不足 2 条」，还能交付吗？",
-      "expected_behavior": "能，照样交付：sync 不会因为 band 线少于 3 条拒绝（旧「至少 3 条」规则已废）。标定如实记成单点（`fig.mw.json` 的 `calibration.points` 只有那一条，0 条时是 `[]`），样品带全部 `mw_kda: null`，报告注「标定点不足 2 条（k 条 band 线）：样品分子量无法估计」；文档、Figure、band 表照出。低置信标记保持原样：sync 不因为拖/删线新增或清除它（`ep-meta.marker_confidence` 里 render 时的 `ok` / `picked` / `need` 不会变）。要给回数字就把漏掉的 `band <MW>` 线画回去（名字带分子量）再 sync；只有 2 条线时就是两点之间插值。绝不补造标定点、不插假线；线全删光也能读回 marker 道（`ep-meta.marker_lane`）。",
-      "notes": "0/1 条带 → 样品 MW 无法估计但仍交付；2 条 → 两点插值；导入导出那一端仍要求 ≥ 3 条。"
+      "expected_behavior": "能，照样交付：sync 不会因为 band 线少于 3 条拒绝（旧「至少 3 条」规则已废）。标定如实记成单点（`fig.mw.json` 的 `calibration.points` 只有那一条，0 条时是 `[]`），样品带**全部** `mw_kda: null`（哪怕某条正好落在唯一那个点的 y 上也不给 —— 一个点定不出斜率），报告注「标定点不足 2 条（k 条 band 线）：样品分子量无法估计」；文档、Figure、band 表照出。低置信标记保持原样：sync 不因为拖/删线新增或清除它（`ep-meta.marker_confidence` 里 render 时的 `ok` / `picked` / `need` 不会变）。要给回数字就把漏掉的 `band <MW>` 线画回去（名字带分子量）再 sync；只有 2 条线时就是两点之间插值。绝不补造标定点、不插假线；线全删光也能读回 marker 道（`ep-meta.marker_lane`）。",
+      "notes": "0/1 条带 → 样品 MW 全部无法估计（单点也不估）但仍交付；2 条 → 正常两点插值；0/1/2 条导出导入都能往返。"
     }
   ]
 }

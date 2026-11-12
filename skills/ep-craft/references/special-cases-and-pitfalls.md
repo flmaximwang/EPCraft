@@ -52,7 +52,8 @@ render 按 `lanes.json` `marker_lanes`（再加 marker 预设的 `marker_lane`�
 - **多叫一两条 / 位置明显不对**：先 `probe` 看每道叫出的 y 与噪声；或换梯子孔。已经 render 出来时，在 Workbench 上拖 /
   删 / 改名 `band <MW>` 线，然后 sync —— 这是可选的核对与纠错，不做也能交付（带低置信标记）。
 - **只剩 0 / 1 条 band 线（标定被删没了）**：sync 不拒绝（旧「至少 3 条」规则已废，conventions §10a）：标定点如实记
-  `[]` 或单点，样品带 `mw_kda: null`、报告注「标定点不足 2 条…样品分子量无法估计」，文档 / Figure / band 表照出；
+  `[]` 或单点，样品带**全部** `mw_kda: null`（单点不估，哪怕 y 正好对上）、报告注「标定点不足 2 条…样品分子量无法估计」，
+  文档 / Figure / band 表照出；
   只剩 2 条时就在这两点之间插值。文档里已有的低置信标记保持原样（sync 不因为删线新增或清除它）。0 条线时 marker 道从 `ep-meta.marker_lane` 读回。要拿回数字就把漏掉的
   `band <MW>` 线画回去（或重新 render）—— 不要补造标定点。
 - **劈峰（同一带被叫成两条）**：`marker_confidence.notes` 出现 `识别条带偏多：y≈a 与 y≈b 疑似同一带劈成双峰，请微调`。
