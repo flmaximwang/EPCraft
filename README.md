@@ -6,9 +6,9 @@ An agent skill for **electrophoresis gel figures** (SDS-PAGE, agarose): turn a p
 
 ## What it does
 
-The skill is `ep-craft`. Detection makes a first guess, you correct it by dragging lines in VectorCraft, and the agent re-reads your lines and updates everything in place.
+The skill is `ep-craft`. Detection makes a first guess; each detected ladder band becomes a `band <MW>` line with its molecular weight already attached, so there is no pairing step. Correcting it by dragging lines in VectorCraft is optional, and the agent re-reads your lines and updates everything in place.
 
-1. **Render**: crop, straighten and rescale the gel photo to its real physical size. Seed lanes from the wells and marker lines from the ladder. Write an editable VectorCraft document.
+1. **Render**: crop, straighten and rescale the gel photo to its real physical size. Seed lanes from the wells and hang the marker's MWs on the ladder bands it detects (in order, at the detected positions). If the ladder lane does not look like a ladder, the figure and MWs are still produced, marked **low confidence** (`marker_confidence` in the document, `low_confidence` in `fig.mw.json`). Write an editable VectorCraft document.
 2. **Edit by hand** on the *Workbench* artboard: drag lane separators, band lines and the top/bottom window. Rename or restyle labels on the *Figure*.
 3. **Sync**: the agent reads the live document, recomputes profiles, bands and molecular weights, updates the Figure and re-exports. Running it twice changes nothing.
 
