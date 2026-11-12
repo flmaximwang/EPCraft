@@ -916,30 +916,34 @@ def _add_detect(a):
     a.add_argument("--rect", help="跳过自动找胶，直接给原图像素矩形 x0,y0,x1,y1")
 
 
-def main(argv=None):
-    argv = sys.argv[1:] if argv is None else argv
-    ap = argparse.ArgumentParser(description="凝胶电泳照片 → fig.vectorcraft（VectorCraft 里可改）+ fig.png + fig.mw.json")
-    sub = ap.add_subparsers(dest="cmd", required=True)
+def _add_removed(a):
+    for flag in REMOVED:
+        dest = "removed_" + flag.lstrip("-").replace("-", "_")
+        if flag in _FLAG_ONLY:
+            a.add_argument(flag, dest=dest, action="store_true", help=argparse.SUPPRESS)
+        else:
+            a.add_argument(flag, dest=dest, default=None, help=argparse.SUPPRESS)
 
-    add_detect = _add_detect
 
-    def add_removed(a):
-        for flag in REMOVED:
-            dest = "removed_" + flag.lstrip("-").replace("-", "_")
-            if flag in _FLAG_ONLY:
-                a.add_argument(flag, dest=dest, action="store_true", help=argparse.SUPPRESS)
-            else:
-                a.add_argument(flag, dest=dest, default=None, help=argparse.SUPPRESS)
+PROBE_HELP = "只探测：胶面、按加样孔放的泳道、每道叫出的带、marker 道的前 N 名；不写文件"
+RENDER_HELP = "出 fig.vectorcraft + fig.png（VectorCraft 导出）+ fig.mw.json"
+SYNC_HELP = "读 VectorCraft 里改过的 Workbench → 更新文档、fig.png、fig.mw.json"
+EDIT_HELP = "改进 Figure 的泳道 / 泳道名 / marker 泳道，然后 sync（不用手写控制口脚本）"
 
-    p = sub.add_parser("probe", help="只探测：胶面、按加样孔放的泳道、每道叫出的带、marker 道的前 N 名；不写文件")
+
+def _add_probe_parser(parent):
+    p = parent.add_parser("probe", help=PROBE_HELP)
     p.add_argument("image")
     p.add_argument("--markers", help="marker 配置 JSON（给了就打印 marker 候选道的前 N 名与闸门）")
     p.add_argument("--preset", help="从 marker 预设库里选一个（与 render 同）")
     p.add_argument("--lanes", help="泳道配置 JSON（marker_lanes 决定先试哪几道）")
-    add_detect(p)
+    _add_detect(p)
     p.set_defaults(func=cmd_probe)
+    return p
 
-    r = sub.add_parser("render", help="出 fig.vectorcraft + fig.png（VectorCraft 导出）+ fig.mw.json")
+
+def _add_render_parser(parent):
+    r = parent.add_parser("render", help=RENDER_HELP)
     r.add_argument("image")
     r.add_argument("--out", required=True, help="fig.vectorcraft（给 .png 也行，取同名 stem）")
     r.add_argument("--markers", help="marker 配置 JSON；单个配置，或预设库（如 data/markers.json，配合 --preset）")
@@ -958,11 +962,14 @@ def main(argv=None):
     r.add_argument("--no-mw", action="store_true", help="不写 fig.mw.json")
     r.add_argument("--no-draft", action="store_true",
                    help="marker 泳道的带数与标签都对不上时拒绝（默认：出草稿标定，band 线让用户拖到位）")
-    add_detect(r)
-    add_removed(r)
+    _add_detect(r)
+    _add_removed(r)
     r.set_defaults(func=cmd_render)
+    return r
 
-    s = sub.add_parser("sync", help="读 VectorCraft 里改过的 Workbench → 更新文档、fig.png、fig.mw.json")
+
+def _add_sync_parser(parent):
+    s = parent.add_parser("sync", help=SYNC_HELP)
     s.add_argument("doc", help="render 写出的 fig.vectorcraft")
     s.add_argument("--port", type=int, default=vc_control.DEFAULT_PORT, help="VectorCraft 控制口（默认 7797）")
     s.add_argument("--dpi", type=int, default=300, help="ep-meta 里没记 dpi 时用它")
@@ -971,8 +978,11 @@ def main(argv=None):
                    help="清掉这些泳道的样品带 override，这次 sync 直接按纯自动重叫带、重写刻度："
                         "--reset-peaks 3 12 只清道 3、12；--reset-peaks 不带道号清全部")
     s.set_defaults(func=cmd_sync)
+    return s
 
-    ed = sub.add_parser("edit", help="改进 Figure 的泳道 / 泳道名 / marker 泳道，然后 sync（不用手写控制口脚本）")
+
+def _add_edit_parser(parent):
+    ed = parent.add_parser("edit", help=EDIT_HELP)
     ed.add_argument("doc", help="render 写出的 fig.vectorcraft")
     ed.add_argument("--keep", help="只留这些泳道进 Figure（1 起，如 2-7）；其余画 trim 标记")
     ed.add_argument("--trim", help="拿掉这些泳道（如 1,8-15）；给空串 \"\" = 一条都不拿")
@@ -985,22 +995,92 @@ def main(argv=None):
     ed.add_argument("--port", type=int, default=vc_control.DEFAULT_PORT, help="VectorCraft 控制口（默认 7797）")
     ed.add_argument("--dpi", type=int, default=300, help="ep-meta 里没记 dpi 时用它")
     ed.set_defaults(func=cmd_edit)
+    return ed
 
-    t = sub.add_parser("selftest")
-    t.set_defaults(func=lambda a: selftest())
 
-    e = sub.add_parser("export", help=argparse.SUPPRESS)
-    e.add_argument("rest", nargs=argparse.REMAINDER)       # 老用法的任何参数都吞下，只为报那一句
-    e.set_defaults(func=_removed_export)
+def cmd_selftest_legacy(_args):
+    selftest()
+    return 0
+
+
+def cmd_selftest_all(_args):
+    """公开入口：先跑原来的算法自检，再跑新 CLI 与 Workbench IO 的自检。
+
+    新套件延迟 import，避免 selftest * → canvas_cli → gel_photo 的循环。"""
+    selftest()
+    from selftest_cli import selftest as cli_selftest
+    cli_selftest()
+    try:
+        from selftest_workbench_io import selftest as io_selftest
+    except ImportError as e:
+        raise RuntimeError("Workbench IO selftest missing: %s" % e)
+    io_selftest()
+    return 0
+
+
+def build_parser(canvas=False):
+    """→ argparse.ArgumentParser。canvas=False 保持旧的扁平命令（gel_photo.py 老用法与现有自检）；
+    canvas=True 是公开 ep-craft 的画板分组命令（见 canvas_cli.add_commands）。"""
+    ap = argparse.ArgumentParser(
+        prog="ep-craft" if canvas else None,
+        description=("Electrophoresis figures in VectorCraft, organized by canvas." if canvas else
+                     "凝胶电泳照片 → fig.vectorcraft（VectorCraft 里可改）+ fig.png + fig.mw.json"))
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    if canvas:
+        groups = {}
+        for name, help_text in (
+                ("figure", "Create, edit and export the Figure canvas"),
+                ("crop", "Probe photos and apply Crop canvas edits"),
+                ("workbench", "Edit lanes, sync, and export/import lane data"),
+                ("profile", "Recompute the Profiles canvas and sample peaks")):
+            group = sub.add_parser(name, help=help_text)
+            groups[name] = group.add_subparsers(dest="action", required=True)
+
+        _add_render_parser(groups["figure"])
+        _add_probe_parser(groups["crop"])
+        _add_sync_parser(groups["workbench"])
+        _add_edit_parser(groups["figure"])
+        # A sync updates every dependent canvas, so the same handler is offered on each canvas group.
+        _add_sync_parser(groups["figure"])
+        _add_sync_parser(groups["crop"])
+        _add_sync_parser(groups["profile"])
+        _add_edit_parser(groups["workbench"])
+
+        from canvas_cli import add_commands
+        add_commands(sub, groups)
+        t = sub.add_parser("selftest", help="自检：算法 + CLI + Workbench IO（不开 app）")
+        t.set_defaults(func=cmd_selftest_all)
+    else:
+        _add_probe_parser(sub)
+        _add_render_parser(sub)
+        _add_sync_parser(sub)
+        _add_edit_parser(sub)
+        e = sub.add_parser("export", help=argparse.SUPPRESS)
+        e.add_argument("rest", nargs=argparse.REMAINDER)       # 老用法的任何参数都吞下，只为报那一句
+        e.set_defaults(func=_removed_export)
+        t = sub.add_parser("selftest")
+        t.set_defaults(func=cmd_selftest_legacy)
 
     d = sub.add_parser("doctor", help="环境自检：python / magick / 字体 / VectorCraft / 数据文件")
     d.set_defaults(func=cmd_doctor)
+    return ap
 
+
+CANVAS_COMMANDS = ("launch", "figure", "crop", "workbench", "profile")
+
+
+def main(argv=None, canvas=None):
+    """canvas=None 时按第一个子命令自动选层级：新画板命令走 canvas，老扁平命令保持原样。"""
+    argv = sys.argv[1:] if argv is None else argv
+    if canvas is None:
+        canvas = bool(argv) and argv[0] in CANVAS_COMMANDS
+    ap = build_parser(canvas=canvas)
     args = ap.parse_args(argv)
     try:
         return args.func(args)
-    except RuntimeError as e:
-        # 一行错误、非 0 退出，不吐 traceback（缺预设、Workbench 读不通等都走这里）
+    except (RuntimeError, OSError, ValueError) as e:
+        # 一行错误、非 0 退出，不吐 traceback（缺预设、Workbench 读不通、控制口连不上等都走这里）
         print("[!] %s" % e, file=sys.stderr)
         return 2
 

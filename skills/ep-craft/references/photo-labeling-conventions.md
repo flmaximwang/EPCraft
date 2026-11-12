@@ -307,7 +307,7 @@ marker 标签表、**上一次的泳道中心**（给标签匹配用）、上一
 ## 9. `sync`
 
 ```bash
-python3 scripts/gel_photo.py sync fig.vectorcraft [--port 7797] [--dry-run] [--dpi 300] [--reset-peaks [N ...]]
+ep-craft figure sync fig.vectorcraft [--port 7797] [--dry-run] [--dpi 300] [--reset-peaks [N ...]]
 ```
 
 ### 9a. 做什么
@@ -378,7 +378,7 @@ else:   # 空白道（lanes.json 里是 ""）没有标签对象：在 labels 层
     r = c.execute("text.create", {"x": 0, "y": 0, "text": text, "size": 8, "font": "Arial", "justify": "center"})
     c.execute("object.setProps", {"id": r["id"], "name": name})
 EOF
-python3 <skill>/scripts/gel_photo.py sync fig.vectorcraft
+ep-craft figure sync fig.vectorcraft
 ```
 
 `text.setText` 保留第一段文字的样式（字体、字号、颜色不变）。要改样式也请用户在 app 里改，sync 不会覆盖。
@@ -400,7 +400,7 @@ n = next(x for x in vc_file.lay_children(vc_file.layer_by_name(c.document_json()
 c.execute("object.rotate", {"ids": [n["id"]], "angle": float(sys.argv[4]),
                             "origin": [n["kind"]["xf"][4], n["kind"]["xf"][5]]})
 EOF
-python3 <skill>/scripts/gel_photo.py sync fig.vectorcraft
+ep-craft figure sync fig.vectorcraft
 ```
 
 别用 `absolute:true` 去「设成 0°」：0.14 实测 `object.rotate {angle: 0, absolute: true}` 对已经是 90° 的文字是空操作；
@@ -408,7 +408,7 @@ python3 <skill>/scripts/gel_photo.py sync fig.vectorcraft
 
 ### 9d. `edit`：agent 替用户改（然后自动 sync）
 
-`gel_photo.py edit fig.vectorcraft [--keep 2-7 | --trim 1,8-15] [--marker-lane N] [--shift-labels K] [--labels a,b,…] [--label N=TEXT …] [--no-sync]`
+`ep-craft workbench edit fig.vectorcraft [--keep 2-7 | --trim 1,8-15] [--marker-lane N] [--shift-labels K] [--labels a,b,…] [--label N=TEXT …] [--no-sync]`（`figure edit` 是同一条命令的别名）
 
 `doc_edit.plan_edit` 读活文档（`workbench.from_document`，泳道号 = Workbench 上现在的泳道），生成与 `plan_sync` 同一套 op，
 `sync_exec.apply_ops_live(label="ep-craft edit")` 一个撤销步落下，然后照常 `sync`（第二个撤销步）。
@@ -425,26 +425,33 @@ python3 <skill>/scripts/gel_photo.py sync fig.vectorcraft
 
 ## 10. 命令
 
+公开入口是 `scripts/ep-craft`（把 `scripts/` 放进 `PATH`，或写成 `python3 scripts/ep-craft …`）。老扁平命令 `python3 scripts/gel_photo.py …` 仍然可用，只是不再作为文档入口。
+
 ```bash
-cd <本 skill 目录>
-python3 scripts/gel_photo.py doctor          # python / magick / 字体 / VectorCraft 版本与控制口 / 数据文件
-python3 scripts/gel_photo.py selftest        # 不读用户文件、不开 app；全绿即可（项数以当次输出为准）
+ep-craft doctor                             # python / magick / 字体 / VectorCraft 版本与控制口 / 数据文件
+ep-craft selftest                           # 不读用户文件、不开 app；全绿即可（项数以当次输出为准）
 
 # 只探测（不写文件、不开 app）：胶面、孔距/首道/孔深、每道叫出的带 y；给了 --markers 还打 marker 候选道的前 N 名与闸门
-python3 scripts/gel_photo.py probe photo.jpeg --gel-size data/gel_size.json [--gel-lanes N] [--rect x0,y0,x1,y1] \
+ep-craft crop probe photo.jpeg --gel-size data/gel_size.json [--gel-lanes N] [--rect x0,y0,x1,y1] \
         [--markers data/markers.json --preset 3 --lanes lanes.json]
 
 # 出文档 + fig.png + fig.mw.json
-python3 scripts/gel_photo.py render photo.jpeg --out fig.vectorcraft \
+ep-craft figure render photo.jpeg --out fig.vectorcraft \
         --markers data/markers.json --preset 3 --lanes lanes.json \
         --gel-size data/gel_size.json [--trim-lanes 1,2,14-15] [--dpi 300] [--profiles stack|strips] \
         [--label-angle 90] [--marker-label-angle 0] [--port 7797] [--no-mw]
 
 # 用户在 VectorCraft 里改完之后
-python3 scripts/gel_photo.py sync fig.vectorcraft [--dry-run]
+ep-craft figure sync fig.vectorcraft [--dry-run]
 
 # agent 替用户改 trim / marker 泳道 / 泳道名（§9d），然后自动 sync
-python3 scripts/gel_photo.py edit fig.vectorcraft [--keep 2-7] [--marker-lane 2] [--shift-labels 1] [--label 9=M]
+ep-craft workbench edit fig.vectorcraft [--keep 2-7] [--marker-lane 2] [--shift-labels 1] [--label 9=M]
+
+# 控制口 / 只导出 Figure 画板 / Workbench 数据交换（§13）
+ep-craft launch [fig.vectorcraft] [--port 7797]
+ep-craft figure export fig.vectorcraft [--out fig.png] [--dpi 300] [--background white] [--port 7797]
+ep-craft workbench export fig.vectorcraft [--out workbench.json]      # 省略 --out = stdout
+ep-craft workbench import fig.vectorcraft --input workbench.json [--no-sync] [--dpi 300]
 ```
 
 marker 泳道配不上时（闸门不过、或剖面凑不出 N 个局部极小），render 不再拒绝，而是出**草稿标定**（`[!] 草稿标定`）：
@@ -466,7 +473,7 @@ render 的其它开关（全是 stage 1；出图后也可以在 Crop 画板上�
 
 | 已移除 | 代替 |
 |---|---|
-| `export` 子命令、`fig.html` 编辑器、`fig.scene.json`、`fig.gel.png` | VectorCraft 里改；`sync` 重新导出 `fig.png` |
+| 老 `gel_photo.py export` 子命令、`fig.html` 编辑器、`fig.scene.json`、`fig.gel.png` | VectorCraft 里改；`ep-craft figure sync` 重新导出 `fig.png`。要单独导出 Figure 用 `ep-craft figure export DOC`（只出 PNG） |
 | `--svg` | `fig.vectorcraft` 本身是矢量文档；要 SVG 在 VectorCraft 里 File → Export |
 | `--no-editor` | 不再写 HTML 编辑器 |
 | `--debug` 覆盖图 | Workbench 画板（`lanes` / `window` / `marker bands` / `analysis` 图层） |
@@ -480,7 +487,7 @@ render 的其它开关（全是 stage 1；出图后也可以在 Crop 画板上�
 
 ## 12. 脚本模块
 
-`scripts/gel_photo.py` 只放 CLI 与编排（`probe` / `render` / `sync` / `edit`）；其余同目录、纯 stdlib：
+`scripts/ep-craft` 是公开入口，`scripts/gel_photo.py` 保留老的扁平命令并放 CLI 与编排（`probe` / `render` / `sync` / `edit`）；其余同目录、纯 stdlib：
 
 | 模块 | 承担 |
 |---|---|
@@ -502,4 +509,74 @@ render 的其它开关（全是 stage 1；出图后也可以在 Crop 画板上�
 | `vc_control.py` | 控制口客户端：连接/启动、对话框、存盘轮询、导出核对、撤销组 |
 | `sync_exec.py` | 把 `plan_sync` 的操作落到活文档上 |
 | `env_check.py` | `doctor` |
-| `selftest.py`、`selftest_sync.py`、`selftest_crop.py` | `selftest`（`selftest_sync` 用假控制口测 sync 执行器；`selftest_crop` 测裁切框几何与读回） |
+| `canvas_cli.py` | 公开层级命令：`launch`、`figure export`、`workbench export` / `import` 的参数、路径保护与错误边界 |
+| `workbench_io.py` | Workbench JSON 的导出 / 导入与整份校验（§13） |
+| `selftest.py`、`selftest_sync.py`、`selftest_crop.py`、`selftest_cli.py`、`selftest_workbench_io.py` | `selftest` 的各套件（`selftest_sync` 用假控制口测 sync 执行器；`selftest_crop` 测裁切框几何与读回；`selftest_cli` 测命令树与分发；`selftest_workbench_io` 测 JSON 往返与校验） |
+
+## 13. Workbench 数据交换（`workbench_io.py`）
+
+两个公开命令，读写的是**泳道数据**，不是 render 的配置（`lanes.json` / `markers.json`，§1），也不是 MW 报告（`fig.mw.json`，§7）：
+
+```bash
+ep-craft workbench export fig.vectorcraft [--out workbench.json]   # 省略 --out => JSON 写到 stdout
+ep-craft workbench import fig.vectorcraft --input workbench.json [--no-sync] [--dpi 300] [--port 7797]
+```
+
+导出连控制口读**活文档**（没开就打开），未存盘的泳道名也会带上；所有几何量都是胶面 cm（原点 = 胶面左上角，与 §4/§5 同一口径）。导入先整份校验，再改活文档，全部操作落在**一个**撤销组 `ep-craft workbench import` 里；默认随后 sync（刷新 Figure / Profiles / `fig.png` / `fig.mw.json`），`--no-sync` 则只改文档、不存盘也不刷新。
+
+### 13a. JSON 格式（`version: 1`）
+
+```json
+{
+  "schema": "ep-craft-workbench-lanes",
+  "version": 1,
+  "doc": "/tmp/fig.vectorcraft",
+  "gel": {"width_cm": 5.0, "height_cm": 3.5},
+  "window": {"top_cm": 0.15, "bottom_cm": 3.395},
+  "marker_lane": 1,
+  "draft": true,
+  "lanes": [
+    {"left_cm": 0.1, "right_cm": 0.5, "trimmed": false, "name": "M"},
+    {"left_cm": 0.5, "right_cm": 0.9, "trimmed": false, "name": "WT"}
+  ],
+  "bands": [
+    {"mw": 100, "y_cm": 0.8},
+    {"mw": 50, "y_cm": 1.4},
+    {"mw": 20, "y_cm": 2.2}
+  ],
+  "sample_bands": [{"lane": 2, "y_cm": 1.6}]
+}
+```
+
+| 键 | 含义 |
+|---|---|
+| `schema` / `version` | 固定 `"ep-craft-workbench-lanes"` / `1`（只接受 v1，别的版本报错并点名 v1）。 |
+| `doc` | 导出时那份文档的绝对路径；只作信息，导入**忽略**它（允许从别的胶/别的目录导入）。 |
+| `gel.width_cm` / `gel.height_cm` | 胶面尺寸；导入时要与目标文档的胶面尺寸相差 ≤ 0.01 cm，否则报「export was taken from a different gel」。 |
+| `window.top_cm` / `bottom_cm` | 所有泳道共用的积分窗；`top < bottom`，都在 `[0, gel.height_cm]` 内。 |
+| `marker_lane` | 1 起，`1 … len(lanes)`。 |
+| `draft` | 草稿标定标记。导出带来源值；导入只在来源为 `true` 时把目标标为草稿，来源为 `false` **不会清掉**目标已有的草稿——导入永远不「认证」标定。 |
+| `lanes[]` | 从左到右；相邻泳道共用边界（`lanes[i].left_cm == lanes[i-1].right_cm`，容差 1e-4）；`left/right_cm` 每道宽 ≥ 0.02 cm；至少一条未 trim。`trimmed` 必填布尔；`name` 可省略（省略 = 保留目标文档该道现有的名字），`null` = 占位的 `?`，`""` = 空白道。 |
+| `bands[]` | marker 带线，自上而下；至少 3 条，`mw > 0`，`y_cm` 严格递增、`mw` 严格递减，不能有重复 y。`mw` 就是 `band <MW>` 线上的数字（§5）。 |
+| `sample_bands[]` | **可选**；导出只在文档有 `sample bands` 图层时出现。每条 `{lane, y_cm}`，`lane` 是 1 起的非 marker 泳道，重复的 y 会去重。省略 = 导入不动刻度；给了就按它重建刻度。 |
+
+**不导出、导入时原样保留**：胶面图与它的 key、Crop 框、各画板、Figure / Profiles / 标签的几何、`ep-meta` 里的照片 / dpi / 预设等其它键。`peak_auto` 不导出；导入会按 `sample_bands` 相对文档的 `peak_auto` 重算 `peak_overrides`，让随后默认的 `sync` 复现导入的刻度。泳道名导出的是标签的当前文字（与 `ep-meta.lane_names`、`label lane n` 的 text 同一份）。
+
+### 13b. 导入的校验与语义
+
+校验在任何改动之前一次做完，任何一条不过就什么都不写（`RuntimeError` / `ValueError`，退出 2）：
+
+- 顶层必须是 JSON 对象；`schema` / `version` 精确匹配 v1；必须有 `schema`、`version`、`gel`、`window`、`lanes`、`bands`、`marker_lane`。未知键忽略。
+- 所有数字必须是有限的 JSON number（布尔、NaN、Infinity 都拒绝）。
+- `gel` 尺寸 > 0，且与目标文档相差 ≤ 0.01 cm；`window` 见上；`lanes` 非空、几何连续、至少一条保留；`marker_lane` 在范围内；`bands` 见上；`sample_bands` 的泳道在范围内且不是 marker 道。
+- 活文档本身必须读得通（`workbench.from_document`）；读不通就拒绝，绝不在坏文档上「半修」。
+- 有 `sample_bands` **且与文档现有刻度不同**、而文档没有 `peak_auto`（无法把它换算成 override、默认 sync 复现不了）→ 拒绝，什么都不改；刻度没变则允许通过。
+
+通过后：来源 `draft: true` 时把目标也标成草稿；按导入的几何生成与 `plan_sync` 同一套 op；重写 `ep-meta.prev_centres_cm` / `lane_names`，使随后默认的 `sync` 不会把导入的泳道名改回去；把导入的 `sample_bands` 相对当前 `peak_auto` 换算成 `peak_overrides`，让默认 `sync` 复现这些刻度；然后按上面的撤销组落盘 / sync。导入一份未改过的导出是 0 个改动（`selftest_workbench_io` 覆盖）。
+
+### 13c. 与其它文件的关系
+
+- 泳道名 = 标签文字；改名字请改这里的 `name` 再导入，或走 `workbench edit --label n=…`（§9d），不要重跑 render。
+- `bands[].mw` 必须与 `band <MW>` 线名里的数字同一套（§5）；MW 报告和 Figure 是导入 + sync 之后**派生**出来的，不写回这个文件。
+- 泳道号是**保留 + trimmed 一起**从左往右数；`sample_bands` 不落在 marker 道。
+- 它替代不了 `lanes.json` / `markers.json`：那两个是 render 的种子配置；这份 JSON 只记录 Workbench 当前长什么样。

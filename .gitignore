@@ -18,3 +18,8 @@ __pycache__/
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+
+# Python packaging
+build/
+dist/
+*.egg-info/

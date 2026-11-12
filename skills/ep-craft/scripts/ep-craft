@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""ep-craft —— 公开入口：按画板组织的凝胶电泳 CLI。
+
+    ep-craft launch [DOC]
+    ep-craft figure   render|edit|sync|export ...
+    ep-craft crop     probe|sync ...
+    ep-craft workbench edit|sync|export|import ...
+    ep-craft profile  sync ...
+    ep-craft doctor
+    ep-craft selftest
+
+旧的扁平命令仍可用 `python3 scripts/gel_photo.py probe|render|sync|edit|doctor|selftest`。
+"""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from gel_photo import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main(canvas=True))

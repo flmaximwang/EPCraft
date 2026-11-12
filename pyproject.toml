@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ep-craft"
+version = "0.1.0"
+description = "Electrophoresis gel figure labeling on VectorCraft"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "flmaximwang" }]
+keywords = ["electrophoresis", "gel", "vectorcraft", "figure", "skill"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/flmaximwang/EPCraft"
+
+[project.scripts]
+ep-craft = "ep_craft.cli:main"
+
+[tool.setuptools]
+packages = ["ep_craft"]
+package-dir = { "" = "packaging" }

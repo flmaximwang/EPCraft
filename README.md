@@ -22,6 +22,28 @@ Output (three files, same stem):
 
 Built-in data: three epizyme (雅酶) pre-stained marker presets (WJ101, WJ103 in Tris-Glycine and Tris-Tricine) and a `mini-gel` size preset. See [`skills/ep-craft/SKILL.md`](skills/ep-craft/SKILL.md) for the full workflow, checkpoints and flags.
 
+## Commands
+
+The public entry point is the executable `ep-craft`. Commands are grouped by the VectorCraft canvas they work on; every sync refreshes the document and all dependent canvases in one undo step.
+
+| Command | Does |
+|---|---|
+| `ep-craft launch [DOC] [--port 7797]` | Attach to (or launch) VectorCraft with `--control`; optionally open `DOC`. |
+| `ep-craft figure render IMAGE --out DOC ...` | Detect the gel, seed lanes and marker bands, write `DOC`, export the Figure PNG, write the MW report. |
+| `ep-craft figure edit DOC ...` | Apply lane inclusion, lane names or marker-lane changes; then sync (alias of `workbench edit`). |
+| `ep-craft figure sync DOC ...` | Re-read the live document and refresh the document, PNG and MW report. |
+| `ep-craft figure export DOC [--out PATH] [--dpi N] [--background C] [--port 7797]` | Export the `Figure` artboard to PNG (default `<DOC stem>.png`; `--out` must end in `.png`; refuses to overwrite the document; checks run before VectorCraft is contacted). |
+| `ep-craft crop probe IMAGE ...` | Probe the photo without writing files or launching the app. |
+| `ep-craft crop sync DOC ...` | Re-crop the gel face from a moved Crop frame, then refresh everything. |
+| `ep-craft workbench edit DOC ...` | Same as `figure edit`. |
+| `ep-craft workbench sync DOC ...` | Same as `figure sync`. |
+| `ep-craft workbench export DOC [--out PATH]` | Dump lane geometry, window, marker bands, trim and lane names as JSON (stdout when `--out` is omitted). |
+| `ep-craft workbench import DOC --input PATH [--no-sync]` | Validate and apply an exported lane-data JSON to the live document; sync unless `--no-sync`. |
+| `ep-craft profile sync DOC ...` | Recompute the Profiles canvas (shared sync handler). |
+| `ep-craft doctor` / `ep-craft selftest` | Environment check / offline self-test. |
+
+`sync` accepts `--port 7797`, `--dpi 300`, `--dry-run` and `--reset-peaks [N ...]`; `render` keeps all its detection and layout flags (see `SKILL.md`). Exit code `0` = success, `2` = expected user/environment error (message on stderr, no traceback).
+
 ## Install
 
 Requirements: macOS, `python3` (stdlib only), [ImageMagick 7](https://imagemagick.org) (`brew install imagemagick`), and [VectorCraft](https://github.com/storytold/vectorcraft) 0.14.x (the skill launches it with `--control`).
@@ -33,11 +55,26 @@ git clone git@github.com:flmaximwang/EPCraft.git
 ln -s "$PWD/EPCraft/skills/ep-craft" ~/.claude/skills/ep-craft
 ```
 
-Then check the environment:
+Run the `ep-craft` executable directly by adding the skill's `scripts/` directory to `PATH` (use the absolute path of your checkout):
 
 ```bash
-python3 skills/ep-craft/scripts/gel_photo.py doctor
+export PATH="/path/to/EPCraft/skills/ep-craft/scripts:$PATH"   # replace /path/to; add to ~/.zshrc to keep it
+ep-craft doctor
 ```
+
+Without `PATH`, call it through Python — `python3 skills/ep-craft/scripts/ep-craft doctor` — or use its full path (the file is already executable in the checkout). `PATH` is only needed to locate the executable; the script puts its own directory on `sys.path` for imports. The legacy flat interface is kept for compatibility: `python3 skills/ep-craft/scripts/gel_photo.py doctor|probe|render|sync|edit|selftest` still works.
+
+### Install as a uv tool
+
+The package is stdlib-only and installs the same `ep-craft` console command with the skill tree bundled inside (nothing from the skill is installed as a top-level module):
+
+```bash
+uv tool install git+https://github.com/flmaximwang/EPCraft.git   # from GitHub, once pushed
+uv tool install /path/to/EPCraft                                  # or from a local checkout
+ep-craft doctor
+```
+
+`uv tool install` puts one executable on your PATH (usually `~/.local/bin`). Python 3.9+ is required; ImageMagick 7 and VectorCraft remain external system dependencies. To remove: `uv tool uninstall ep-craft`.
 
 ## Repository layout
 
