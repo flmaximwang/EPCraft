@@ -48,37 +48,43 @@ The public entry point is the executable `ep-craft`. Commands are grouped by the
 
 Requirements: macOS, `python3` (stdlib only), [ImageMagick 7](https://imagemagick.org) (`brew install imagemagick`), and [VectorCraft](https://github.com/storytold/vectorcraft) 0.14.x (the skill launches it with `--control`).
 
-Copy or symlink the skill into your agent's skills directory:
+Clone the repository and symlink the skill into your agent's skills directory:
 
 ```bash
 git clone git@github.com:flmaximwang/EPCraft.git
 ln -s "$PWD/EPCraft/skills/ep-craft" ~/.claude/skills/ep-craft
 ```
 
-Install the CLI as a [uv tool](https://docs.astral.sh/uv/) (recommended; the package is not on PyPI yet, so install from the checkout or the git URL):
+The skill directory now holds documentation only. The CLI lives in the repository-root package `src/ep_craft/` and is always run from an installed tool or through the repo's `src/`.
+
+Install the CLI as a [uv tool](https://docs.astral.sh/uv/) (the package is not on PyPI yet, so install from the checkout or the git URL):
 
 ```bash
-uv tool install "git+https://github.com/flmaximwang/EPCraft.git"        # add @main or a release tag to pin
-uv tool install /path/to/EPCraft                                        # or from the local checkout root
+uv tool install "git+https://github.com/flmaximwang/EPCraft.git"  # add @main or a release tag to pin
+uv tool install /path/to/EPCraft                                  # or from the local checkout root
 ep-craft doctor
 ```
 
-`uv tool install` puts one executable on your PATH (usually `~/.local/bin`; run `uv tool update-shell` if it is missing). The package is stdlib-only and installs the same `ep-craft` console command; runtime modules live in the `ep_craft` package, and presets/templates/fixtures ship as package data (no skill module is installed as a top-level module). Python 3.9+ is required; ImageMagick 7 and VectorCraft remain external system dependencies. Locate the bundled data with `$(uv tool dir)/ep-craft/bin/python -c "import ep_craft; print(ep_craft.data_dir())"` (a checkout's `skills/ep-craft/src/ep_craft/data/` remains the simplest source). To remove: `uv tool uninstall ep-craft`.
-
-**Optional: run directly from the checkout.** Add the skill's `scripts/` directory to `PATH` (use the absolute path of your checkout):
+For development, install the checkout editable so edits under `src/ep_craft/` take effect without reinstalling:
 
 ```bash
-export PATH="/path/to/EPCraft/skills/ep-craft/scripts:$PATH"   # replace /path/to; add to ~/.zshrc to keep it
-ep-craft doctor
+uv tool install -e /path/to/EPCraft
 ```
 
-Without `PATH`, call it through Python — `python3 skills/ep-craft/scripts/ep-craft doctor` — or use its full path (the file is already executable in the checkout). `PATH` is only needed to locate the executable; the shim puts `../src` on `sys.path` for imports. The legacy flat interface is kept for compatibility: `python3 skills/ep-craft/scripts/gel_photo.py doctor|probe|render|sync|edit|selftest` still works.
+To run without installing, use the package from the repo root:
+
+```bash
+PYTHONPATH=src python3 -m ep_craft doctor
+```
+
+`uv tool install` puts one executable on your PATH (usually `~/.local/bin`; run `uv tool update-shell` if it is missing). The package is stdlib-only; Python 3.9+ is required, and ImageMagick 7 and VectorCraft remain external system dependencies. Runtime modules live in the `ep_craft` package; presets and templates ship as package data, so locate them with `$(uv tool dir)/ep-craft/bin/python -c "import ep_craft; print(ep_craft.data_dir())"` (a checkout's `src/ep_craft/data/` remains the simplest source). Remove the tool with `uv tool uninstall ep-craft`.
 
 ## Repository layout
 
 | Path | Content |
 |---|---|
-| [`skills/ep-craft/`](skills/ep-craft/) | The skill: `SKILL.md`, `references/`, `scripts/` (two thin shims: `ep-craft`, `gel_photo.py`), and the installable package `src/ep_craft/` (runtime modules plus bundled `data/`, `templates/`, `fixtures/`) |
+| [`skills/ep-craft/`](skills/ep-craft/) | The skill documentation: `SKILL.md`, `references/` (no runnable scripts — the CLI is installed from `src/`) |
+| [`src/ep_craft/`](src/ep_craft/) | Installable package: runtime modules plus bundled `data/`, `templates/`, `fixtures/` |
 | [`pyproject.toml`](pyproject.toml) | Packaging: console script `ep-craft`, package data, setuptools build |
 | [`specs/`](specs/) | Design specs (VectorCraft output, editable output, gel prior) |
 | [`tickets/`](tickets/) | Work breakdown for the VectorCraft output |

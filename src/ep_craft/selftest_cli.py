@@ -11,10 +11,11 @@ launch 的 connect/open、figure export 的画板选择与输出保护、workben
 import contextlib
 import io
 import os
-import stat
+import subprocess
 import sys
 import tempfile
 import types
+from pathlib import Path
 
 
 import ep_craft                    # noqa: E402
@@ -149,7 +150,7 @@ def test_legacy_parser_unchanged():
                        (["selftest"], "cmd_selftest_legacy")):
         a = ap.parse_args(argv)
         assert a.func.__name__ == func, (argv, a.func)
-    # 自动识别：gel_photo.py 也接受新层级，但老命令仍走扁平 parser
+    # 自动识别：旧扁平入口也接受新层级，但老命令仍走扁平 parser
     with _patched(gel_photo, "cmd_sync", lambda a: 0):
         rc, _out, _err = _run(["sync", "f.vectorcraft"], canvas=None)
         assert rc == 0
@@ -331,20 +332,39 @@ def test_workbench_io_delegation():
 # ---------------------------------------------------------------- executable
 
 def test_public_entry():
-    """签出：scripts/ep-craft 是带可执行位的薄 shim；安装后：console script 指向 ep_craft.cli。"""
+    """入口 = python3 -m ep_craft（包可导入）与安装后的 console script；scripts/ 目录已删除。"""
+    import importlib.util
     from ep_craft import cli as package_cli
-    package = os.path.dirname(os.path.abspath(__file__))          # …/src/ep_craft
-    shim = os.path.join(os.path.dirname(package), "scripts", "ep-craft")
-    if os.path.isfile(shim):                                      # 仓库签出：检查薄 shim
-        st = os.stat(shim)
-        assert st.st_mode & stat.S_IXUSR, "scripts/ep-craft 没有可执行位"
-        with open(shim, encoding="utf-8") as f:
-            text = f.read()
-        assert text.startswith("#!/usr/bin/env python3"), text.splitlines()[0]
-        assert "main(canvas=True)" in text, "公开入口没有走 canvas 层级"
-        assert "ep_craft.cli import main" in text, "公开入口没有走 ep_craft.cli"
-    # 安装后没有 scripts/ shim：console 入口就是 ep_craft.cli:main
+    package = Path(__file__).resolve().parent                    # …/src/ep_craft（签出）或 site-packages/ep_craft
+    repo = package.parent.parent if package.parent.name == "src" else None
+    if repo is not None and not (repo / "pyproject.toml").is_file():
+        repo = None
+    if repo is not None:
+        assert not (repo / "skills" / "ep-craft" / "scripts").exists(),             "skills/ep-craft/scripts 应当已删除（入口改为 console script / python -m ep_craft）"
+
     assert callable(package_cli.main), package_cli.main
+    assert importlib.util.find_spec("ep_craft.__main__") is not None, "缺少 python -m ep_craft 的 __main__"
+
+    # 模块入口真的能跑（签出时用 repo/src，安装后用当前解释器里的包）
+    env = dict(os.environ)
+    if repo is not None:
+        src = str(repo / "src")
+        env["PYTHONPATH"] = src + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    r = subprocess.run([sys.executable, "-m", "ep_craft", "--help"],
+                       capture_output=True, text=True, env=env)
+    assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
+    for name in ("figure", "crop", "workbench", "profile", "launch", "doctor", "selftest"):
+        assert name in r.stdout, (name, r.stdout, r.stderr)
+
+    # 安装形态：发行版的 console script 指向 ep_craft.cli:main（签出未安装时跳过）
+    from importlib.metadata import entry_points
+    eps = entry_points()
+    selected = [ep for ep in (eps.select(group="console_scripts", name="ep-craft")
+                              if hasattr(eps, "select") else eps.get("console_scripts", []))
+                if ep.name == "ep-craft"]
+    if repo is None:
+        assert any(ep.value == "ep_craft.cli:main" for ep in selected), selected
+
     help_text = gel_photo.build_parser(canvas=True).format_help()
     for name in ("figure", "crop", "workbench", "profile", "launch", "doctor", "selftest"):
         assert name in help_text, (name, help_text)

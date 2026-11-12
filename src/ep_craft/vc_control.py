@@ -88,7 +88,7 @@ def connect(port=DEFAULT_PORT, path=None, launch=True, wait=30.0, app=APP,
                       % (port, app_exe(app), port))
     exe = app_exe(app)
     if not os.path.isfile(exe):
-        raise VCError("找不到 VectorCraft（%s）。装好 VectorCraft 0.14 后再跑；`gel_photo.py doctor` 可自检。" % app)
+        raise VCError("找不到 VectorCraft（%s）。装好 VectorCraft 0.14 后再跑；`python3 -m ep_craft doctor` 可自检。" % app)
     cmd = [exe, "--control", str(port)] + ([os.path.abspath(path)] if path else [])
     _popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     t_end = time.time() + wait

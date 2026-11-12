@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """Installed console entry point: ``ep-craft = ep_craft.cli:main``.
 
-A checkout reaches the same implementation through the thin
-``skills/ep-craft/scripts/ep-craft`` shim, which puts ``../src`` on ``sys.path``.
+A checkout reaches the same implementation with ``PYTHONPATH=src python3 -m
+ep_craft`` (see ``__main__.py``); installed environments use the console script.
 """
 from .gel_photo import main as gel_photo_main
 

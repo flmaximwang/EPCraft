@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """ep-craft runtime package: electrophoresis gel figures on VectorCraft.
 
-The package is self-contained inside the skill tree (``skills/ep-craft/src/ep_craft``)
-so symlinking ``skills/ep-craft`` alone keeps working. Runtime modules use package
-relative imports; the only path bootstrap lives in the two thin shims under
-``skills/ep-craft/scripts/`` and in the installed console entry point.
+The package lives in the repository-root ``src/ep_craft``. Entry points are the
+installed console command ``ep-craft`` and ``python3 -m ep_craft`` with this
+package importable; the skill directory only carries docs (no scripts, no path
+bootstrapping). Runtime modules use package-relative imports.
 
 Bundled resources are package data (one source of truth, no copies):
 

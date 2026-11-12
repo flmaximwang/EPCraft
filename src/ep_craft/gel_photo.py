@@ -283,7 +283,7 @@ def cmd_render(args):
     print("输出 %s、%s（%d×%d px, %d dpi）%s" % (out, stem + ".png", w, h, round(d),
                                               "" if args.no_mw else "、%s.mw.json" % stem))
     print("[i] VectorCraft 控制口 %d 上开着这份文档：在 Workbench 画板上改泳道线 / 积分窗 / band 线，"
-          "然后跑 `gel_photo.py sync %s`" % (args.port, out))
+          "然后跑 `python3 -m ep_craft workbench sync %s`" % (args.port, out))
     _ask_names(model)
     return 0
 
@@ -895,7 +895,7 @@ def _reject_removed(args):
 
 
 def _removed_export(_args):
-    raise RuntimeError("export 已经去掉了：fig.png 由 VectorCraft 导出；改了文档就跑 `gel_photo.py sync fig.vectorcraft`")
+    raise RuntimeError("export 已经去掉了：fig.png 由 VectorCraft 导出；改了文档就跑 `python3 -m ep_craft figure sync fig.vectorcraft`")
 
 
 def _add_detect(a):
@@ -1018,7 +1018,7 @@ def cmd_selftest_all(_args):
 
 
 def build_parser(canvas=False):
-    """→ argparse.ArgumentParser。canvas=False 保持旧的扁平命令（gel_photo.py 老用法与现有自检）；
+    """→ argparse.ArgumentParser。canvas=False 保持旧的扁平命令（老用法与现有自检）；
     canvas=True 是公开 ep-craft 的画板分组命令（见 canvas_cli.add_commands）。"""
     ap = argparse.ArgumentParser(
         prog="ep-craft" if canvas else None,

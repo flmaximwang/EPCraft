@@ -25,8 +25,8 @@ Turn a phone photo of a gel into a labeled figure at true physical size. Detecti
 
 | Path | Use |
 |---|---|
-| `scripts/ep-craft` | Public executable (thin checkout shim into `src/`): commands grouped by canvas (`launch`, `figure`, `crop`, `workbench`, `profile`, `doctor`, `selftest`). Put `scripts/` on `PATH`, or run `python3 scripts/ep-craft …`. |
-| `scripts/gel_photo.py` | Thin checkout shim for the legacy flat entry point (`doctor`, `probe`, `render`, `sync`, `edit`, `selftest`); keep using it only for old scripts/tests. |
+| `ep-craft` | Installed console command (normal use). Install with `uv tool install .` (or `-e .` while developing); commands grouped by canvas (`launch`, `figure`, `crop`, `workbench`, `profile`, `doctor`, `selftest`). |
+| `python3 -m ep_craft` | Same CLI without the console script: from the repo root `PYTHONPATH=src python3 -m ep_craft …`, or in the installed tool environment. There is no `scripts/` directory. |
 | `src/ep_craft/data/markers.json` | Marker preset library: `--markers src/ep_craft/data/markers.json --preset <number or keyword>` (an ambiguous choice lists all presets). Installed wheel: ask `ep_craft.data_dir()`. |
 | `src/ep_craft/data/gel_size.json` | Gel preset (`--gel-size`). `lane_count × lane_pitch_cm ≈ width_cm` (±10 %) is checked on load. |
 | `src/ep_craft/templates/mini-gel-15lanes.{lanes,markers}.json` | Example configs; copy and edit. |
@@ -34,7 +34,7 @@ Turn a phone photo of a gel into a labeled figure at true physical size. Detecti
 | `references/special-cases-and-pitfalls.md` | Close band pairs, cropped photos, damaged gel edge, wells cut off, history. Read when a checkpoint fires. |
 | `references/vectorcraft.md` | VectorCraft 0.14 file format and control-port commands (measured). Read only when an edit through the port isn't covered by conventions §9c. |
 
-Paths above are relative to this skill directory; from the repo root prefix them with `skills/ep-craft/`. Runtime modules live under `src/ep_craft/`; the module map is conventions §12. In a `uv tool install` the bundled data/templates are package data — locate them with `ep_craft.data_dir()` / `ep_craft.templates_dir()`.
+`references/` is inside this skill directory; `src/ep_craft/` is the repository-root package (two levels up, outside the skill directory). The installed `ep-craft` runs from any cwd; the preset paths in the workflow below assume you run from the repository root. A copied skill directory alone is documentation only — it carries no runnable code. Module map: conventions §12. In a `uv tool install` the bundled data/templates are package data — locate them with `ep_craft.data_dir()` / `ep_craft.templates_dir()`.
 
 ## Canvas CLI
 
@@ -62,7 +62,7 @@ Paths above are relative to this skill directory; from the repo root prefix them
 
 Detection is a **first guess the user corrects by hand** in VectorCraft. The agent's job is to get a document open fast, not to make detection perfect. A full job (3 photos, 5 figures) is about 10 `render` calls of 10–20 s each: **minutes, not tens of minutes**.
 
-- **The commands in this file are the whole toolbox.** Never write diagnostic scripts, never import the skill's modules from ad-hoc Python to scan, sweep or shift crops, never read the scripts' source. Why: in one session the agent wrote 10 diagnostic scripts over 13 minutes before the first `render`; the user then said "just run everything, I'll fix the lanes myself".
+- **The commands in this file are the whole toolbox.** Never write diagnostic scripts, never import the skill's modules from ad-hoc Python to scan, sweep or shift crops, never read the package's source. Why: in one session the agent wrote 10 diagnostic scripts over 13 minutes before the first `render`; the user then said "just run everything, I'll fix the lanes myself".
 - **Never look at the gel photo to guess geometry** (lanes, ladder, crop). Lane lines, band lines and the crop frame are the user's to fix on the Workbench / Crop artboards.
 - **Start from this file and the user's message.** Do not read `references/` up front (open one only when a checkpoint names it), do not dump `src/ep_craft/data/*.json` beyond listing preset names, do not run `--help`, do not search the disk or memory for earlier outputs.
 - **Run each command once.** No `--dry-run` before a real `sync`; no re-reading the document through the control port or re-parsing `fig.mw.json` to double-check what the command already printed. The printed summary is the verification.
@@ -78,11 +78,11 @@ Detection is a **first guess the user corrects by hand** in VectorCraft. The age
    - **Which lanes to trim** from the figure (`--trim-lanes`, 1-based, e.g. `1,2,14-15`; omitted = keep all). Trimmed lanes are still analysed.
    - **Which wells hold ladders** (→ `lanes.json` `marker_lanes`, in order of preference; list every ladder well, so a damaged one can be skipped).
    - **What sample is in each lane** (left to right). Never research this; ask.
-2. **Check the environment**: `ep-craft doctor` (or `python3 scripts/ep-craft doctor`). Missing `magick` → install ImageMagick 7 (`brew install imagemagick`). Missing VectorCraft → stop; it is required (it exports `fig.png`). Port 7797 "VectorCraft running without --control" → ask the user to save and quit VectorCraft first.
+2. **Check the environment**: `ep-craft doctor` (or `PYTHONPATH=src python3 -m ep_craft doctor` from the repo root). Missing `magick` → install ImageMagick 7 (`brew install imagemagick`). Missing VectorCraft → stop; it is required (it exports `fig.png`). Port 7797 "VectorCraft running without --control" → ask the user to save and quit VectorCraft first.
 3. **Write `lanes.json`** (`labels` left to right, strings, `""` = blank lane without a label; `marker_lanes`) from the template. Use a library marker preset, or a copied `markers.json` (`labels` top to bottom, `rows: 2` for a close pair).
    - **One photo cut into several figures** ("2–7 one figure, 8–15 another"): one `render` per figure with its own `--out` (`IMG_x_A.vectorcraft`, `IMG_x_B.vectorcraft`) and `--trim-lanes` = every lane *outside* that figure. Same `labels`; in `marker_lanes` put the ladder well **inside** the kept range first, then the other ladder wells as fallbacks.
 4. **Skip `probe`.** Go straight to `render`. Run `probe` (no files, no app; prints the gel face, well seed and every lane's called band y values) only once, after `render` refused, to read which lanes call how many bands.
-5. **Render**:
+5. **Render** (run from the repository root so the repo-relative preset paths resolve):
    ```bash
    ep-craft figure render <photo> --out fig.vectorcraft \
        --markers src/ep_craft/data/markers.json --preset <N> --lanes lanes.json \
@@ -131,7 +131,7 @@ Detection is a **first guess the user corrects by hand** in VectorCraft. The age
 | A band prints `超出 marker 范围` | Its y lies outside the ladder's span, so two-point interpolation gives it no number (never extrapolate). If a real band of interest fell outside, check the `band` lines on the Workbench — a misplaced line shrinks the calibrated span. |
 | Two bands too close for separate labels (21/20 kD) | One label with `"rows": 2` (two band lines, one label). |
 | User says the photo is cropped | `--gel-lanes N` (N visible lanes); otherwise the scale is wrong. |
-| A removed flag (`--keep-lanes`, `--svg`, `--debug`, `--record`, legacy `gel_photo.py export`, …) | The script names the replacement; follow it (conventions §11). Public `ep-craft figure export` only exports the `Figure` artboard PNG. |
+| A removed flag (`--keep-lanes`, `--svg`, `--debug`, `--record`, old flat `export`, …) | The command names the replacement; follow it (conventions §11). Public `ep-craft figure export` only exports the `Figure` artboard PNG. |
 | Unsure about lane alignment, `看不清孔`, or a lane seed that looks off | Render anyway and hand over: the user drags lane lines on the Workbench. Don't investigate. Only a cropped photo changes the command (`--gel-lanes N`). |
 
 ## Done when

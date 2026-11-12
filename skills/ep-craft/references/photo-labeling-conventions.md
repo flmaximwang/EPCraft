@@ -360,11 +360,10 @@ ep-craft figure sync fig.vectorcraft [--port 7797] [--dry-run] [--dpi 300] [--re
 （对象按**完整名字**找；`document.find` 是子串匹配，`label lane 1` 会命中 `label lane 10`–`15`，别用）：
 
 ```bash
-python3 - <skill>/scripts fig.vectorcraft "label lane 2" "WT" <<'EOF'
+PYTHONPATH=src python3 - fig.vectorcraft "label lane 2" "WT" <<'EOF'
 import os, sys
-sys.path.insert(0, sys.argv[1])
-import vc_control, vc_file
-doc, name, text = os.path.abspath(sys.argv[2]), sys.argv[3], sys.argv[4]
+from ep_craft import vc_control, vc_file
+doc, name, text = os.path.abspath(sys.argv[1]), sys.argv[2], sys.argv[3]
 c, _ = vc_control.connect(7797, launch=False)
 docs = c.call("ui.inspect").get("documents") or []
 c.execute("document.activate", {"index": next(i for i, d in enumerate(docs) if d.get("title") == os.path.basename(doc))})
@@ -387,17 +386,16 @@ ep-craft figure sync fig.vectorcraft
 点文字的锚点就是 `xf[4..5]`）。转完 `sync`：读到新角度 → 按墨迹框重新落位、只 `move`，角度记进 `ep-meta`。
 
 ```bash
-python3 - <skill>/scripts fig.vectorcraft "label lane 3" 90 <<'EOF'
+PYTHONPATH=src python3 - fig.vectorcraft "label lane 3" 90 <<'EOF'
 import os, sys
-sys.path.insert(0, sys.argv[1])
-import vc_control, vc_file
+from ep_craft import vc_control, vc_file
 c, _ = vc_control.connect(7797, launch=False)
 docs = c.call("ui.inspect").get("documents") or []
 c.execute("document.activate", {"index": next(i for i, d in enumerate(docs)
-                                             if d.get("title") == os.path.basename(sys.argv[2]))})
+                                             if d.get("title") == os.path.basename(sys.argv[1]))})
 n = next(x for x in vc_file.lay_children(vc_file.layer_by_name(c.document_json(), "labels"))
-         if x.get("name") == sys.argv[3])
-c.execute("object.rotate", {"ids": [n["id"]], "angle": float(sys.argv[4]),
+         if x.get("name") == sys.argv[2])
+c.execute("object.rotate", {"ids": [n["id"]], "angle": float(sys.argv[3]),
                             "origin": [n["kind"]["xf"][4], n["kind"]["xf"][5]]})
 EOF
 ep-craft figure sync fig.vectorcraft
@@ -425,7 +423,7 @@ ep-craft figure sync fig.vectorcraft
 
 ## 10. 命令
 
-公开入口是 `scripts/ep-craft`（把 `scripts/` 放进 `PATH`，或写成 `python3 scripts/ep-craft …`）。老扁平命令 `python3 scripts/gel_photo.py …` 仍然可用，只是不再作为文档入口。下面命令里的 `src/ep_craft/data/...` 都相对 skill 目录；从 repo 根跑就加 `skills/ep-craft/` 前缀。
+公开入口是安装好的 `ep-craft` 控制台命令；不安装时从 repo 根用 `PYTHONPATH=src python3 -m ep_craft …`。没有 `scripts/` 目录，`skills/ep-craft/` 里只有文档。下面命令里的 `src/ep_craft/data/...` 相对 **repository 根**（在 repo 根目录执行）。
 
 ```bash
 ep-craft doctor                             # python / magick / 字体 / VectorCraft 版本与控制口 / 数据文件
@@ -473,7 +471,7 @@ render 的其它开关（全是 stage 1；出图后也可以在 Crop 画板上�
 
 | 已移除 | 代替 |
 |---|---|
-| 老 `gel_photo.py export` 子命令、`fig.html` 编辑器、`fig.scene.json`、`fig.gel.png` | VectorCraft 里改；`ep-craft figure sync` 重新导出 `fig.png`。要单独导出 Figure 用 `ep-craft figure export DOC`（只出 PNG） |
+| 老扁平 `export` 子命令、`fig.html` 编辑器、`fig.scene.json`、`fig.gel.png` | VectorCraft 里改；`ep-craft figure sync` 重新导出 `fig.png`。要单独导出 Figure 用 `ep-craft figure export DOC`（只出 PNG） |
 | `--svg` | `fig.vectorcraft` 本身是矢量文档；要 SVG 在 VectorCraft 里 File → Export |
 | `--no-editor` | 不再写 HTML 编辑器 |
 | `--debug` 覆盖图 | Workbench 画板（`lanes` / `window` / `marker bands` / `analysis` 图层） |
@@ -487,12 +485,7 @@ render 的其它开关（全是 stage 1；出图后也可以在 Crop 画板上�
 
 ## 12. 脚本模块
 
-运行时代码都在可安装包 `src/ep_craft/` 里（模块内用相对 import）；`scripts/` 只剩两个薄壳。纯 stdlib，不需要第三方包：
-
-| 入口 | 承担 |
-|---|---|
-| `scripts/ep-craft` | 公开命令的 checkout 薄壳：把 `../src` 加进 `sys.path`，调 `ep_craft.cli:main` |
-| `scripts/gel_photo.py` | 老扁平命令的薄壳：同样加 `../src`，调 `ep_craft.gel_photo:main`；也自动认画板分组 |
+运行时代码全在 repo 根的 `src/ep_craft/` 里（模块内用相对 import）；`skills/ep-craft/` 里只有文档，没有 `scripts/`。入口是安装后的 `ep-craft` 控制台命令（`pyproject.toml` 里 `ep-craft = ep_craft.cli:main`），或 `PYTHONPATH=src python3 -m ep_craft`。纯 stdlib，不需要第三方包：
 
 | 模块 | 承担 |
 |---|---|
