@@ -1032,6 +1032,8 @@ def cmd_selftest_all(_args):
     except ImportError as e:
         raise RuntimeError("Workbench IO selftest missing: %s" % e)
     io_selftest()
+    from .selftest_workflow import selftest as workflow_selftest
+    workflow_selftest()
     return 0
 
 
@@ -1084,7 +1086,7 @@ def build_parser(canvas=False):
     return ap
 
 
-CANVAS_COMMANDS = ("launch", "figure", "crop", "workbench", "profile")
+CANVAS_COMMANDS = ("launch", "figure", "crop", "workbench", "profile", "workflow")
 
 
 def main(argv=None, canvas=None):

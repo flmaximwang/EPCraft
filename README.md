@@ -44,6 +44,23 @@ The public entry point is the executable `ep-craft`. Commands are grouped by the
 
 `sync` accepts `--port 7797`, `--dpi 300`, `--dry-run` and `--reset-peaks [N ...]`; `render` keeps all its detection and layout flags (see `SKILL.md`). Exit code `0` = success, `2` = expected user/environment error (message on stderr, no traceback).
 
+### Staged workflow
+
+`ep-craft workflow` exposes each canvas transition separately. Start a document, import the photo, adjust its Crop frame in VectorCraft, then seed Workbench. After editing lanes or bands, refresh Profiles and Figure independently and export the Figure canvas as PNG:
+
+```bash
+ep-craft workflow init-canvas fig.vectorcraft
+ep-craft workflow img-to-crop photo.jpg --doc fig.vectorcraft \
+    --gel-size src/ep_craft/data/gel_size.json
+ep-craft workflow crop-to-workbench fig.vectorcraft \
+    --markers src/ep_craft/data/markers.json --preset 1 --lanes lanes.json
+ep-craft workflow workbench-to-profile fig.vectorcraft
+ep-craft workflow workbench-to-figure fig.vectorcraft
+ep-craft workflow export fig.vectorcraft --out fig.png --dpi 300
+```
+
+`init-canvas` creates empty `Figure`, `Workbench`, `Profiles` and `Crop` canvases. `img-to-crop` takes the same detection flags as `crop probe`, including the required `--gel-size`. `crop-to-workbench` takes marker and lane configuration, `--trim-lanes`, label angles and `--profiles stack|strips`. It seeds the Workbench from the edited crop; running it again reseeds that canvas. Each derived-canvas command reads the current Workbench and updates its target. PNG export runs only with `workflow export`, which uses the same Figure selection and output protection as `figure export`. All stages accept `--port`; the derived-canvas commands also accept `--dry-run` and `--reset-peaks [N ...]`.
+
 ## Install
 
 Requirements: macOS, `python3` (stdlib only), [ImageMagick 7](https://imagemagick.org) (`brew install imagemagick`), and [VectorCraft](https://github.com/storytold/vectorcraft) 0.14.x (the skill launches it with `--control`).

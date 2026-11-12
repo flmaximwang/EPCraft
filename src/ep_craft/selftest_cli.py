@@ -114,7 +114,7 @@ def test_parser_hierarchy():
 
     # 顶层不再有旧的扁平命令，组内也不会混入别的组的命令
     assert set(ap._subparsers._group_actions[0].choices) == {
-        "figure", "crop", "workbench", "profile", "launch", "selftest", "doctor"}
+        "figure", "crop", "workbench", "profile", "launch", "workflow", "selftest", "doctor"}
     for argv in (["probe", "x.jpg"], ["render", "x.jpg", "--out", "f"],
                  ["figure", "probe", "x.jpg"], ["crop", "render", "x.jpg", "--out", "f"],
                  ["figure", "export", "f.vectorcraft", "--artboard", "Workbench"]):

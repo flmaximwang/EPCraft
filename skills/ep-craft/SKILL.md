@@ -58,6 +58,21 @@ Turn a phone photo of a gel into a labeled figure at true physical size. Detecti
 
 **Workbench JSON exchange** (`workbench export` / `workbench import`) carries lane data only — not the render config (`lanes.json` / `markers.json`, §1) and not the MW report (`fig.mw.json`, §7). Export writes a versioned JSON snapshot of the Workbench (gel size, window, lane boundaries, trim, lane names, marker lane, marker bands, sample-band ticks); import validates all of it against the target document before changing anything, applies it as one undo step, then syncs. Schema, validation rules and an example: conventions §13.
 
+## Staged canvas workflow
+
+When the user requests individual canvas transitions, use `ep-craft workflow`:
+
+```bash
+ep-craft workflow init-canvas fig.vectorcraft
+ep-craft workflow img-to-crop <photo> --doc fig.vectorcraft --gel-size src/ep_craft/data/gel_size.json
+ep-craft workflow crop-to-workbench fig.vectorcraft --markers src/ep_craft/data/markers.json --preset <N> --lanes lanes.json
+ep-craft workflow workbench-to-profile fig.vectorcraft
+ep-craft workflow workbench-to-figure fig.vectorcraft
+ep-craft workflow export fig.vectorcraft --out fig.png --dpi 300
+```
+
+Initialization creates four empty canvases and refuses to overwrite an existing document. `img-to-crop` imports the photo and seeds an editable Crop frame; adjust it in VectorCraft before `crop-to-workbench`. That step seeds Workbench lanes and marker bands from the current frame; repeat it only when reseeding Workbench is intended. `workbench-to-profile` and `workbench-to-figure` read the live Workbench and update the requested canvas independently. These transitions save the document without exporting PNG; `workflow export` exports the Figure canvas. Use the existing `figure render` / `sync` flow below when the user requests the full output in one operation. All stages accept `--port` and `--dpi`; photo detection flags belong to `img-to-crop`, marker/lane/layout flags to `crop-to-workbench`. The derived-canvas commands accept `--dry-run` and `--reset-peaks [N ...]`.
+
 ## Hard rules: do the work, don't audit it
 
 Detection is a **first guess the user corrects by hand** in VectorCraft. The agent's job is to get a document open fast, not to make detection perfect. A full job (3 photos, 5 figures) is about 10 `render` calls of 10–20 s each: **minutes, not tens of minutes**.
