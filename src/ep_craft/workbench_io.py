@@ -12,7 +12,7 @@
      "lanes": [{"left_cm", "right_cm", "trimmed", "name"}],   # 从左到右；相邻泳道首尾相接
      "marker_lane": n,
      "bands": [{"mw", "y_cm"}],                      # marker 条带线，y 升序、MW 严格降序
-     "draft": bool,                                  # 当前 ep-meta 的草稿标定标记
+     "low_confidence": bool,                         # 当前 ep-meta 的低置信标记（marker_confidence.ok = false）
      "sample_bands": [{"lane": n, "y_cm"}]}          # 有 sample bands 图层时才出现
 
 导出读**活文档**（VectorCraft 里没存的改动也算），泳道名取 label lane n 的当前文字
@@ -25,7 +25,7 @@ sample 道号）—— 任何一处不对就**什么都不改**。通过后：
   全部包在一个撤销组 `ep-craft workbench import` 里（sync_exec）；
 - 把 ep-meta 的 lane_names / prev_centres_cm / bands 重定到导入后的泳道（现有 label lane n 直接改文字），
   这样随后的 sync 不会用旧映射覆盖导入的名字；
-- 源导出 draft=true 会把草稿标记带到目标文档；导入本身永远不“证明”标定，也不会清掉已有草稿；
+- 源导出 low_confidence=true 会把低置信标记带到目标文档；导入本身永远不“证明”标定，也不会清掉已有的低置信标记；
 - sample_bands 改了且旧文档没有 peak_auto（无法保证 sync 后刻度不丢）时明确拒绝；
 - --no-sync 只落到活文档（不存盘），否则调用 cmd_sync 刷新 Figure / Profiles / fig.png / fig.mw.json。
 """
@@ -86,6 +86,12 @@ def _json_name(text):
     return None if text == figure.UNNAMED else text
 
 
+def _low_confidence(meta):
+    """ep-meta → 导出的 low_confidence：marker_confidence.ok = false 即低置信（没有置信信息 = 不算低置信）。"""
+    mc = meta.get("marker_confidence")
+    return bool(isinstance(mc, dict) and not mc.get("ok", True))
+
+
 def build_export(document, model=None):
     """活文档 → 导出 dict（纯数据，不摸文件）。"""
     if model is None:
@@ -109,7 +115,7 @@ def build_export(document, model=None):
         "lanes": lanes,
         "marker_lane": int(model["marker_lane"]),
         "bands": [{"mw": float(b["mw"]), "y_cm": round(float(b["y_cm"]), 4)} for b in model["bands"]],
-        "draft": bool(meta.get("draft")),
+        "low_confidence": _low_confidence(meta),
     }
     # sample bands：只有文档里真有这个图层时才导出（缺键 = import 不碰刻度）
     if vc_file.layer_by_name(document, "sample bands") is not None:
@@ -299,9 +305,9 @@ def validate_export(data, target_model):
                 prev_mw = mw
             bands.append({"mw": mw, "y_cm": y})
 
-    draft = data.get("draft", False)
-    if not isinstance(draft, bool):
-        errs.append("draft 必须是 true/false（收到 %r）" % (draft,))
+    low = data.get("low_confidence", False)
+    if not isinstance(low, bool):
+        errs.append("low_confidence 必须是 true/false（收到 %r）" % (low,))
 
     sample = data.get("sample_bands", _MISSING)
     sample_out = None
@@ -333,7 +339,7 @@ def validate_export(data, target_model):
             "window": {"top_cm": round(top, 4), "bottom_cm": round(bottom, 4)},
             "lanes": lanes, "marker_lane": marker_lane,
             "bands": [{"mw": float(b["mw"]), "y_cm": round(float(b["y_cm"]), 4)} for b in bands],
-            "draft": bool(draft), "sample_bands": sample_out}
+            "low_confidence": bool(low), "sample_bands": sample_out}
 
 
 # ---------------------------------------------------------------- 计划导入（纯函数）
@@ -561,7 +567,7 @@ def plan_import(document, model, data):
             overrides, _w = gel_photo._peak_override_state(smodel, ticks, reset_lanes=())
             data = dict(data, _peak_overrides=overrides)
 
-    # ---- 名字 / ep-meta：重定 lane_names、prev_centres_cm、bands（draft 只进不出）
+    # ---- 名字 / ep-meta：重定 lane_names、prev_centres_cm、bands（低置信只进不出）
     cur_names = doc_edit.current_names(document, model)
     names = []
     for j, ln in enumerate(lanes):
@@ -589,8 +595,14 @@ def plan_import(document, model, data):
     merged["lane_names"] = names
     merged["prev_centres_cm"] = [round((ln["left_cm"] + ln["right_cm"]) / 2.0, 4) for ln in lanes]
     merged["bands"] = [[float(b["mw"]), float(b["y_cm"])] for b in bands]
-    if data["draft"]:
-        merged["draft"] = True                       # 源导出是草稿：目标也必须是草稿；导入永远不“证明”标定
+    if data["low_confidence"]:
+        # 源导出是低置信：目标也标低置信；导入永远不“证明”标定，false 也不清除目标已有的标记
+        mc = dict(merged.get("marker_confidence") or {})
+        mc.update(ok=False, gate=mc.get("gate") or "workbench import：源导出标低置信")
+        mc.setdefault("picked", None)
+        mc.setdefault("need", None)
+        mc.setdefault("notes", [])
+        merged["marker_confidence"] = mc
     overrides = data.get("_peak_overrides") if isinstance(data.get("_peak_overrides"), dict) else None
     if overrides is not None:
         if overrides:
@@ -599,7 +611,7 @@ def plan_import(document, model, data):
             merged.pop("peak_overrides", None)
     if merged != old_meta:
         if meta_node is None:
-            raise RuntimeError("文档没有 ep-meta 文字对象 —— 无法重定泳道名 / 草稿状态；先 render 或 sync 一次")
+            raise RuntimeError("文档没有 ep-meta 文字对象 —— 无法重定泳道名 / 低置信标记；先 render 或 sync 一次")
         ops.append({"op": "set_text", "id": meta_node["id"],
                     "text": json.dumps(merged, ensure_ascii=False, separators=(",", ":"))})
     return ops, merged, lines, warns

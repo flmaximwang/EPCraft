@@ -63,7 +63,7 @@ REMOVED = {
     "--no-editor": "不再写 HTML 编辑器；编辑在 VectorCraft 里做",
     "--debug": "检测结果都在 fig.vectorcraft 的 Workbench 画板上（lanes / window / marker bands / sample bands / analysis 图层）",
     "--record": "探测记录就是 Workbench 上的线（加 ep-meta）；数值在 fig.mw.json 里",
-    "--pair-force": "带数对不上时 render 自动出草稿标定；在 Workbench 上改 band 线（拖、删、改名 band <MW>），然后 sync",
+    "--pair-force": "带与 MW 现在按 y 顺序直接对应（第 k 条带 = 第 k 个 MW），不再有「强制配对」；要改就在 Workbench 上改 band <MW> 线，然后 sync",
     "--marker-policy": "marker 泳道被 trim 时只用来标定、不画标签（固定行为）",
     "--margin-frac": "页边由 Figure 的页面规则自动推导",
     "--outline": "文字样式在 VectorCraft 里改",
@@ -216,47 +216,52 @@ def cmd_render(args):
     if not any(meta["lane_angles"]):
         meta.pop("lane_angles")
     model, err, sd = None, None, None
-    counts = []                          # [(泳道, MarkerCountError)]：只是带数对不上的那些
-    build = lambda ml, draft=False: workbench.from_image(   # noqa: E731
+    tried = []                           # [(泳道, 模型, 种子)]：闸门没过但照样建出模型的那些候选
+    build = lambda ml: workbench.from_image(   # noqa: E731
         png, ga["width_cm"], ga["height_cm"], lane_count, float(preset["lane_pitch_cm"]), names, mk_labels, ml,
-        trim=trim, meta=meta, draft=draft)
-    for ml in cand:                      # 写了几条 marker 泳道就挨个试：第一条叫不全（如胶边损坏）就换下一条
+        trim=trim, meta=meta)
+    for ml in cand:                      # 写了几条 marker 泳道就挨个试：第一条过闸门的赢（ep-bdt）
         try:
-            model, sd = build(ml)
-            break
-        except workbench.WorkbenchError as e:
+            m, s = build(ml)
+        except workbench.WorkbenchError as e:       # 只剩结构性问题（模型不合法）会走到这里
             err = e
-            if isinstance(e, workbench.MarkerCountError):
-                counts.append((ml, e))
             if len(cand) > 1:
-                print("[!] marker 泳道 %d 配不上：%s" % (ml, str(e).splitlines()[0]))
+                print("[!] marker 泳道 %d 建不出模型：%s" % (ml, str(e).splitlines()[0]))
+            continue
+        conf = m["meta"]["marker_confidence"]
+        tried.append((ml, m, s))
+        if conf["ok"]:
+            model, sd = m, s
+            break
+        if len(cand) > 1:
+            print("[!] marker 泳道 %d 没过闸门（%s）：低置信" % (ml, conf["gate"]))
+    if model is None and tried:
+        # 全不过闸门 → 选断崖比值最好的那条道，整体标低置信（不凑数、不抛错、不提示拖线）
+        ml, model, sd = max(tried, key=lambda t: (_gate_ratio(t[1]["meta"]["marker_confidence"]),
+                                                  len(t[1]["bands"])))
+        conf = model["meta"]["marker_confidence"]
+        conf["ok"] = False
+        conf["notes"].append("没有一条 marker 泳道过闸门：选了断崖比值最好的泳道 %d —— 低置信，可人工核对" % ml)
+        print("[!] 低置信：没有一条 marker 泳道过闸门（泳道 %d：%s）。band 线照样放在剖面上最强的局部极小上，"
+              "MW 可人工核对" % (ml, conf.get("gate") or "带数不够"))
     if model is None:
-        if args.no_draft or not counts:
-            raise err
-        # 草稿：最接近的那条（闸门全过的优先，其次带数差的绝对值最小）凑够条数 —— 位置有参考价值，但不验证
-        ml, e = min(counts, key=lambda c: (getattr(c[1], "reason", "") != "", abs(len(c[1].rows) - c[1].need)))
-        model, sd = build(ml, draft=True)
-        print("[!] 草稿标定：没有一条 marker 泳道对得上（泳道 %d：%s）。"
-              "band 线先放在剖面上最强的 %d 个局部极小上（多半就是梯子带，但没有验证）—— 在 Workbench 上对一遍，"
-              "不对的拖到梯子上对应的带（梯子上没有的就删掉），然后 sync；band 线动过之后草稿标记自动去掉。"
-              % (ml, getattr(e, "reason", "") or ("取出的带数与标签不合：%d 条，要 %d 条" % (len(e.rows), e.need)),
-                 len(e.rows)))
+        raise err
     print("[i] 泳道种子：%s，%d 道，孔距 %.3f cm，首道中心 %.3f cm（孔深 %.0f 灰度级）%s" % (
         {"wells": "按加样孔定相", "even": "看不清孔，预设间距居中"}[sd["source"]], lane_count, sd["pitch_cm"],
         sd["first_cm"], sd["depth"], ("；" + sd["note"]) if sd["note"] else ""))
-    gate = model["meta"].get("marker_gate") or {}
-    if model["meta"].get("draft"):
-        how = "草稿：剖面最强 %d 个局部极小，未验证" % len(model["bands"])
-    else:
-        how = "剖面最强的 %d 个局部极小%s" % (len(model["bands"]),
-                                       "，第 %d 名 / 第 %d 名 = %.2f×" % (
-                                           len(model["bands"]), len(model["bands"]) + 1, gate["ratio"])
-                                       if gate.get("ratio") else "")
+    conf = model["meta"]["marker_confidence"]
+    how = "剖面最强的 %d 个局部极小%s%s" % (
+        len(model["bands"]),
+        "，第 %d 名 / 第 %d 名 = %.2f×" % (conf["need"], conf["need"] + 1, conf["ratio"])
+        if conf.get("ratio") else "",
+        "" if conf["ok"] else "（低置信：%s）" % (conf.get("gate") or "条数不足"))
+    for n in conf["notes"]:
+        print("[i] %s" % n)
     print("[i] marker 泳道 %d：%d 条 band 线（%s）" % (model["marker_lane"], len(model["bands"]), how))
     _check_pitch(sd, preset)
 
     raw = {}                                               # 检测器原始叫带（override 之前）→ peak_auto
-    report = _mark_draft(model, profiles.analyze(model, png, names, overrides={}, raw=raw))
+    report = _mark_low_confidence(model, profiles.analyze(model, png, names, overrides={}, raw=raw))
     model["meta"].update(_meta_state(model, raw))
     model["meta"]["crop"] = crop_meta                   # ep-meta 与 plan_sync 写回的同一份（第一次 sync = 0 个操作）
     doc = figure.build_document(model, report, png, os.path.basename(stem), layout=args.profiles, crop=crop_spec)
@@ -306,15 +311,25 @@ def _crop_artboard(args, preset, stage1):
     return spec, meta
 
 
-DRAFT_NOTE = "标定是草稿（band 线位置是猜的，MW 不可信）—— 在 Workbench 上把 band 线拖到梯子的带上，再 sync"
+LOW_CONFIDENCE_NOTE = "标定置信度低（marker 泳道的带位置没通过闸门，MW 请人工核对）"
 
 
-def _mark_draft(model, report):
-    """ep-meta 带着 draft → 报告也标上（calibration.draft = true，注里放第一条）。返回 report。"""
-    if model["meta"].get("draft"):
-        report["calibration"]["draft"] = True
-        report["notes"] = [DRAFT_NOTE] + [n for n in report["notes"] if n != DRAFT_NOTE]
+def _mark_low_confidence(model, report):
+    """marker_confidence.ok = false → 报告也标上（calibration.low_confidence = true，注里放第一条）。返回 report。"""
+    conf = model["meta"].get("marker_confidence") or {}
+    if not conf.get("ok", True):
+        report["calibration"]["low_confidence"] = True
+        report["notes"] = ([LOW_CONFIDENCE_NOTE] +
+                           [n for n in report["notes"] if n != LOW_CONFIDENCE_NOTE])
     return report
+
+
+def _gate_ratio(conf):
+    """置信信息里断崖比值的数值（没有比值 = 0，排最后）。render 全不过闸门时拿它挑道。"""
+    try:
+        return float(conf.get("ratio") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _meta_state(model, raw):
@@ -489,9 +504,15 @@ def cmd_sync(args):
         model["meta"]["crop"] = cs["crop"]               # plan_sync 把整份 meta（含 crop）写回 ep-meta
     png = cs["png"]
     layout = old.get("profiles_layout") or figure.PROFILE_LAYOUT
-    if model["meta"].get("draft") and not _same_bands(old.get("bands"), model["bands"]):
-        model["meta"].pop("draft")                       # 用户动过 band 线：标定以他的线为准
-        print("[i] band 线改过了：去掉草稿标记")
+    # 用户动过 band 线（或改过名字/位置）→ 位置不再只是 detector 的猜测：把低置信标记去掉。
+    # 闸门（gate）记的是 detector 当时看到的剖面，也一并清；notes 里的历史提示保留（它们说的是事实）。
+    conf = model["meta"].get("marker_confidence")
+    if not isinstance(conf, dict):
+        conf = {}
+    if not conf.get("ok", True) and not _same_bands(old.get("bands"), model["bands"]):
+        conf.update(ok=True, gate=None)
+        model["meta"]["marker_confidence"] = conf
+        print("[i] band 线改过了：去掉低置信标记")
     # ---- 样品带：文档里的刻度 vs 上一轮 peak_auto → 逐道 override（spec §7.5）。必须在 analyze 之前：
     #      这一轮的报告和重建的刻度都要用新 override；_meta_state 随后写的 peak_auto 仍是抑制之前的检测器叫带。
     #      --reset-peaks：被清的道这一轮不差分（文档里那批刻度正是产生这些 override 的旧线，差分会把
@@ -505,7 +526,7 @@ def cmd_sync(args):
     else:
         model["meta"].pop("peak_overrides", None)        # 空的不写：缺键 = 全自动（与 render 一致）
     raw = {}                                               # 检测器原始叫带（override 之前）→ peak_auto
-    report = _mark_draft(model, profiles.analyze(model, png, [None] * len(model["lanes"]),
+    report = _mark_low_confidence(model, profiles.analyze(model, png, [None] * len(model["lanes"]),
                                                 overrides=model["meta"].get("peak_overrides"), raw=raw))
     model["meta"].update(_meta_state(model, raw))
     ops, meta = figure.plan_sync(dj, model, report, layout=layout)
@@ -959,8 +980,6 @@ def _add_render_parser(parent):
     r.add_argument("--marker-label-angle", type=float, default=0.0,
                    help="marker 标签的角度（度，逆时针；默认 0）；markers.json 里每项可用 angle 覆盖")
     r.add_argument("--no-mw", action="store_true", help="不写 fig.mw.json")
-    r.add_argument("--no-draft", action="store_true",
-                   help="marker 泳道的带数与标签都对不上时拒绝（默认：出草稿标定，band 线让用户拖到位）")
     _add_detect(r)
     _add_removed(r)
     r.set_defaults(func=cmd_render)

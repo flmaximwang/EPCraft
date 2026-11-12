@@ -213,8 +213,9 @@ def pick_marker(ys, gs, px_per_cm, need, gap_ratio=GAP_RATIO, min_prom=MARKER_MI
     c) 下限：第 need 名 ≥ min_prom 灰度级（整条道几乎没墨量时别硬凑）。
 
     **不过闸门也照样返回前 need 名**（排好序，可能不足 need 条），由 info["ok"] / info["reason"]
-    说明可不可信：调用方拿它当草稿的起点（render 的 draft）、换下一条候选道，或直接报错。
-    info 另带 ratio / nth / next（断崖两端的显著度），供终端打印与 ep-meta 的 draft.gate。
+    说明可不可信：**闸门只决定置信度**（ep-bdt）——render 拿 ok 挑候选道，全不过就选断崖比值最好的
+    那条道并整体标低置信，从不抛错、也不凑数。
+    info 另带 ratio / nth / next（断崖两端的显著度），供终端打印与 ep-meta 的 marker_confidence。
     """
     dark, raw = _peaks(gs, px_per_cm)
     need = int(need)
