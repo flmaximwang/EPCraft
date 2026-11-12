@@ -21,7 +21,7 @@ import struct
 import subprocess
 import time
 
-import vc_file
+from . import vc_file
 
 
 DEFAULT_PORT = 7797

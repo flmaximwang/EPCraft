@@ -4,9 +4,9 @@
 import os
 import sys
 
-from magick_io import MAGICK, _run
-from text_layout import pick_font
-import vc_control
+from .magick_io import MAGICK, _run
+from .text_layout import pick_font
+from . import vc_control
 
 
 def cmd_doctor(args):
@@ -45,7 +45,7 @@ def cmd_doctor(args):
             print("         控制口 %d：没人听，但 VectorCraft 在跑（没带 --control）—— render/sync 前请存盘退出" % port)
         else:
             print("         控制口 %d：没人听（render 会自己带 --control 启动）" % port)
-    skill = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    skill = os.path.dirname(os.path.abspath(__file__))
     for rel in ("data/markers.json", "data/gel_size.json"):
         p = os.path.join(skill, rel)
         print("数据   : %s %s" % (rel, "存在" if os.path.isfile(p) else "缺 —— render 要用 --markers / --gel-size 显式指路径"))

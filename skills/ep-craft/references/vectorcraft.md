@@ -14,7 +14,7 @@ Three encodings exist. The app **opens all three** and the reader must accept al
 
 Our writer emits **inline** (one JSON file; no binary container to get wrong).
 
-**The loader is strict.** A missing field fails the whole open with e.g. `not a VectorCraft file: missing field 'color' at line 137 column 5`. So the writer **never builds object JSON from scratch**. It deep-copies each object kind from `templates/kinds.vectorcraft` (app-saved, one object per kind) and changes only the fields below. The document-level fields (swatches, graphic styles, grid, …) are copied from the same template.
+**The loader is strict.** A missing field fails the whole open with e.g. `not a VectorCraft file: missing field 'color' at line 137 column 5`. So the writer **never builds object JSON from scratch**. It deep-copies each object kind from `src/ep_craft/templates/kinds.vectorcraft` (app-saved, one object per kind) and changes only the fields below. The document-level fields (swatches, graphic styles, grid, …) are copied from the same template.
 
 **Unknown keys are dropped on save.** A top-level `ep_extra` and a `document.metadata.ep_labeling` both vanished after one save. Never store our data in extra keys.
 
@@ -106,7 +106,7 @@ A running instance **without** `--control` can't be reached. Launch with `Vector
 3. **Save can be read half-written.** `document.save` returned, and one read straight after it hit a truncated file (`Expecting ',' … char 30695`), though another returned complete in 10 ms. Poll until the file is newer than the request **and** parses.
 4. **Default font** is "Source Sans 3". Always pass `font:"Arial"` (and set `font_family` in the writer).
 
-### More pitfalls (measured in V7 with the live executor, `scripts/sync_exec.py`)
+### More pitfalls (measured in V7 with the live executor, `src/ep_craft/sync_exec.py`)
 
 5. **Locked layers block creation only.** Objects in a locked layer still accept `edit.clear`, `object.move` (including an image inside a clip group in the locked `gel`), `object.setProps`, `paint.setStroke`, `path.setAnchors` and `text.setText`. Creation is what fails: with a locked current layer, `text.create` silently put the object in the previously current layer, the same as with a hidden one. `sync_exec` therefore unlocks/shows only the target layers of `create` ops, relocks them at the end (also on error), and then checks each new object's layer once (with a `layer.move` fallback).
 6. **Painting by id also changes the defaults for new art.** `paint.setStroke` / `paint.setFill` / `stroke.set` with `ids` also change the default paint, and an undo-group cancel doesn't restore it. Calling the same commands with nothing selected restores the defaults without adding history. `document.inspect` reports `paint` and `currentLayer`, which is enough to restore both.
@@ -133,12 +133,12 @@ A running instance **without** `--control` can't be reached. Launch with `Vector
 
 - **V-D2, run metadata:** a text object `ep-meta` in a hidden, locked, non-printing layer `ep-meta`. It is written by the file writer (no hidden-layer create problem) and updated with `text.setText` (works while locked and hidden). Not `file.info description`, because that leaks into `fig.png`. Not custom JSON keys, because those are dropped on save.
 - **V-D1, trim marking:** a short line in the `trimmed` layer whose midpoint lies inside a lane drops that lane from the Figure (lane lines are shared separators, so they can't be moved out pair by pair). Agent recipe: `layer.setCurrent` on `trimmed`, then `shape.line` across the lane above the gel. Read back from `document.json` like any layer. `trimmed` must stay **unlocked**. Sync re-strokes everything in `trimmed` grey.
-- **Writer:** inline encoding, objects cloned from `templates/kinds.vectorcraft`, all text `Arial`.
+- **Writer:** inline encoding, objects cloned from `src/ep_craft/templates/kinds.vectorcraft`, all text `Arial`.
 - **PNG:** `document.export` with `artboard:0` (Figure is artboard 1) and `ppi:<dpi>`.
 
 ## 5. Templates
 
-`templates/kinds.vectorcraft`: saved by VectorCraft 0.14.0 through the control port, uncompressed. One layer `layer` holding `clip` (clip group: rectangle + embedded 2 × 2 px image `image`), `line` (shape line) and `text` (Arial 8 pt point text, centred). The writer copies these. Regenerate it with the same app version if the loader starts rejecting files.
+`src/ep_craft/templates/kinds.vectorcraft`: saved by VectorCraft 0.14.0 through the control port, uncompressed. One layer `layer` holding `clip` (clip group: rectangle + embedded 2 × 2 px image `image`), `line` (shape line) and `text` (Arial 8 pt point text, centred). The writer copies these. Regenerate it with the same app version if the loader starts rejecting files.
 
 ## 6. Re-check on a new VectorCraft version
 

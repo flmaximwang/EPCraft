@@ -17,8 +17,8 @@ import socketserver
 import tempfile
 import threading
 
-import sync_exec
-import vc_control
+from . import sync_exec
+from . import vc_control
 
 
 # ---------------------------------------------------------------- 假 app
@@ -541,12 +541,12 @@ def _crop_ops():
 
 def _crop_read():
     """gel_photo._read_all：Crop 画板的读回、重新裁切、报错与旧文档补画板（照片是 magick 现画的）。"""
-    import crop
-    import figure
-    import gel_photo
-    import vc_file
-    import workbench
-    from magick_io import MAGICK, _run
+    from . import crop
+    from . import figure
+    from . import gel_photo
+    from . import vc_file
+    from . import workbench
+    from .magick_io import MAGICK, _run
     ok = 0
     dpi, wpx, hpx = 127, 250, 175                      # 胶面图 250×175 px @127 dpi = 5.00 × 3.50 cm（补画板按 0.01 cm 取整预设）
     width_cm = wpx * 2.54 / dpi
@@ -664,7 +664,7 @@ def _crop_read():
             # 14) 旧文档（没有 Crop 画板、meta 没有 crop；胶面图是修错位之前、没有 +repage 的旧版裁的）：
             #     照片在、默认参数重裁 ≈ 文档里那张 → backfill op + 新 meta.crop（frame_px = 旧图真正裁到的那块）；
             #     文档里的图对不上 / 照片不在 → 一条提示、没有 op。
-            import selftest_crop
+            from . import selftest_crop
             assert abs(st["angle"]) > 0.5, st["angle"]           # 照片要是歪的，错位才测得出来
             keep = blobs["K"]
             blobs["K"] = embedded = selftest_crop._old_crop(photo, st["angle"], st["gel_box"], width_cm,

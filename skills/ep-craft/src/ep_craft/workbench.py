@@ -26,12 +26,12 @@
 import json
 import re
 
-import profiles
-import vc_file
-import well_grid
-from config import as_entry
-from mw_report import marker_pairs, parse_mw
-from text_layout import window_deg
+from . import profiles
+from . import vc_file
+from . import well_grid
+from .config import as_entry
+from .mw_report import marker_pairs, parse_mw
+from .text_layout import window_deg
 
 
 PT = vc_file.PT_PER_CM

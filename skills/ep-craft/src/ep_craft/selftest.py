@@ -14,53 +14,70 @@ import shutil
 import subprocess
 import time
 
-from config import load_gel_size
-from gel_area import compute, estimate_pitch_px
-from magick_io import MAGICK, _run, read_ppm, to_gray
-from gel_detect import bg_plane, components, detect_gel, ink_mask
-from lane_select import layout as lane_layout, parse_keep, strips as lane_strips
-from geometry import load_dims_after, rotate_pt, rotated_rect_bbox
-from mw_report import build_cal, estimate, format_report_v2, marker_pairs, parse_mw, write_v2
-import vc_file
-import vc_control
-import workbench
-import profiles
-import well_grid
-import figure
-import doc_edit
+from .config import load_gel_size
+from .gel_area import compute, estimate_pitch_px
+from .magick_io import MAGICK, _run, read_ppm, to_gray
+from .gel_detect import bg_plane, components, detect_gel, ink_mask
+from .lane_select import layout as lane_layout, parse_keep, strips as lane_strips
+from .geometry import load_dims_after, rotate_pt, rotated_rect_bbox
+from .mw_report import build_cal, estimate, format_report_v2, marker_pairs, parse_mw, write_v2
+from . import vc_file
+from . import vc_control
+from . import workbench
+from . import profiles
+from . import well_grid
+from . import figure
+from . import doc_edit
 
 
 def test_import_direction():
-    """模块不许 import 管线里更靠后的模块（stage 1 → 种子 → 剖面 → 模型 → 文档 → 执行 → CLI）。
+    """包内模块只许用相对 import，且不许 import 管线里更靠后的模块。
 
     用 ast 解析真正的 import 语句（不 grep 文本：注释/文档里提到模块名不算依赖）。
     返回违规列表，每条写明「哪个模块 import 了哪个」。
     """
-    scripts = os.path.dirname(os.path.abspath(__file__))
+    package = os.path.dirname(os.path.abspath(__file__))
+    local = {os.path.splitext(name)[0] for name in os.listdir(package)
+             if name.endswith(".py") and not name.startswith("__")}
     # 管线：stage 1（gel_area）→ 泳道种子（well_grid）→ 剖面/条带（profiles）→ 模型（workbench）
     #       → 文档与 sync 计划（figure）→ 控制口执行（sync_exec）→ CLI（gel_photo）。只许依赖前面的。
+    # canvas_cli / workbench_io 是 CLI 胶水层，双方都有延迟 import，不参与线性方向规则。
     later = ["well_grid", "profiles", "workbench", "figure", "doc_edit", "sync_exec", "gel_photo"]
     rules = {"gel_area": set(later), "gel_detect": set(later)}
     for i, mod in enumerate(later):
         rules[mod] = set(later[i + 1:])
     bad = []
-    for mod, forbidden in rules.items():
-        path = os.path.join(scripts, mod + ".py")
-        if not os.path.isfile(path):
-            continue
+    for mod in sorted(local):
+        path = os.path.join(package, mod + ".py")
         with open(path, encoding="utf-8") as f:
             tree = ast.parse(f.read(), path)
+        imported = []   # [(module, lineno)]
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
-                names = [a.name for a in node.names]
+                for alias in node.names:
+                    top = alias.name.split(".")[0]
+                    if top in local:
+                        bad.append("%s 用绝对 import 导入了包内模块 %s（第 %d 行；要写 from . import %s）"
+                                   % (mod, top, node.lineno, top))
+                        imported.append((top, node.lineno))
             elif isinstance(node, ast.ImportFrom):
-                names = [node.module or ""]
-            else:
-                continue
-            for name in names:
-                top = name.split(".")[0]
-                if top in forbidden:
-                    bad.append("%s import 了 %s（第 %d 行）" % (mod, top, node.lineno))
+                if node.level == 0:
+                    top = (node.module or "").split(".")[0]
+                    if top in local:
+                        bad.append("%s 用绝对 import 导入了包内模块 %s（第 %d 行；要写 from .%s import …）"
+                                   % (mod, top, node.lineno, top))
+                        imported.append((top, node.lineno))
+                elif node.level == 1:
+                    if node.module:
+                        imported.append((node.module.split(".")[0], node.lineno))
+                    else:                                   # from . import a, b
+                        imported.extend((a.name, node.lineno) for a in node.names)
+                # level > 1 在当前扁平包内不应该出现；留给下面的未知名检查兜底
+        for name, lineno in imported:
+            if name not in local:
+                bad.append("%s 导入了不存在的包内模块 %r（第 %d 行）" % (mod, name, lineno))
+            if name in rules.get(mod, set()):
+                bad.append("%s import 了 %s（第 %d 行）" % (mod, name, lineno))
     return bad
 
 
@@ -165,7 +182,7 @@ def selftest():
 
     # 18) 强制预设闸门：probe 没给 --gel-size 必须在**跑检测之前**就失败。
     #     用一张不存在的图：真跑到 detect_gel 会报别的错，只有先过闸门才会是 spec 那一行。
-    from gel_photo import main as gp_main
+    from .gel_photo import main as gp_main
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
         rc = gp_main(["probe", "/nonexistent/t1-gate-no-preset.png"])
@@ -224,8 +241,7 @@ def selftest():
             assert "anchor" in str(e), str(e)
 
         # 随包预设自身必须过 schema/不变式（lane_count=15）
-        shipped = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                               "data", "gel_size.json")
+        shipped = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "gel_size.json")
         if os.path.isfile(shipped):
             sg = load_gel_size(shipped)
             assert sg["lane_count"] == 15 and sg["anchor"] == "bottom", sg
@@ -1182,7 +1198,7 @@ def selftest():
     #      crop 层不锁不打印；照片 image/jpeg、等比到 0.5 % 以内；框四角 = crop_layout 的 frame_pt；
     #      read_frame 读回 frame_px（≤ 0.01 px）无错；render 完第一次 sync = 0 个操作（ep-meta 带着 crop）；
     #      crop=None 仍是三画板、没有 photo / crop 层、没有 JPEG。
-    import crop as crop_geom
+    from . import crop as crop_geom
     with tempfile.TemporaryDirectory() as td:
         ph = os.path.join(td, "photo.jpg")
         _run([MAGICK, "-size", "2401x1601", "xc:gray(210)", "-fill", "gray(90)",
@@ -1307,7 +1323,7 @@ def selftest():
 
     # 74) 去掉的输出与参数（V6）：--keep-lanes / --svg / --no-editor / --debug / --record 与 export 子命令
     #     都报「已经去掉了：用什么代替」并非 0 退出（不静默忽略）；孔距核对只在偏差 > 10% 时警告。
-    from gel_photo import main as gp_main, _check_pitch
+    from .gel_photo import main as gp_main, _check_pitch
     for extra in (["--keep-lanes", "1-3"], ["--svg"], ["--no-editor"], ["--debug", "d.png"], ["--record", "r.json"]):
         buf = io.StringIO()
         with contextlib.redirect_stderr(buf):
@@ -1373,9 +1389,9 @@ def selftest():
 
     # 75+) 活文档执行器（V7，sync_exec；假控制口，不开 app）：每种 op 的命令序列、锁定层先解锁后锁回、
     #      新对象起名、剪切组、失败 → 撤销组 cancel 并抛原错、收尾恢复当前层与默认颜色。
-    import selftest_sync
+    from . import selftest_sync
     ok += selftest_sync.run()
-    import selftest_crop
+    from . import selftest_crop
     ok += selftest_crop.run()
 
     # 78) 标签角度（V9）：角度是逆时针度（90 = 从下往上读），写进点文字的 xf（绕锚点）；读回同值；
@@ -1383,7 +1399,7 @@ def selftest():
     #     装得下整条字）；marker 标签也能竖排（框内边离胶 4 pt）；render 完 plan_sync = 0（幂等）；
     #     sync 读到用户转过的标签 → 只挪位置、不改角度，并把角度记进 ep-meta。
     import types
-    import text_layout
+    from . import text_layout
     with tempfile.TemporaryDirectory() as td:
         # (a) 框几何 + xf 往返
         b0 = text_layout.box_offsets(20.0, 8.0, 0.0, "Center")
@@ -1465,7 +1481,7 @@ def selftest():
         assert figure.plan_sync(d_u, m_u2, profiles.analyze(m_u2, png_c, [None] * 15))[0] == [], "第二次 sync 不幂等"
 
         # (d) 配置入口：lanes.json 每项 {text, angle}；markers.json 每项 angle
-        import gel_photo
+        from . import gel_photo
         p_lanes = os.path.join(td, "lanes.json")
         with open(p_lanes, "w", encoding="utf-8") as f:
             json.dump({"labels": ["M", {"text": "A", "angle": 90}, ""], "marker_lanes": [1, 2]}, f)
@@ -1634,7 +1650,7 @@ def selftest():
     # 123) ep-meta 的 peak_auto（spec §4.6）：render 与 sync 写刻度时都记「这一轮检测器叫出的样品带」
     #      （id 键是泳道号字符串、自上而下、四位小数；marker 道与空道不列）；其它 ep-meta 键原样；
     #      render 写出的文档第一次 sync 仍是 0 个操作，peak_auto 原样留着。
-    import gel_photo
+    from . import gel_photo
     raw5 = {}
     profiles.analyze(m5, png5, names5, overrides={}, raw=raw5)    # 与 cmd_render 同一句（无 override）
     pa5 = gel_photo._peak_auto(raw5, m5["marker_lane"])
@@ -1665,7 +1681,7 @@ def selftest():
     # 124) 旧文档（刻度还在 analysis 层、名字 peak <lane>，ep-meta 没有 peak_auto）：sync 时先建 sample bands
     #      层、删掉 analysis 里的旧刻度、在同一个撤销组里按 peak n.k 重建；peak_auto 记上、其它键原样；
     #      再 sync 一次 0 个操作。
-    import gel_photo as _gp
+    from . import gel_photo as _gp
     d_old = json.loads(json.dumps(d5))
     L_old = {l["name"]: l for l in d_old["layers"]}
     old_ids = []
@@ -1718,7 +1734,7 @@ def selftest():
     #      （manual=True、显著度 ≤ 0 记 0、MW 按 y 换算、参与 strongest 与排序）；无 override 时报告与
     #      改动前逐字段相同；raw / peak_auto 始终是**抑制之前**的检测器叫带，手加带不混进去；
     #      mw_report 给手加带标 ✎；Profiles 画板与 sample bands 刻度跟着报告走。
-    import gel_photo as _gp_ov
+    from . import gel_photo as _gp_ov
     with tempfile.TemporaryDirectory() as td:
         gp_ov = os.path.join(td, "gel.png")
         rows_ov = [1.0, 2.0, 3.0, 4.0]
@@ -2058,7 +2074,7 @@ def selftest():
         assert ops2 and "peak_overrides" not in meta2, meta2.get("peak_overrides")
         assert json.dumps(workbench.from_document(d)[0]["meta"], sort_keys=True) != meta_before
 
-    import gel_photo as _gp_arg
+    from . import gel_photo as _gp_arg
     seen = {}
     orig_sync = _gp_arg.cmd_sync
     _gp_arg.cmd_sync = lambda a: (seen.update(reset_peaks=a.reset_peaks) or 0)
@@ -2157,7 +2173,7 @@ def _peak_gel(path, lane3_py=197):
 
 def _peak_doc(td):
     """selftest：render 出的一份 4 道样品带文档（ep-meta 有 peak_auto，刻度已按报告写好）→ (top, png)。"""
-    import gel_photo
+    from . import gel_photo
     p = os.path.join(td, "gel.png")
     _peak_gel(p)
     png = open(p, "rb").read()
@@ -2190,7 +2206,7 @@ def _peak_sync(top, png, reset=None, apply=True):
     analyze → 记 peak_auto → plan_sync → 落 op）。reset 同 --reset-peaks：None = 没给、[] = 全部道、
     [道号…] = 指定道；apply=False = --dry-run（算出 ops 但不改文档）。
     返回 (模型, 报告, ops, ep-meta, 样品带摘要行, 警告行)。"""
-    import gel_photo
+    from . import gel_photo
     d = top["document"]
     m, _notes = workbench.from_document(d)
     old = dict(m["meta"])

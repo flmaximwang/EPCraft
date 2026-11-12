@@ -15,13 +15,12 @@ import sys
 import tempfile
 import zlib
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import doc_edit                                                                         # noqa: E402
-import figure                                                                           # noqa: E402
-import vc_file                                                                          # noqa: E402
-import workbench                                                                        # noqa: E402
-import workbench_io                                                                     # noqa: E402
+from . import doc_edit                                                                         # noqa: E402
+from . import figure                                                                           # noqa: E402
+from . import vc_file                                                                          # noqa: E402
+from . import workbench                                                                        # noqa: E402
+from . import workbench_io                                                                     # noqa: E402
 
 
 def _png(w, h, rgb=(128, 128, 128)):

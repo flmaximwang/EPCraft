@@ -5,11 +5,11 @@
 
 ## 1. 两个 JSON —— 字段表
 
-`templates/` 里有整套示例。下面没列的键（`size` / `color` / `gap` / `font` / `align`、`y_px` / `snap` / `y_frac` /
+`src/ep_craft/templates/` 里有整套示例。下面没列的键（`size` / `color` / `gap` / `font` / `align`、`y_px` / `snap` / `y_frac` /
 `x_frac` / `marker_lane_x` / `lane_width` / `lane_edge`）**已不再读取**：字号、字体、颜色在 VectorCraft 里改；
 条带与泳道位置在 Workbench 上拖线改（§5、§9）。
 
-### markers.json（或 `data/markers.json` 预设库 + `--preset`）
+### markers.json（或 `src/ep_craft/data/markers.json` 预设库 + `--preset`）
 
 | 键 | 含义 |
 |---|---|
@@ -30,7 +30,7 @@
 
 ## 2. 胶体预设与成品尺寸
 
-`data/gel_size.json` **必给**、**没有默认**。没有 `--gel-size` 时 `probe` / `render` 一律以
+`src/ep_craft/data/gel_size.json` **必给**、**没有默认**。没有 `--gel-size` 时 `probe` / `render` 一律以
 `gel preset required (--gel-size FILE)` 退出。
 
 | 键 | 必给 | 作用 |
@@ -425,20 +425,20 @@ ep-craft figure sync fig.vectorcraft
 
 ## 10. 命令
 
-公开入口是 `scripts/ep-craft`（把 `scripts/` 放进 `PATH`，或写成 `python3 scripts/ep-craft …`）。老扁平命令 `python3 scripts/gel_photo.py …` 仍然可用，只是不再作为文档入口。
+公开入口是 `scripts/ep-craft`（把 `scripts/` 放进 `PATH`，或写成 `python3 scripts/ep-craft …`）。老扁平命令 `python3 scripts/gel_photo.py …` 仍然可用，只是不再作为文档入口。下面命令里的 `src/ep_craft/data/...` 都相对 skill 目录；从 repo 根跑就加 `skills/ep-craft/` 前缀。
 
 ```bash
 ep-craft doctor                             # python / magick / 字体 / VectorCraft 版本与控制口 / 数据文件
 ep-craft selftest                           # 不读用户文件、不开 app；全绿即可（项数以当次输出为准）
 
 # 只探测（不写文件、不开 app）：胶面、孔距/首道/孔深、每道叫出的带 y；给了 --markers 还打 marker 候选道的前 N 名与闸门
-ep-craft crop probe photo.jpeg --gel-size data/gel_size.json [--gel-lanes N] [--rect x0,y0,x1,y1] \
-        [--markers data/markers.json --preset 3 --lanes lanes.json]
+ep-craft crop probe photo.jpeg --gel-size src/ep_craft/data/gel_size.json [--gel-lanes N] [--rect x0,y0,x1,y1] \
+        [--markers src/ep_craft/data/markers.json --preset 3 --lanes lanes.json]
 
 # 出文档 + fig.png + fig.mw.json
 ep-craft figure render photo.jpeg --out fig.vectorcraft \
-        --markers data/markers.json --preset 3 --lanes lanes.json \
-        --gel-size data/gel_size.json [--trim-lanes 1,2,14-15] [--dpi 300] [--profiles stack|strips] \
+        --markers src/ep_craft/data/markers.json --preset 3 --lanes lanes.json \
+        --gel-size src/ep_craft/data/gel_size.json [--trim-lanes 1,2,14-15] [--dpi 300] [--profiles stack|strips] \
         [--label-angle 90] [--marker-label-angle 0] [--port 7797] [--no-mw]
 
 # 用户在 VectorCraft 里改完之后
@@ -487,33 +487,38 @@ render 的其它开关（全是 stage 1；出图后也可以在 Crop 画板上�
 
 ## 12. 脚本模块
 
-`scripts/ep-craft` 是公开入口，`scripts/gel_photo.py` 保留老的扁平命令并放 CLI 与编排（`probe` / `render` / `sync` / `edit`）；其余同目录、纯 stdlib：
+运行时代码都在可安装包 `src/ep_craft/` 里（模块内用相对 import）；`scripts/` 只剩两个薄壳。纯 stdlib，不需要第三方包：
+
+| 入口 | 承担 |
+|---|---|
+| `scripts/ep-craft` | 公开命令的 checkout 薄壳：把 `../src` 加进 `sys.path`，调 `ep_craft.cli:main` |
+| `scripts/gel_photo.py` | 老扁平命令的薄壳：同样加 `../src`，调 `ep_craft.gel_photo:main`；也自动认画板分组 |
 
 | 模块 | 承担 |
 |---|---|
-| `magick_io.py` | magick 外呼、PPM 读取 |
-| `gel_detect.py` | 认胶面：背景平面、暗度/蓝度判据、连通域、竖边倾角 |
-| `gel_area.py` | stage 1：按预设定标定形、高度核对 |
-| `geometry.py` | 旋转几何 |
-| `crop.py` | Crop 画板：stage 1 框 ↔ 四角、预览 JPEG 与版式、读回框（`read_frame`）、`frame_delta`、按框重裁（`crop_face`） |
-| `config.py` | markers / lanes / 胶体预设的读取与校验 |
-| `lane_select.py` | `--trim-lanes` 语法、保留段与拼缝版式 |
-| `text_layout.py` | 字体、文字量宽、标签的角度与墨迹框（`box_offsets` / `anchor_for`，页边距与落位都用它） |
-| `well_grid.py` | 泳道种子：按加样孔定相的等距梳子（§6） |
-| `profiles.py` | 剖面、叫带、标定、报告 v2（§7） |
-| `mw_report.py` | MW 数学、marker 配对、终端表与写盘 |
-| `workbench.py` | Workbench 模型：建（`from_image`）、画、读回（`from_document`）、校验、泳道名匹配 |
-| `figure.py` | Figure / Profiles 画板、整份文档（`build_document`）、sync 增量计划（`plan_sync`） |
-| `doc_edit.py` | `edit` 的改动计划（`plan_edit`：trim、marker 泳道、泳道名），出与 `plan_sync` 同一套 op |
-| `vc_file.py` | `.vectorcraft` 读写（内联 / blobs / gzip 三种编码；对象从 `templates/kinds.vectorcraft` 深拷贝） |
-| `vc_control.py` | 控制口客户端：连接/启动、对话框、存盘轮询、导出核对、撤销组 |
-| `sync_exec.py` | 把 `plan_sync` 的操作落到活文档上 |
-| `env_check.py` | `doctor` |
-| `canvas_cli.py` | 公开层级命令：`launch`、`figure export`、`workbench export` / `import` 的参数、路径保护与错误边界 |
-| `workbench_io.py` | Workbench JSON 的导出 / 导入与整份校验（§13） |
-| `selftest.py`、`selftest_sync.py`、`selftest_crop.py`、`selftest_cli.py`、`selftest_workbench_io.py` | `selftest` 的各套件（`selftest_sync` 用假控制口测 sync 执行器；`selftest_crop` 测裁切框几何与读回；`selftest_cli` 测命令树与分发；`selftest_workbench_io` 测 JSON 往返与校验） |
+| `src/ep_craft/magick_io.py` | magick 外呼、PPM 读取 |
+| `src/ep_craft/gel_detect.py` | 认胶面：背景平面、暗度/蓝度判据、连通域、竖边倾角 |
+| `src/ep_craft/gel_area.py` | stage 1：按预设定标定形、高度核对 |
+| `src/ep_craft/geometry.py` | 旋转几何 |
+| `src/ep_craft/crop.py` | Crop 画板：stage 1 框 ↔ 四角、预览 JPEG 与版式、读回框（`read_frame`）、`frame_delta`、按框重裁（`crop_face`） |
+| `src/ep_craft/config.py` | markers / lanes / 胶体预设的读取与校验 |
+| `src/ep_craft/lane_select.py` | `--trim-lanes` 语法、保留段与拼缝版式 |
+| `src/ep_craft/text_layout.py` | 字体、文字量宽、标签的角度与墨迹框（`box_offsets` / `anchor_for`，页边距与落位都用它） |
+| `src/ep_craft/well_grid.py` | 泳道种子：按加样孔定相的等距梳子（§6） |
+| `src/ep_craft/profiles.py` | 剖面、叫带、标定、报告 v2（§7） |
+| `src/ep_craft/mw_report.py` | MW 数学、marker 配对、终端表与写盘 |
+| `src/ep_craft/workbench.py` | Workbench 模型：建（`from_image`）、画、读回（`from_document`）、校验、泳道名匹配 |
+| `src/ep_craft/figure.py` | Figure / Profiles 画板、整份文档（`build_document`）、sync 增量计划（`plan_sync`） |
+| `src/ep_craft/doc_edit.py` | `edit` 的改动计划（`plan_edit`：trim、marker 泳道、泳道名），出与 `plan_sync` 同一套 op |
+| `src/ep_craft/vc_file.py` | `.vectorcraft` 读写（内联 / blobs / gzip 三种编码；对象从 `src/ep_craft/templates/kinds.vectorcraft` 深拷贝） |
+| `src/ep_craft/vc_control.py` | 控制口客户端：连接/启动、对话框、存盘轮询、导出核对、撤销组 |
+| `src/ep_craft/sync_exec.py` | 把 `plan_sync` 的操作落到活文档上 |
+| `src/ep_craft/env_check.py` | `doctor` |
+| `src/ep_craft/canvas_cli.py` | 公开层级命令：`launch`、`figure export`、`workbench export` / `import` 的参数、路径保护与错误边界 |
+| `src/ep_craft/workbench_io.py` | Workbench JSON 的导出 / 导入与整份校验（§13） |
+| `src/ep_craft/selftest.py`、`selftest_sync.py`、`selftest_crop.py`、`selftest_cli.py`、`selftest_workbench_io.py` | `selftest` 的各套件（`selftest_sync` 用假控制口测 sync 执行器；`selftest_crop` 测裁切框几何与读回；`selftest_cli` 测命令树与分发；`selftest_workbench_io` 测 JSON 往返与校验） |
 
-## 13. Workbench 数据交换（`workbench_io.py`）
+## 13. Workbench 数据交换（`src/ep_craft/workbench_io.py`）
 
 两个公开命令，读写的是**泳道数据**，不是 render 的配置（`lanes.json` / `markers.json`，§1），也不是 MW 报告（`fig.mw.json`，§7）：
 

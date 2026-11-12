@@ -40,8 +40,8 @@ import math
 import os
 import tempfile
 
-import vc_control
-import vc_file
+from . import vc_control
+from . import vc_file
 
 
 LABEL = "ep-craft sync"
@@ -176,7 +176,7 @@ def _relink(client, op, tmp):
 def _backfill(client, op, layers, cur, created, opened):
     """旧文档补 Crop 画板（crop-artboard spec §7）。新图层建出来就是可见、不锁的，并设成当前层再建对象
     （坑 1 / 5）；photo 层在收尾（_close_layers）才锁上，落层核对的 layer.move 兜底因此还进得去。"""
-    import workbench
+    from . import workbench
     ex = client.execute
     x, y, w, h = op["artboard"]
     ex("artboard.new", {"x": x, "y": y, "width": w, "height": h, "name": "Crop"})

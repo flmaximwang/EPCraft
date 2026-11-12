@@ -6,7 +6,7 @@
 launch 的 connect/open、figure export 的画板选择与输出保护、workbench export/import
 的参数转交，以及 main 的一行错误边界（RuntimeError / OSError / ValueError → 2）。
 
-运行：python3 selftest_cli.py
+运行：python3 -m ep_craft.selftest_cli（在 src/ 上或安装后）
 """
 import contextlib
 import io
@@ -16,11 +16,11 @@ import sys
 import tempfile
 import types
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import canvas_cli          # noqa: E402
-import gel_photo           # noqa: E402
-import vc_control          # noqa: E402
+import ep_craft                    # noqa: E402
+from . import canvas_cli          # noqa: E402
+from . import gel_photo           # noqa: E402
+from . import vc_control          # noqa: E402
 
 
 # ---------------------------------------------------------------- 小工具
@@ -282,8 +282,11 @@ def test_workbench_io_delegation():
         return 0
 
     mod.cmd_export, mod.cmd_import = cmd_export, cmd_import
-    old = sys.modules.get("workbench_io")
-    sys.modules["workbench_io"] = mod
+    key = "ep_craft.workbench_io"
+    old = sys.modules.get(key)
+    old_attr = getattr(ep_craft, "workbench_io", None)
+    sys.modules[key] = mod
+    ep_craft.workbench_io = mod
     try:
         rc, _o, err = _run(["workbench", "export", "f.vectorcraft", "--port", "7802"])
         assert rc == 0, err
@@ -302,9 +305,16 @@ def test_workbench_io_delegation():
         assert seen["import"]["port"] == 7803
     finally:
         if old is None:
-            sys.modules.pop("workbench_io", None)
+            sys.modules.pop(key, None)
         else:
-            sys.modules["workbench_io"] = old
+            sys.modules[key] = old
+        if old_attr is None:
+            try:
+                del ep_craft.workbench_io
+            except AttributeError:
+                pass
+        else:
+            ep_craft.workbench_io = old_attr
 
     # 缺 --input 是 argparse 用法错误（退出 2）
     err = io.StringIO()
@@ -321,14 +331,20 @@ def test_workbench_io_delegation():
 # ---------------------------------------------------------------- executable
 
 def test_public_entry():
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ep-craft")
-    assert os.path.isfile(path), path
-    st = os.stat(path)
-    assert st.st_mode & stat.S_IXUSR, "ep-craft 没有可执行位"
-    with open(path, encoding="utf-8") as f:
-        text = f.read()
-    assert text.startswith("#!/usr/bin/env python3"), text.splitlines()[0]
-    assert "main(canvas=True)" in text, "公开入口没有走 canvas 层级"
+    """签出：scripts/ep-craft 是带可执行位的薄 shim；安装后：console script 指向 ep_craft.cli。"""
+    from ep_craft import cli as package_cli
+    package = os.path.dirname(os.path.abspath(__file__))          # …/src/ep_craft
+    shim = os.path.join(os.path.dirname(package), "scripts", "ep-craft")
+    if os.path.isfile(shim):                                      # 仓库签出：检查薄 shim
+        st = os.stat(shim)
+        assert st.st_mode & stat.S_IXUSR, "scripts/ep-craft 没有可执行位"
+        with open(shim, encoding="utf-8") as f:
+            text = f.read()
+        assert text.startswith("#!/usr/bin/env python3"), text.splitlines()[0]
+        assert "main(canvas=True)" in text, "公开入口没有走 canvas 层级"
+        assert "ep_craft.cli import main" in text, "公开入口没有走 ep_craft.cli"
+    # 安装后没有 scripts/ shim：console 入口就是 ep_craft.cli:main
+    assert callable(package_cli.main), package_cli.main
     help_text = gel_photo.build_parser(canvas=True).format_help()
     for name in ("figure", "crop", "workbench", "profile", "launch", "doctor", "selftest"):
         assert name in help_text, (name, help_text)

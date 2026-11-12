@@ -8,7 +8,7 @@
 import math
 import os
 
-from magick_io import FONTS, MAGICK, _run
+from .magick_io import FONTS, MAGICK, _run
 
 
 def pick_font(cfg_font=None):

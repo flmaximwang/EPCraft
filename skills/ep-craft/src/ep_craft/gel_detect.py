@@ -3,7 +3,7 @@
 """认胶面：平面背景拟合 → 暗度/蓝度判据 → 连通域 → 竖边拟合倾角。"""
 import math
 
-from magick_io import identify, read_ppm, to_gray
+from .magick_io import identify, read_ppm, to_gray
 
 
 def blue_cue(w, h, rgb):

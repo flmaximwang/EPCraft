@@ -1,9 +1,9 @@
 include README.md
 include LICENSE
 include pyproject.toml
-include setup.py
-recursive-include skills/ep-craft *
-recursive-include packaging/ep_craft *.py
+graft skills/ep-craft/src/ep_craft/data
+graft skills/ep-craft/src/ep_craft/templates
+graft skills/ep-craft/src/ep_craft/fixtures
 global-exclude __pycache__
 global-exclude *.py[cod]
 global-exclude .DS_Store

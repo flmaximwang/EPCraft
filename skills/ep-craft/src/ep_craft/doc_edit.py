@@ -12,8 +12,8 @@
 """
 import json
 
-import vc_file
-import workbench
+from . import vc_file
+from . import workbench
 
 PT = vc_file.PT_PER_CM
 

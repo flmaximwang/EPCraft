@@ -3,7 +3,7 @@
 """旋转 / 定标几何与配置里的位置口径。"""
 import math
 
-from magick_io import identify
+from .magick_io import identify
 
 
 def rotate_pt(x, y, cx, cy, ang_deg):

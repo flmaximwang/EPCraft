@@ -29,7 +29,7 @@ import os
 import struct
 
 
-TEMPLATE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         "templates", "kinds.vectorcraft")
 BLOB_MARK = b"\0VCBLOBS\0"
 PT_PER_CM = 72.0 / 2.54

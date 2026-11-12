@@ -18,8 +18,8 @@ render（探测出来的线）和 sync（用户改过的线）走同一份代码
 import os
 import tempfile
 
-from magick_io import read_ppm, to_gray
-from mw_report import build_cal, estimate
+from .magick_io import read_ppm, to_gray
+from .mw_report import build_cal, estimate
 
 
 BASE_HALF_CM = 0.30      # top-hat 基线半窗（stage 3：20 分析 px ≈ 0.33 cm；再宽会吃掉并带的显著度）

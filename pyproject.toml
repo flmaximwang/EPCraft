@@ -30,4 +30,11 @@ ep-craft = "ep_craft.cli:main"
 
 [tool.setuptools]
 packages = ["ep_craft"]
-package-dir = { "" = "packaging" }
+package-dir = { "" = "skills/ep-craft/src" }
+
+[tool.setuptools.package-data]
+ep_craft = [
+    "data/*.json",
+    "templates/*",
+    "fixtures/*.json",
+]

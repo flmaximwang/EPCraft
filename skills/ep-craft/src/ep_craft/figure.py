@@ -26,11 +26,11 @@ Workbench），Profiles 在 Workbench 右边，Crop 在 Workbench 左边。画�
 import copy
 import json
 
-import crop as crop_geom
-import vc_file
-import workbench
-from lane_select import layout as strips_layout, strips as lane_strips
-from text_layout import CAP as TEXT_CAP, box_offsets, anchor_for, pick_font, text_extent, window_deg
+from . import crop as crop_geom
+from . import vc_file
+from . import workbench
+from .lane_select import layout as strips_layout, strips as lane_strips
+from .text_layout import CAP as TEXT_CAP, box_offsets, anchor_for, pick_font, text_extent, window_deg
 
 
 PT = vc_file.PT_PER_CM

@@ -25,14 +25,16 @@ Turn a phone photo of a gel into a labeled figure at true physical size. Detecti
 
 | Path | Use |
 |---|---|
-| `scripts/ep-craft` | Public executable: commands grouped by canvas (`launch`, `figure`, `crop`, `workbench`, `profile`, `doctor`, `selftest`). Put `scripts/` on `PATH`, or run `python3 scripts/ep-craft …`. No built-in data paths; pass the files below explicitly. |
-| `scripts/gel_photo.py` | Legacy-compatible flat entry point (`doctor`, `probe`, `render`, `sync`, `edit`, `selftest`); keep using it only for old scripts/tests. It is the implementation `ep-craft` calls. |
-| `data/markers.json` | Marker preset library: `--markers data/markers.json --preset <number or keyword>` (an ambiguous choice lists all presets). |
-| `data/gel_size.json` | Gel preset (`--gel-size`). `lane_count × lane_pitch_cm ≈ width_cm` (±10 %) is checked on load. |
-| `templates/mini-gel-15lanes.{lanes,markers}.json` | Example configs; copy and edit. |
-| `references/photo-labeling-conventions.md` | Config fields, document structure and ownership, Workbench reading rules, seeding and band calling, `fig.mw.json`, Figure/Profiles layout, `sync` semantics, the Workbench JSON exchange, the label-text recipe. |
+| `scripts/ep-craft` | Public executable (thin checkout shim into `src/`): commands grouped by canvas (`launch`, `figure`, `crop`, `workbench`, `profile`, `doctor`, `selftest`). Put `scripts/` on `PATH`, or run `python3 scripts/ep-craft …`. |
+| `scripts/gel_photo.py` | Thin checkout shim for the legacy flat entry point (`doctor`, `probe`, `render`, `sync`, `edit`, `selftest`); keep using it only for old scripts/tests. |
+| `src/ep_craft/data/markers.json` | Marker preset library: `--markers src/ep_craft/data/markers.json --preset <number or keyword>` (an ambiguous choice lists all presets). Installed wheel: ask `ep_craft.data_dir()`. |
+| `src/ep_craft/data/gel_size.json` | Gel preset (`--gel-size`). `lane_count × lane_pitch_cm ≈ width_cm` (±10 %) is checked on load. |
+| `src/ep_craft/templates/mini-gel-15lanes.{lanes,markers}.json` | Example configs; copy and edit. |
+| `references/photo-labeling-conventions.md` | Config fields, document structure and ownership, Workbench reading rules, seeding and band calling, `fig.mw.json`, Figure/Profiles layout, `sync` semantics, the Workbench JSON exchange, the module map (§12), the label-text recipe. |
 | `references/special-cases-and-pitfalls.md` | Close band pairs, cropped photos, damaged gel edge, wells cut off, history. Read when a checkpoint fires. |
 | `references/vectorcraft.md` | VectorCraft 0.14 file format and control-port commands (measured). Read only when an edit through the port isn't covered by conventions §9c. |
+
+Paths above are relative to this skill directory; from the repo root prefix them with `skills/ep-craft/`. Runtime modules live under `src/ep_craft/`; the module map is conventions §12. In a `uv tool install` the bundled data/templates are package data — locate them with `ep_craft.data_dir()` / `ep_craft.templates_dir()`.
 
 ## Canvas CLI
 
@@ -62,7 +64,7 @@ Detection is a **first guess the user corrects by hand** in VectorCraft. The age
 
 - **The commands in this file are the whole toolbox.** Never write diagnostic scripts, never import the skill's modules from ad-hoc Python to scan, sweep or shift crops, never read the scripts' source. Why: in one session the agent wrote 10 diagnostic scripts over 13 minutes before the first `render`; the user then said "just run everything, I'll fix the lanes myself".
 - **Never look at the gel photo to guess geometry** (lanes, ladder, crop). Lane lines, band lines and the crop frame are the user's to fix on the Workbench / Crop artboards.
-- **Start from this file and the user's message.** Do not read `references/` up front (open one only when a checkpoint names it), do not dump `data/*.json` beyond listing preset names, do not run `--help`, do not search the disk or memory for earlier outputs.
+- **Start from this file and the user's message.** Do not read `references/` up front (open one only when a checkpoint names it), do not dump `src/ep_craft/data/*.json` beyond listing preset names, do not run `--help`, do not search the disk or memory for earlier outputs.
 - **Run each command once.** No `--dry-run` before a real `sync`; no re-reading the document through the control port or re-parsing `fig.mw.json` to double-check what the command already printed. The printed summary is the verification.
 - **Act, then report once.** When the user's instruction is clear, do it; don't offer "A or B?" and don't confirm before and again after. Ask only at a checkpoint below that says *ask*. Why: the user's complaint was "my time all went into your useless confirmations".
 - **Several photos or several figures from one photo:** write all configs, then run every `render` in one shell loop; report once at the end.
@@ -71,8 +73,8 @@ Detection is a **first guess the user corrects by hand** in VectorCraft. The age
 ## Workflow
 
 1. **Ask once, only for what's missing.** If the user's message already gives an item, don't ask for it. Further questions are prohibited except checkpoints or `?` by `sync`:
-   - **Marker preset** from `data/markers.json`; offer the presets as options.
-   - **Gel preset**: a `name` in `data/gel_size.json`, or the user's width × height and lane count. No preset = no run.
+   - **Marker preset** from `src/ep_craft/data/markers.json`; offer the presets as options.
+   - **Gel preset**: a `name` in `src/ep_craft/data/gel_size.json`, or the user's width × height and lane count. No preset = no run.
    - **Which lanes to trim** from the figure (`--trim-lanes`, 1-based, e.g. `1,2,14-15`; omitted = keep all). Trimmed lanes are still analysed.
    - **Which wells hold ladders** (→ `lanes.json` `marker_lanes`, in order of preference; list every ladder well, so a damaged one can be skipped).
    - **What sample is in each lane** (left to right). Never research this; ask.
@@ -83,8 +85,8 @@ Detection is a **first guess the user corrects by hand** in VectorCraft. The age
 5. **Render**:
    ```bash
    ep-craft figure render <photo> --out fig.vectorcraft \
-       --markers data/markers.json --preset <N> --lanes lanes.json \
-       --gel-size data/gel_size.json [--trim-lanes 1,2] [--dpi 300] [--profiles stack|strips] \
+       --markers src/ep_craft/data/markers.json --preset <N> --lanes lanes.json \
+       --gel-size src/ep_craft/data/gel_size.json [--trim-lanes 1,2] [--dpi 300] [--profiles stack|strips] \
        [--label-angle 90] [--marker-label-angle 0]
    ```
    It launches VectorCraft with `--control 7797` if needed, opens the document, exports `fig.png`, writes `fig.mw.json` and prints the MW table. It takes the ladder lane's N most prominent local minima (N from the labels, no noise threshold — see `references/photo-labeling-conventions.md` §7 "marker 道"). If no candidate ladder lane passes the two gates (a clear gap below the N-th peak, and that peak at least 1.5 gray levels), it still writes the document with a **draft calibration** (`[!] 草稿标定`): band lines on those N strongest minima but unverified, MW not trustworthy (checkpoint below). `--no-draft` refuses instead. An existing `fig.vectorcraft` is backed up to `fig.vectorcraft.bak`.

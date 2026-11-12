@@ -18,7 +18,7 @@ import argparse
 import os
 import sys
 
-import vc_control
+from . import vc_control
 
 FIGURE_ARTBOARD = "Figure"
 FIGURE_OUT_SUFFIX = ".png"
@@ -35,7 +35,7 @@ def _abs_doc(doc):
 
 def _ensure_open(client, path):
     """让 VectorCraft 打开并激活 path；返回文档下标。"""
-    from gel_photo import _doc_state
+    from .gel_photo import _doc_state
     idx, _dirty = _doc_state(client, path)
     if idx is None:
         client.open(path)
@@ -104,12 +104,12 @@ def cmd_figure_export(args):
 # ---------------------------------------------------------------- Workbench 数据交换
 
 def cmd_workbench_export(args):
-    import workbench_io
+    from . import workbench_io
     return workbench_io.cmd_export(args)
 
 
 def cmd_workbench_import(args):
-    import workbench_io
+    from . import workbench_io
     return workbench_io.cmd_import(args)
 
 

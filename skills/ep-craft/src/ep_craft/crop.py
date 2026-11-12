@@ -20,10 +20,10 @@ import math
 import os
 import tempfile
 
-import vc_file
-from gel_area import _check_canvas
-from geometry import load_dims_after
-from magick_io import MAGICK, _run, identify
+from . import vc_file
+from .gel_area import _check_canvas
+from .geometry import load_dims_after
+from .magick_io import MAGICK, _run, identify
 
 
 PT_PER_CM = 72.0 / 2.54

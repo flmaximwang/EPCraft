@@ -19,8 +19,8 @@
 
 本模块只依赖 magick_io / geometry（底层）——不 import lane_fit / band_fit：stage 1 不能反向依赖 stage 2/3。
 """
-from geometry import load_dims_after, rotated_rect_bbox
-from magick_io import read_ppm, to_gray
+from .geometry import load_dims_after, rotated_rect_bbox
+from .magick_io import read_ppm, to_gray
 
 TOL = 0.10          # 尺度交叉核对的容差（spec §4.4：>10% 才报）
 HEIGHT_TOL = 0.05   # 高度核对的容差（spec §4.4）：探测框上缘已是胶板物理边，参考照片偏差 <1%

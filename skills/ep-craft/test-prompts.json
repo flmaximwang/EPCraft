@@ -6,7 +6,7 @@
       "id": "should-trigger-01",
       "type": "should_trigger",
       "prompt": "我手机拍了一张胶的照片，按雅酶 WJ103 那套分子量标上、泳道名也写上，出一张能放汇报里的图 —— 用实际尺寸（mini-gel），默认 dpi 就行。",
-      "expected_behavior": "走本 skill。第一步一次问齐：marker 预设（WJ103 有 Tris-Glycine / Tris-Tricine 两套，关键词命中 2 个时要问体系）、胶体预设（mini-gel → `--gel-size data/gel_size.json`，必给）、要从 Figure 拿掉哪几道（`--trim-lanes`，省略 = 全留）、梯子在哪几个孔（`lanes.json` 的 `marker_lanes`）；然后直接问每道是什么样品，不自己去查。`ep-craft doctor`（要有 ImageMagick 7 和 VectorCraft 0.14）→ 可选 `ep-craft crop probe` → `ep-craft figure render <图> --out fig.vectorcraft --markers data/markers.json --preset <N> --lanes lanes.json --gel-size data/gel_size.json`（默认 300 dpi）。交付 `fig.png`（VectorCraft 导出）+ `fig.vectorcraft`（已在 VectorCraft 里打开）+ `fig.mw.json`，并告诉用户可以在 Workbench 上拖泳道线 / 积分窗 / band 线，改完说一声就 sync。",
+      "expected_behavior": "走本 skill。第一步一次问齐：marker 预设（WJ103 有 Tris-Glycine / Tris-Tricine 两套，关键词命中 2 个时要问体系）、胶体预设（mini-gel → `--gel-size src/ep_craft/data/gel_size.json`，必给）、要从 Figure 拿掉哪几道（`--trim-lanes`，省略 = 全留）、梯子在哪几个孔（`lanes.json` 的 `marker_lanes`）；然后直接问每道是什么样品，不自己去查。`ep-craft doctor`（要有 ImageMagick 7 和 VectorCraft 0.14）→ 可选 `ep-craft crop probe` → `ep-craft figure render <图> --out fig.vectorcraft --markers src/ep_craft/data/markers.json --preset <N> --lanes lanes.json --gel-size src/ep_craft/data/gel_size.json`（默认 300 dpi）。交付 `fig.png`（VectorCraft 导出）+ `fig.vectorcraft`（已在 VectorCraft 里打开）+ `fig.mw.json`，并告诉用户可以在 Workbench 上拖泳道线 / 积分窗 / band 线，改完说一声就 sync。",
       "notes": ""
     },
     {
@@ -34,7 +34,7 @@
       "id": "should-trigger-04c",
       "type": "should_trigger",
       "prompt": "两个配置的字段怎么写？别自己另发明一套。",
-      "expected_behavior": "读 references/photo-labeling-conventions.md §1：markers 的 `labels`（自上而下；字符串或 `{text, rows, color}`，text 里要有分子量数字）与可选 `marker_lane`；lanes 的 `labels`（自左而右的字符串，`\"\"` = 空白道）与 `marker_lanes`（候选梯子孔，按优先顺序）。`size`/`color`/`gap`/`font`/`align`、`y_px`/`snap`/`y_frac`/`x_frac` 等旧键已不再读取 —— 样式在 VectorCraft 里改，位置在 Workbench 上拖。模板见 templates/。",
+      "expected_behavior": "读 references/photo-labeling-conventions.md §1：markers 的 `labels`（自上而下；字符串或 `{text, rows, color}`，text 里要有分子量数字）与可选 `marker_lane`；lanes 的 `labels`（自左而右的字符串，`\"\"` = 空白道）与 `marker_lanes`（候选梯子孔，按优先顺序）。`size`/`color`/`gap`/`font`/`align`、`y_px`/`snap`/`y_frac`/`x_frac` 等旧键已不再读取 —— 样式在 VectorCraft 里改，位置在 Workbench 上拖。模板见 src/ep_craft/templates/。",
       "notes": ""
     },
     {
@@ -83,7 +83,7 @@
       "id": "edge-case-10",
       "type": "edge_case",
       "prompt": "--preset 去哪找预设？我只想用 data/markers.json 里那几个。",
-      "expected_behavior": "脚本不内置任何数据路径：`--markers data/markers.json --preset <1 起的序号或 _preset 描述里的关键词>`。不给 --preset 或关键词命中不止一个时，脚本报错并列出全部预设。也可以 --markers 直接指向自己的单个配置 JSON。",
+      "expected_behavior": "脚本不内置任何数据路径：`--markers src/ep_craft/data/markers.json --preset <1 起的序号或 _preset 描述里的关键词>`。不给 --preset 或关键词命中不止一个时，脚本报错并列出全部预设。也可以 --markers 直接指向自己的单个配置 JSON。",
       "notes": ""
     },
     {
@@ -118,14 +118,14 @@
       "id": "should-trigger-15",
       "type": "should_trigger",
       "prompt": "我拍了张胶的照片，直接帮我出图吧，分子量标一下。",
-      "expected_behavior": "缺胶体预设就不能跑：先问用户这块胶用什么预设（`data/gel_size.json` 里的 `name`，或宽×高与泳道数）。没有预设脚本会以 `gel preset required (--gel-size FILE)` 退出，probe 也一样；`--gel-cm` 不是替代。同时把第 1 步其它几问一起问齐：marker 预设、要 trim 的泳道、梯子在哪几个孔，然后问每道的样品名。",
+      "expected_behavior": "缺胶体预设就不能跑：先问用户这块胶用什么预设（`src/ep_craft/data/gel_size.json` 里的 `name`，或宽×高与泳道数）。没有预设脚本会以 `gel preset required (--gel-size FILE)` 退出，probe 也一样；`--gel-cm` 不是替代。同时把第 1 步其它几问一起问齐：marker 预设、要 trim 的泳道、梯子在哪几个孔，然后问每道的样品名。",
       "notes": "要点是「先问齐再跑」。"
     },
     {
       "id": "should-trigger-16",
       "type": "should_trigger",
       "prompt": "脚本说探测到的胶框比预设高了 8%，要不要我把预设改大？",
-      "expected_behavior": "不用急着改：现在是**按预设定形**，胶面高 = `(height_cm − 上下 trim)`，按 `anchor` 贴探测框（默认底边），探测框只负责定位与核对；`[!] height` 把两个数一起打出来。问用户：按预设出图（默认），还是探测框框错了、要先 `--rect` 修框再 render。只有用户确认预设抄错时才改 `data/gel_size.json`；不要用 `--gel-cm` 兜底。",
+      "expected_behavior": "不用急着改：现在是**按预设定形**，胶面高 = `(height_cm − 上下 trim)`，按 `anchor` 贴探测框（默认底边），探测框只负责定位与核对；`[!] height` 把两个数一起打出来。问用户：按预设出图（默认），还是探测框框错了、要先 `--rect` 修框再 render。只有用户确认预设抄错时才改 `src/ep_craft/data/gel_size.json`；不要用 `--gel-cm` 兜底。",
       "notes": ""
     },
     {

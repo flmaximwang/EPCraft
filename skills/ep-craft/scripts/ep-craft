@@ -1,23 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""ep-craft —— 公开入口：按画板组织的凝胶电泳 CLI。
+"""Thin checkout shim: run the packaged CLI without installing it.
 
-    ep-craft launch [DOC]
-    ep-craft figure   render|edit|sync|export ...
-    ep-craft crop     probe|sync ...
-    ep-craft workbench edit|sync|export|import ...
-    ep-craft profile  sync ...
-    ep-craft doctor
-    ep-craft selftest
-
-旧的扁平命令仍可用 `python3 scripts/gel_photo.py probe|render|sync|edit|doctor|selftest`。
+The implementation lives in ``skills/ep-craft/src/ep_craft``. This file only
+bootstraps that source directory onto ``sys.path``, then calls the same
+``ep_craft.cli.main`` that the installed console script uses.
 """
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
-from gel_photo import main  # noqa: E402
+from ep_craft.cli import main  # noqa: E402
 
 if __name__ == "__main__":
     sys.exit(main(canvas=True))

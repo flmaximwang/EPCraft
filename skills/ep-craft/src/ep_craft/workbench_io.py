@@ -35,10 +35,10 @@ import math
 import os
 import sys
 
-import doc_edit
-import figure
-import vc_file
-import workbench
+from . import doc_edit
+from . import figure
+from . import vc_file
+from . import workbench
 
 SCHEMA = "ep-craft-workbench-lanes"
 VERSION = 1
@@ -61,8 +61,8 @@ def _abs_doc(doc):
 
 def _live_document(path, port, launch=True):
     """让 VectorCraft 打开/激活 path，返回 (client, document)。与 cmd_sync / cmd_edit 同一套。"""
-    import vc_control
-    from gel_photo import _doc_state
+    from . import vc_control
+    from .gel_photo import _doc_state
     client, _launched = vc_control.connect(port, path=path, launch=launch)
     idx, _dirty = _doc_state(client, path)
     if idx is None:
@@ -552,7 +552,7 @@ def plan_import(document, model, data):
                 ops.append({"op": "create", "layer": "sample bands", "spec": _spec_pt(sp, X, Y)})
             lines.append("样品带刻度：%d 条" % len(desired))
         if _valid_peak_auto(model.get("meta") or {}):
-            import gel_photo
+            from . import gel_photo
             smodel = {"gel": data["gel"], "window": {"top_cm": top, "bottom_cm": bottom},
                       "lanes": lanes, "bands": bands, "marker_lane": marker_lane,
                       "meta": dict(model.get("meta") or {})}
@@ -637,7 +637,7 @@ def cmd_import(args):
     for line in lines:
         print("[i] %s" % line)
     if ops:
-        import sync_exec
+        from . import sync_exec
         done = sync_exec.apply_ops_live(client, ops, document, label=LABEL)
         print("[i] 已写入：%s（一个撤销步「%s」，⌘Z 可整体撤回）" % (sync_exec.describe(done), LABEL))
     else:
@@ -645,7 +645,7 @@ def cmd_import(args):
     if getattr(args, "no_sync", False):
         print("[i] 未 sync（--no-sync）：改动在 VectorCraft 里还没存盘")
         return 0
-    from gel_photo import cmd_sync
+    from .gel_photo import cmd_sync
     return cmd_sync(argparse.Namespace(doc=path, port=getattr(args, "port", None) or 7797,
                                        dpi=getattr(args, "dpi", 300), dry_run=False, reset_peaks=None))
 
