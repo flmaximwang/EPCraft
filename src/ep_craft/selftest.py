@@ -2286,6 +2286,13 @@ def selftest():
         old_exp_dict = dict(old_exp, draft={"picked": 2, "need": 3, "gate": "断崖不够"})   # 字典也认
         good_leg2 = workbench_io.validate_export(old_exp_dict, mdict)
         assert good_leg2["low_confidence"] is True and "draft" not in good_leg2, good_leg2
+        for invalid in (dict(old_exp, draft="true"), dict(old_exp, low_confidence=None)):
+            try:
+                workbench_io.validate_export(invalid, mleg)
+            except RuntimeError as exc:
+                assert "low_confidence 必须是 true/false" in str(exc), str(exc)
+            else:
+                raise AssertionError("旧字段兼容不应放过无效的置信字段类型")
         _ops_leg, meta_leg, _l, _w = workbench_io.plan_import(topx_["document"], mleg, good_leg)
         assert meta_leg["marker_confidence"]["ok"] is False, meta_leg
     ok += 1

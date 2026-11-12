@@ -306,12 +306,13 @@ def validate_export(data, target_model):
 
     # 旧导出里这一项叫 draft（布尔）：兼容读入，输出永远只写 low_confidence。
     # 旧文档的 ep-meta 里 draft 是字典，压到导出时也只当「有标记」= true。
-    low = data.get("low_confidence", data.get("draft", False))
+    if "low_confidence" in data:
+        low = data["low_confidence"]
+    else:
+        legacy = data.get("draft", False)
+        low = bool(legacy) if isinstance(legacy, dict) else legacy
     if not isinstance(low, bool):
-        if data.get("low_confidence") is None and data.get("draft"):
-            low = True
-        else:
-            errs.append("low_confidence 必须是 true/false（收到 %r）" % (low,))
+        errs.append("low_confidence 必须是 true/false（收到 %r）" % (low,))
 
     sample = data.get("sample_bands", _MISSING)
     sample_out = None
