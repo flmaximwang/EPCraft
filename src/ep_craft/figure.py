@@ -124,12 +124,15 @@ def targets(model, report, gel_key, gel_px, wb, labels=None, layout=None, measur
     if not lanes[ml - 1]["trimmed"]:
         by_mw = {b["mw"]: b["y_cm"] for b in model["bands"]}
         for e in meta.get("marker_labels") or []:
-            ys = [by_mw[m] for m in e["mws"] if m in by_mw]
+            active_mws = [m for m in e["mws"] if m in by_mw]
+            ys = [by_mw[m] for m in active_mws]
             if not ys:
                 continue                                 # 这条标签的带线全被删了 → 标签也不要
-            nm = "label band %s" % "/".join("%g" % m for m in e["mws"])
+            mw_text = "/".join("%g" % m for m in active_mws)
+            nm = "label band %s" % mw_text
             cur = labels.get(nm)
-            text, size = (cur["text"], cur["size"]) if cur is not None else (e["text"], MARKER_SIZE)
+            default_text = e["text"] if active_mws == e["mws"] else mw_text + " kD"
+            text, size = (cur["text"], cur["size"]) if cur is not None else (default_text, MARKER_SIZE)
             marker_items.append({"name": nm, "text": text, "size": size,
                                  "angle": _label_angle(cur, e.get("angle", marker_default)),
                                  "y_cm": sum(ys) / len(ys), "rgb": _hex_rgb(e.get("color"))})
