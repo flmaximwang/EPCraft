@@ -417,6 +417,183 @@ def test_densitometry_cli():
         assert rc == 2 and "--out" in err and "输入文件" in err, err
 
 
+# ---------------------------------------------------------------- densitometry chain (2/5: curve)
+
+def test_densitometry_curve_cli():
+    """`densitometry curve` end to end: the parser (defaults, repeatable --drop), the printed §5
+    table, the curve.json written to the default `fig.curve.json` (chain suffix swapped, ruling
+    R12), both aliases, and every refusal path as one `[!] …` stderr line with exit 2."""
+    from . import selftest_densitometry
+
+    ap = gel_photo.build_parser(canvas=True)
+    a = ap.parse_args(["dens", "curve", "--dens", "fig.dens.json", "--std", "2=20"])
+    assert a.cmd == "dens" and a.action == "curve" and a.func.__name__ == "cmd_curve"
+    assert a.baseline == "flank" and a.fit == "linear" and a.unit == "ug" and a.out is None
+    assert a.drop == [], "不给 --drop 时 drop 应是空列表（不是 None）"
+    a = ap.parse_args(["densitometry", "curve", "--dens", "d.json", "--std", "2=20",
+                       "--drop", "4", "--drop", "5", "--baseline", "global", "--fit", "power",
+                       "--unit", "ng", "--out", "c.json"])
+    assert a.drop == [4, 5], a.drop
+    assert (a.baseline, a.fit, a.unit, a.out) == ("global", "power", "ng", "c.json")
+
+    with tempfile.TemporaryDirectory() as td:
+        rep = selftest_densitometry._synthetic_report([
+            {"label": "M", "marker": True, "bands": [(1.0, 20.0, 0.03)]},
+            {"label": "S1", "bands": [(3.0, 30.0, 0.04)]},
+            {"label": "S2", "bands": [(3.0, 60.0, 0.04), (4.5, 20.0, 0.04)]},
+            {"label": "S3", "bands": [(3.0, 120.0, 0.04)]},
+        ])
+        report = os.path.join(td, "fig.mw.json")
+        selftest_densitometry.densitometry.write_json(rep, report)
+        rc, stdout, stderr = _run(["dens", "measure", report])
+        assert rc == 0 and stderr == "", stderr
+        dens = os.path.join(td, "fig.dens.json")
+        out = os.path.join(td, "fig.curve.json")
+        assert os.path.isfile(dens) and not os.path.exists(out)
+
+        # 成功路径：表头 + 每个标准点一行 + 一行 [i]，默认输出 fig.curve.json（链后缀替换，R12）
+        rc, stdout, stderr = _run(["dens", "curve", "--dens", dens, "--std", "2=24,3=48,4=96"])
+        assert rc == 0, stderr
+        assert stderr == "", "成功路径不该写 stderr：%r" % (stderr,)
+        lines = stdout.strip().splitlines()
+        # 方程按 §5 印 2 dp（去尾零），r² 固定 4 dp
+        assert lines[0] == ("[标曲] 基线 flank，拟合 linear（ug）：mass = 0.07 + 7.98·area，"
+                            "r² 1.0000，3 点"), lines[0]
+        assert lines[1] == "  96 ug   面积 12（n=1）  残差 0.0%", lines[1]
+        assert lines[2] == "  48 ug   面积  6（n=1）  残差 0.0%", lines[2]
+        assert lines[3] == "  24 ug   面积  3（n=1）  残差 0.0%", lines[3]
+        assert lines[4] == "[i] 写出 %s" % out, lines[4]
+        assert len(lines) == 5, lines
+        assert os.path.isfile(out), out
+        curve = selftest_densitometry.densitometry.load_json(out, "ep-craft-densitometry-curve")
+        assert curve["version"] == 1 and curve["kind"] == "ep-craft-densitometry-curve"
+        assert curve["unit"] == "ug" and curve["baseline"] == "flank" and curve["fit"] == "linear"
+        assert curve["source"] == {"dens": dens, "std": "2=24,3=48,4=96", "drop": []}, curve["source"]
+        assert [p["mass"] for p in curve["points"]] == [24.0, 48.0, 96.0]
+        assert [p["lanes"] for p in curve["points"]] == [[2], [3], [4]], curve["points"]
+        assert curve["fit_params"]["n"] == 3 and curve["notes"] == [], curve
+        # 同一个 dens 再跑一次：字节一致（没有时间戳、没有随机内容）
+        rc, _o, _e = _run(["densitometry", "curve", "--dens", dens, "--std", "2=24,3=48,4=96",
+                           "--out", os.path.join(td, "again.curve.json")])
+        assert rc == 0, _e
+        with open(out, "rb") as f1, open(os.path.join(td, "again.curve.json"), "rb") as f2:
+            assert f1.read() == f2.read(), "两次 curve 的 JSON 不一致"
+
+        # 默认输出名（R12）：fig.dens.json → fig.curve.json；不是 .dens.json 的退回落扩展名
+        from . import densitometry_cli
+        calls = ((os.path.join(td, "fig.dens.json"), os.path.join(td, "fig.curve.json")),
+                 (os.path.join(td, "FIG.DENS.JSON"), os.path.join(td, "FIG.curve.json")),
+                 (os.path.join(td, "mydens.json"), os.path.join(td, "mydens.curve.json")),
+                 (os.path.join(td, "mydens"), os.path.join(td, "mydens.curve.json")))
+        for typed, want in calls:
+            got = densitometry_cli._curve_out_path(typed, None)
+            assert got == os.path.abspath(want), (typed, got, want)
+        # 相对路径按输入所在目录（= 当前目录）落在旁边，显式 --out 照用（abspath）
+        assert densitometry_cli._curve_out_path("fig.dens.json", None) == \
+            os.path.abspath("fig.curve.json")
+        # 端到端：非 .dens.json 的 dens 走退落名，文件真的落在那儿
+        flat = os.path.join(td, "mydens.json")
+        with open(dens, encoding="utf-8") as src, open(flat, "w", encoding="utf-8") as dst:
+            dst.write(src.read())
+        rc, stdout, stderr = _run(["dens", "curve", "--dens", flat, "--std", "2=24,3=48,4=96"])
+        assert rc == 0 and stderr == "", stderr
+        fallback = os.path.join(td, "mydens.curve.json")
+        assert stdout.strip().splitlines()[-1] == "[i] 写出 %s" % fallback, stdout
+        assert os.path.isfile(fallback) and not os.path.exists(
+            os.path.join(td, "mydens.dens.curve.json")), "退落名不该保留 .dens"
+
+        # 顶部标准点误标了质量 → 递减，标准点不单调（提示里带 plot-bands）
+        rc, _o, err = _run(["dens", "curve", "--dens", dens, "--std", "2=96,3=48,4=24"])
+        assert rc == 2 and err.startswith("[!] ") and "标准点不单调" in err, err
+        assert "plot-bands" in err and "\n" not in err.rstrip("\n"), err
+
+        # :1 选最高带、:* 取整条泳道；S2 是两带泳道
+        rc, stdout, stderr = _run(["dens", "curve", "--dens", dens, "--std", "2:1=24,3:1=48,4:1=96"])
+        assert rc == 0 and stderr == "", stderr
+        assert stdout.strip().splitlines()[0] == lines[0], stdout
+        rc, stdout, stderr = _run(["dens", "curve", "--dens", dens, "--std", "2:*=20,3:*=40,4:*=80",
+                                   "--out", os.path.join(td, "whole.curve.json")])
+        assert rc == 0 and stderr == "", stderr
+        whole = selftest_densitometry.densitometry.load_json(os.path.join(td, "whole.curve.json"),
+                                                            "ep-craft-densitometry-curve")
+        assert abs(whole["points"][1]["volume"] - 8.0) < 0.01, whole["points"][1]
+
+        # --baseline global / --fit power / --unit ng 都进曲线，power 用 mass = scale·area^exponent
+        rc, stdout, stderr = _run(["dens", "curve", "--dens", dens, "--std", "2=24,3=48,4=96",
+                                   "--baseline", "global", "--out", os.path.join(td, "g.json")])
+        assert rc == 0 and stderr == "", stderr
+        assert "基线 global" in stdout, stdout
+        global_curve = selftest_densitometry.densitometry.load_json(os.path.join(td, "g.json"),
+                                                                    "ep-craft-densitometry-curve")
+        assert global_curve["baseline"] == "global", global_curve
+        assert abs(global_curve["fit_params"]["slope"] - 11.544) < 1e-3, global_curve["fit_params"]
+        rc, stdout, stderr = _run(["dens", "curve", "--dens", dens, "--std", "2=24,3=48,4=96",
+                                   "--fit", "power", "--unit", "ng", "--out", os.path.join(td, "p.json")])
+        assert rc == 0 and stderr == "", stderr
+        assert stdout.splitlines()[0].startswith("[标曲] 基线 flank，拟合 power（ng）：mass = "), stdout
+        assert stdout.splitlines()[0].endswith("·area^1，r² 1.0000，3 点"), stdout   # 2 dp 方程
+        power = selftest_densitometry.densitometry.load_json(os.path.join(td, "p.json"),
+                                                             "ep-craft-densitometry-curve")
+        assert power["fit_params"]["space"] == "log10" and power["unit"] == "ng", power
+
+        # --drop：点保留但弃用，表里写（已弃用），没有残差；2 点时会给出成点数提示
+        rc, stdout, stderr = _run(["dens", "curve", "--dens", dens, "--std", "2=24,3=48,4=96",
+                                   "--drop", "4", "--out", os.path.join(td, "d.json")])
+        assert rc == 0 and stderr == "", stderr
+        dlines = stdout.strip().splitlines()
+        assert dlines[0].endswith("2 点"), dlines[0]      # 3 个标准点里弃用了 1 个
+        assert dlines[1] == "  96 ug   面积 12（n=1）  （已弃用）", dlines[1]
+        assert dlines[-2] == "  注：只有 2 个标准点，r² 不足以说明形状", dlines
+        assert dlines[-1].startswith("[i] 写出 "), dlines[-1]
+        dropped = selftest_densitometry.densitometry.load_json(os.path.join(td, "d.json"),
+                                                               "ep-craft-densitometry-curve")
+        assert dropped["source"]["drop"] == [4] and dropped["points"][-1]["used"] is False
+        assert dropped["fit_params"]["n"] == 2
+
+        # 各种拒绝：marker 泳道、不在 dens 里、带序号越界、弃用全部、--out 指向输入 / 目录 / 缺目录
+        marker_dens = os.path.join(td, "all.dens.json")     # 含 marker 泳道的那份 dens
+        rc, _o, _e = _run(["dens", "measure", report, "--include-marker", "--out", marker_dens])
+        assert rc == 0, _e
+        rc, _o, err = _run(["dens", "curve", "--dens", marker_dens, "--std", "1=20,2=24,3=48"])
+        assert rc == 2 and err.startswith("[!] ") and "marker 泳道" in err, err
+        assert "\n" not in err.rstrip("\n"), err
+        rc, _o, err = _run(["dens", "curve", "--dens", dens, "--std", "2=24,9=48"])
+        assert rc == 2 and "不在 dens 里" in err, err
+        rc, _o, err = _run(["dens", "curve", "--dens", dens, "--std", "2=24,3:3=48"])
+        assert rc == 2 and "只有 2 个带" in err, err
+        rc, _o, err = _run(["dens", "curve", "--dens", dens, "--std", "2=24,3=48,4=96",
+                            "--drop", "2", "--drop", "3", "--drop", "4"])
+        assert rc == 2 and "所有标准点" in err, err
+        rc, _o, err = _run(["dens", "curve", "--dens", dens, "--std", "2=24,3=48", "--drop", "9"])
+        assert rc == 2 and "不在 --std 里" in err, err
+        # --baseline / --fit 的非法取值由 argparse 的 choices 挡掉（usage + 2，不进命令体）
+        for argv, flag in ((("--baseline", "local"), "--baseline"), (("--fit", "cubic"), "--fit")):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                try:
+                    ap.parse_args(["dens", "curve", "--dens", "d.json", "--std", "2=24"] + list(argv))
+                except SystemExit as e:
+                    assert e.code == 2, (argv, e.code)
+                else:
+                    raise AssertionError("%r 该被 argparse 拒绝" % (argv,))
+            assert flag in err.getvalue(), (argv, err.getvalue())
+        rc, _o, err = _run(["dens", "curve", "--dens", dens, "--std", "2=24,3=48,4=96",
+                            "--out", dens])
+        assert rc == 2 and "--out" in err and "输入文件" in err, err
+        rc, _o, err = _run(["dens", "curve", "--dens", dens, "--std", "2=24,3=48,4=96",
+                            "--out", os.path.join(td, "no", "x.json")])
+        assert rc == 2 and "输出目录" in err, err
+        rc, _o, err = _run(["dens", "curve", "--dens", dens, "--std", "2=24,3=48,4=96",
+                            "--out", td])
+        assert rc == 2 and "目录" in err, err
+        # dens 不存在 / --std 为空：同一行错误
+        rc, _o, err = _run(["dens", "curve", "--dens", os.path.join(td, "nope.dens.json"),
+                            "--std", "2=24"])
+        assert rc == 2 and err.startswith("[!] ") and "nope.dens.json" in err, err
+        rc, _o, err = _run(["dens", "curve", "--dens", dens, "--std", " "])
+        assert rc == 2 and "--std" in err and "空" in err, err
+
+
 # ---------------------------------------------------------------- executable
 
 def test_public_entry():
@@ -463,7 +640,7 @@ def test_public_entry():
 def selftest():
     tests = [test_parser_hierarchy, test_legacy_parser_unchanged, test_shared_sync_and_edit_dispatch,
              test_error_boundary, test_launch, test_figure_export, test_workbench_io_delegation,
-             test_densitometry_cli, test_public_entry]
+             test_densitometry_cli, test_densitometry_curve_cli, test_public_entry]
     for t in tests:
         t()
     print("selftest_cli %d/%d 通过" % (len(tests), len(tests)))

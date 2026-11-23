@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""selftest_densitometry — analytic checks for the densitometry math (spec §7 items 1-4, 6, 7, 10, 11).
+"""selftest_densitometry — analytic checks for the densitometry math (spec §7 items 1-4, 6-8, 10, 11).
 
 Every report used here is built in memory by `_synthetic_report` (exported: selftest_cli reuses it
 for the end-to-end CLI run), so no user file is read and no ImageMagick is called.  The gray /
@@ -549,12 +549,451 @@ def check_purity():
     return True
 
 
+# ---------------------------------------------------------------- 12) curve: parse_std (§2.9)
+
+def _curve_dens(bands_by_lane, marker_lanes=()):
+    """A dens-like dict for `build_curve`: only the keys the curve reads (spec §4.4 shape).
+
+    `bands_by_lane` = [[2.5], [5.0, 3.0], …]: one inner list of band areas per lane.  Every band
+    becomes {index, strongest, area_global, area_flank} and the lane totals are the sums, so a
+    `:i` entry and a `:*` entry can both be checked.  `marker_lanes` marks 1-based lanes.
+    """
+    lanes = []
+    for no, areas in enumerate(bands_by_lane, 1):
+        values = [float(a) for a in areas]
+        best = max(values) if values else None
+        bands = [{"index": index, "strongest": area == best, "area_global": area,
+                  "area_flank": area}
+                 for index, area in enumerate(values, 1)]
+        lanes.append({"lane": no, "label": "S%d" % no, "marker": no in marker_lanes,
+                      "trimmed": False, "bands": bands,
+                      "area_global": float(sum(values)), "area_flank": float(sum(values))})
+    return {"version": 1, "kind": "ep-craft-densitometry", "lanes": lanes}
+
+
+def _curve(areas, masses, **kwargs):
+    """A linear-case curve: one strong band per lane, masses in lane order (§4.5)."""
+    dens = _curve_dens([[a] for a in areas])
+    std = [(no, None, mass) for no, mass in enumerate(masses, 1)]
+    return densitometry.build_curve(dens, std, **kwargs)
+
+
+def check_curve_parse_std():
+    """`parse_std` accepts the LANE[[:INDEX]|[:*]]=MASS grammar and refuses everything else with
+    one RuntimeError per case (§2.9)."""
+    std = densitometry.parse_std("2=20,3:2=10,4:*=5")
+    assert std == [(2, None, 20.0), (3, 2, 10.0), (4, "*", 5.0)], std
+    assert densitometry.parse_std(" 2 = 1e1 , 3:1=2.5 ") == [(2, None, 10.0), (3, 1, 2.5)]
+    assert densitometry.parse_std("5:*=0.5") == [(5, "*", 0.5)]
+    # a lane may not be named twice: its mass would be ambiguous
+    for bad, want in (
+            ("", "空"),
+            (" , ", "空"),
+            ("2", "没有 ="),
+            ("2=20,", "空的"),
+            ("a=20", "正整数"),
+            ("0=20", "≥ 1"),
+            ("2:0=20", "≥ 1"),
+            ("2:x=20", "1、2"),
+            ("2:=20", "冒号后面是空的"),
+            ("2=abc", "不是数字"),
+            ("2=0", "正数"),
+            ("2=-5", "正数"),
+            ("2=nan", "正数"),
+            ("2=20,2=20", "出现了两次")):
+        try:
+            densitometry.parse_std(bad)
+        except RuntimeError as e:
+            msg = str(e)
+            assert want in msg and "\n" not in msg, (bad, msg)
+            assert "--std" in msg, (bad, msg)
+        else:
+            raise AssertionError("--std %r 该被拒绝" % (bad,))
+    return True
+
+
+# ---------------------------------------------------------------- 13) curve: points + fits (§4.5)
+
+def _decimals(value):
+    """How many decimal places a stored float shows (`repr`, which is what lands in the JSON)."""
+    text = repr(float(value))
+    if "e" in text or "E" in text:
+        raise AssertionError("curve 里出现了科学计数法 %r（精度规则要求定点小数）" % (value,))
+    return len(text.split(".")[1]) if "." in text else 0
+
+
+def check_curve_schema_and_fit():
+    """§4.5 shape + the exact linear fixture: slope 8 / intercept 2 / r² 1, replicates collapsed
+    into one point (n, sd, cv_pct, lanes, entries), residuals mass-ascending with
+    rel_pct = (predicted − mass)/mass·100, and rounding only in the built dict (ruling R2)."""
+    curve = _curve([2.5, 5.0, 9.8, 10.2, 15.0, 30.0], [22, 42, 82, 82, 122, 242],
+                   dens_path="/tmp/fig.dens.json", std_text="2=22,3=42,4=82,5=82,6=122,7=242")
+    assert set(curve) == {"version", "kind", "unit", "baseline", "fit", "source", "points",
+                          "fit_params", "range", "residuals", "notes"}, sorted(curve)
+    assert curve["version"] == 1 and curve["kind"] == "ep-craft-densitometry-curve"
+    assert curve["unit"] == "ug" and curve["baseline"] == "flank" and curve["fit"] == "linear"
+    assert curve["source"] == {"dens": "/tmp/fig.dens.json",
+                               "std": "2=22,3=42,4=82,5=82,6=122,7=242", "drop": []}
+    assert set(curve["fit_params"]) == {"slope", "intercept", "r2", "n", "space"}
+    assert curve["fit_params"] == {"slope": 8.0, "intercept": 2.0, "r2": 1.0, "n": 5,
+                                   "space": "linear"}, curve["fit_params"]
+    point_keys = {"mass", "volume", "n", "sd", "cv_pct", "lanes", "entries", "used"}
+    for point in curve["points"]:
+        assert set(point) == point_keys, sorted(point)
+        assert isinstance(point["lanes"], list) and point["lanes"] == sorted(point["lanes"])
+        for lane, band in point["entries"]:
+            assert isinstance(lane, int) and (band is None or band is True or band is False
+                                              or isinstance(band, (int, str)))
+        assert _decimals(point["volume"]) <= 3, point
+        if point["sd"] is not None:
+            assert _decimals(point["sd"]) <= 3 and _decimals(point["cv_pct"]) <= 2, point
+    # 82 appears twice in --std: the two lanes collapse into ONE point with n=2 (§2.7)
+    assert [p["mass"] for p in curve["points"]] == [22.0, 42.0, 82.0, 122.0, 242.0]
+    assert [p["lanes"] for p in curve["points"]] == [[1], [2], [3, 4], [5], [6]]
+    replicate = curve["points"][2]
+    assert replicate["n"] == 2 and replicate["lanes"] == [3, 4]
+    assert replicate["entries"] == [[3, None], [4, None]], replicate["entries"]
+    assert abs(replicate["sd"] - 0.2828427) < 1e-3, replicate["sd"]
+    assert abs(replicate["cv_pct"] - 2.83) < 0.01, replicate["cv_pct"]
+    assert all(p["used"] for p in curve["points"])
+    assert curve["range"] == {"volume_min": 2.5, "volume_max": 30.0,
+                              "mass_min": 22.0, "mass_max": 242.0}, curve["range"]
+    assert [r["mass"] for r in curve["residuals"]] == [22.0, 42.0, 82.0, 122.0, 242.0]
+    for residual in curve["residuals"]:
+        assert set(residual) == {"mass", "volume", "predicted_mass", "rel_pct"}, sorted(residual)
+        assert abs(residual["predicted_mass"] - (2.0 + 8.0 * residual["volume"])) < 1e-3
+        assert residual["rel_pct"] == 0.0, residual
+    assert curve["notes"] == []
+    # precision: fit_params 4 dp, points / residuals 3 dp (percentages 2 dp)
+    assert _decimals(curve["fit_params"]["slope"]) <= 4 and _decimals(curve["fit_params"]["r2"]) <= 4
+    for residual in curve["residuals"]:
+        assert _decimals(residual["predicted_mass"]) <= 3
+        assert _decimals(residual["rel_pct"]) <= 2
+    # the power fit: mass = scale·volume^exponent, r² in log space (§4.5)
+    power = _curve([2.0, 4.0, 6.0, 8.0], [0.2 * v ** 1.1 for v in (2.0, 4.0, 6.0, 8.0)], fit="power")
+    assert set(power["fit_params"]) == {"exponent", "scale", "r2", "n", "space"}
+    assert power["fit_params"]["space"] == "log10"
+    assert abs(power["fit_params"]["exponent"] - 1.1) < 1e-3, power["fit_params"]
+    assert abs(power["fit_params"]["scale"] - 0.2) < 1e-3, power["fit_params"]
+    assert power["fit_params"]["r2"] == 1.0 and power["fit_params"]["n"] == 4
+    for residual in power["residuals"]:
+        assert abs(residual["predicted_mass"] - residual["mass"]) < 1e-2, residual
+        assert residual["rel_pct"] == 0.0, residual
+    # --baseline global reads the other column, --unit is recorded, source keeps the typed paths
+    dens = _curve_dens([[2.5], [5.0], [10.0]])
+    for lane in dens["lanes"]:
+        lane["area_global"] = lane["area_flank"] * 2.0
+        for band in lane["bands"]:
+            band["area_global"] = band["area_flank"] * 2.0
+    global_curve = densitometry.build_curve(dens, [(1, None, 22), (2, None, 42), (3, None, 82)],
+                                            baseline="global", unit="ng", fit="linear",
+                                            dens_path="fig.dens.json", std_text="1=22,2=42,3=82")
+    assert global_curve["baseline"] == "global" and global_curve["unit"] == "ng"
+    assert global_curve["fit_params"]["slope"] == 4.0, global_curve["fit_params"]
+    # the function is pure: neither input is modified, and two calls agree byte for byte
+    dens = _curve_dens([[2.5], [5.0], [10.0], [15.0]])
+    std = [(1, None, 22), (2, None, 42), (3, None, 82), (4, None, 122)]
+    before = json.dumps([dens, std], sort_keys=True)
+    first = densitometry.build_curve(dens, std)
+    second = densitometry.build_curve(dens, std)
+    assert json.dumps([dens, std], sort_keys=True) == before, "build_curve 改了输入"
+    assert first == second, "build_curve 两次结果不一致"
+    assert json.dumps(first, sort_keys=True) == json.dumps(second, sort_keys=True)
+    return True
+
+
+def check_curve_bands():
+    """`--std` band selection: no suffix = the strongest band, `:i` = the i-th, `:*` = the lane
+    total; `entries` keep the band exactly as typed (§4.5)."""
+    # no suffix: lane 1's strongest band is the second one (9.0), not the first (3.0)
+    strongest = densitometry.build_curve(_curve_dens([[3.0, 9.0], [2.0]]),
+                                        [(1, None, 40), (2, None, 20)])
+    assert [p["entries"] for p in strongest["points"]] == [[[2, None]], [[1, None]]],         strongest["points"]
+    assert abs(strongest["points"][0]["volume"] - 2.0) < 1e-9, strongest["points"][0]
+    assert abs(strongest["points"][1]["volume"] - 9.0) < 1e-9, strongest["points"][1]
+    # :1 / :2 pick the top / bottom band of one lane
+    top = densitometry.build_curve(_curve_dens([[3.0, 9.0], [12.0]]),
+                                   [(1, 1, 20), (2, None, 40)])
+    assert top["points"][0]["entries"] == [[1, 1]], top["points"][0]["entries"]
+    assert abs(top["points"][0]["volume"] - 3.0) < 1e-9, top["points"][0]
+    bottom = densitometry.build_curve(_curve_dens([[1.0, 9.0], [12.0]]),
+                                     [(1, 2, 20), (2, None, 40)])
+    assert bottom["points"][0]["entries"] == [[1, 2]], bottom["points"][0]["entries"]
+    assert abs(bottom["points"][0]["volume"] - 9.0) < 1e-9, bottom["points"][0]
+    # :* reads the whole-lane total (5 + 7 = 12), not one band
+    whole = densitometry.build_curve(_curve_dens([[5.0, 7.0], [4.0]]),
+                                     [(1, "*", 40), (2, "*", 20)])
+    assert [p["entries"] for p in whole["points"]] == [[[2, "*"]], [[1, "*"]]], whole["points"]
+    assert abs(whole["points"][0]["volume"] - 4.0) < 1e-9, whole["points"][0]
+    assert abs(whole["points"][1]["volume"] - 12.0) < 1e-9, whole["points"][1]
+    # a band-free lane has no strongest band; `:*` still reads its (zero) total
+    band_free = _curve_dens([[2.0], []])
+    try:
+        densitometry.build_curve(band_free, [(1, None, 40), (2, None, 20)])
+    except RuntimeError as e:
+        assert "没有带" in str(e) and "*=质量" in str(e) and "\n" not in str(e), str(e)
+    else:
+        raise AssertionError("没有带的泳道不该给出 strongest")
+    zero = densitometry.build_curve(band_free, [(1, None, 40), (2, "*", 20)])
+    assert abs(zero["points"][0]["volume"] - 0.0) < 1e-9, zero["points"][0]
+    try:
+        densitometry.build_curve(band_free, [(1, None, 40), (2, "*", 20)], fit="power")
+    except RuntimeError as e:
+        assert "power 拟合要求面积 > 0" in str(e) and "\n" not in str(e), str(e)
+    else:
+        raise AssertionError("power 在面积 0 处该被拒绝")
+    return True
+
+
+def check_curve_drop():
+    """`--drop` keeps a point with `used: false` and out of the fit / range / residuals / notes
+    (§4.5); a replicate point drops as a whole when any of its lanes is dropped."""
+    sixteen = _curve([2.5, 5.0, 9.8, 10.2, 15.0, 30.0], [22, 42, 82, 82, 122, 242], drop=[6])
+    assert sixteen["source"]["drop"] == [6], sixteen["source"]
+    assert sixteen["fit_params"]["n"] == 4 and sixteen["fit_params"]["slope"] == 8.0
+    assert sixteen["points"][-1]["used"] is False and sixteen["points"][-1]["n"] == 1
+    assert [p["used"] for p in sixteen["points"]] == [True, True, True, True, False], sixteen["points"]
+    assert sixteen["range"] == {"volume_min": 2.5, "volume_max": 15.0,
+                                "mass_min": 22.0, "mass_max": 122.0}, sixteen["range"]
+    assert [r["mass"] for r in sixteen["residuals"]] == [22.0, 42.0, 82.0, 122.0]
+    assert sixteen["notes"] == [], "4 个使用点是够的，不该有成点数提示"
+    # dropping 242 out of a 3-point curve leaves 2 points → the shape note appears
+    small = _curve([2.5, 5.0, 10.0], [22, 42, 122], drop=[3])
+    assert small["fit_params"]["n"] == 2 and small["notes"] == ["只有 2 个标准点，r² 不足以说明形状"]
+    # one lane of a replicate pair drops the whole point (its mean area is no longer usable)
+    pair = _curve([2.0, 2.5, 5.0, 8.0], [20, 20, 40, 60], drop=[2])
+    assert pair["points"][0]["used"] is False and pair["points"][0]["n"] == 2, pair["points"][0]
+    assert pair["points"][0]["lanes"] == [1, 2] and pair["fit_params"]["n"] == 2
+    # duplicate --drop lanes collapse; the source list is sorted and 1-based
+    twice = _curve([2.5, 5.0, 10.0, 15.0], [22, 42, 82, 122], drop=[1, 4, 1])
+    assert twice["source"]["drop"] == [1, 4], twice["source"]
+    assert twice["fit_params"]["n"] == 2, twice["fit_params"]
+    # a drop lane that is not a standard lane is an error, as is dropping every point
+    for bad, want in (([4], "不在 --std 里"), ([1, 2, 3], "所有标准点"),
+                      ([0], "≥ 1"), (["x"], "不是泳道号")):
+        try:
+            _curve([2.5, 5.0, 10.0], [22, 42, 82], drop=bad)
+        except RuntimeError as e:
+            assert want in str(e) and "\n" not in str(e), (bad, str(e))
+        else:
+            raise AssertionError("--drop %r 该被拒绝" % (bad,))
+    return True
+
+
+def check_curve_notes():
+    """The three §4.5 notes, in order, each on its own fixture: <3 used points, the saturated top
+    standard (linear only, rel_pct < −10), and a replicate CV > 15%."""
+    assert _curve([2.5, 5.0, 10.0, 15.0], [22, 42, 82, 122])["notes"] == []
+    saturated = _curve([2.0, 4.0, 6.0, 8.0], [30, 40, 50, 95])
+    assert saturated["notes"] == ["最高标准点比线性低 11%，可能已饱和；试 --fit power 或 --drop 它"], \
+        saturated["notes"]
+    assert saturated["residuals"][-1]["rel_pct"] < -10.0, saturated["residuals"][-1]
+    # the same fixture under the power fit has no saturation note (it is a linear-only hint)
+    assert "饱和" not in "".join(_curve([2.0, 4.0, 6.0, 8.0], [30, 40, 50, 95], fit="power")["notes"])
+    # a top point right at the edge (rel_pct == −10) does not trigger the note
+    edge = _curve([2.0, 4.0, 6.0, 8.0], [20, 40, 60, 80])
+    assert edge["notes"] == [], edge["notes"]
+    noisy = _curve([2.0, 2.5, 5.0, 8.0], [20, 20, 40, 60])
+    assert noisy["notes"] == ["泳道 1/2 的重复 CV 16% > 15%"], noisy["notes"]
+    assert noisy["points"][0]["cv_pct"] == 15.71, noisy["points"][0]
+    # <3 used points comes first when both hints apply
+    combined = _curve([2.0, 2.5, 5.0], [20, 20, 30])
+    assert combined["notes"] == ["只有 2 个标准点，r² 不足以说明形状",
+                                 "泳道 1/2 的重复 CV 16% > 15%"], combined["notes"]
+    # a dropped noisy point says nothing: the note is about used points only
+    silent = _curve([2.0, 2.5, 4.0, 6.0, 8.0], [10, 10, 20, 30, 40], drop=[1])
+    assert silent["points"][0]["used"] is False and silent["points"][0]["n"] == 2
+    assert abs(silent["points"][0]["cv_pct"] - 15.71) < 0.01, silent["points"][0]
+    assert silent["points"][0]["cv_pct"] > 15.0, "这组重复该有 CV 提示，但它是弃用的"
+    assert silent["notes"] == [], silent["notes"]
+    return True
+
+
+# ---------------------------------------------------------------- 14) curve: refusals (§4.5)
+
+def check_curve_refusals():
+    """Every §4.5 refusal is one Chinese RuntimeError line; bad parameters are ValueError and
+    non-monotonic fits start with 标准点不单调 plus the plot-bands hint."""
+    dens = _curve_dens([[2.5], [5.0], [10.0], [15.0]], marker_lanes=(4,))
+    std = [(1, None, 22), (2, None, 42), (3, None, 82)]
+    # ValueError: the enum-like arguments (§4.1 style)
+    for kwargs, want in (({"fit": "cubic"}, "--fit"), ({"baseline": "local"}, "--baseline"),
+                         ({"unit": " "}, "--unit")):
+        try:
+            densitometry.build_curve(dens, std, **kwargs)
+        except ValueError as e:
+            assert want in str(e) and "\n" not in str(e), (kwargs, str(e))
+        else:
+            raise AssertionError("%r 该被拒绝" % (kwargs,))
+    cases = (
+        (dens, [(4, None, 22), (1, None, 42)], "marker 泳道"),
+        (dens, [(1, None, 22), (9, None, 42)], "不在 dens 里"),
+        (dens, [(1, 2, 22), (2, None, 42)], "只有 1 个带"),
+        (dens, [(1, None, 22), (2, None, 42), (3, None, 82), (3, None, 82)], "出现了两次"),
+        (dens, [(1, None, 0), (2, None, 42)], "正数"),
+        (dens, [(1, None, 22)], "至少需要 2 个"),
+        (_curve_dens([[2.0], [2.0], [2.0]]), [(1, None, 22), (2, None, 42), (3, None, 82)],
+         "面积不同"),
+        (_curve_dens([[2.0], [4.0], [6.0]]), [(1, None, 30), (2, None, 20), (3, None, 10)],
+         "标准点不单调"),
+    )
+    for bad_dens, bad_std, want in cases:
+        try:
+            densitometry.build_curve(bad_dens, bad_std)
+        except RuntimeError as e:
+            msg = str(e)
+            assert want in msg and "\n" not in msg, (want, msg)
+        else:
+            raise AssertionError("%r 该被拒绝" % (want,))
+    # the monotonic messages name the fit, the offending parameter and the plot-bands hint
+    for fit, what in (("linear", "斜率"), ("power", "指数")):
+        try:
+            densitometry.build_curve(_curve_dens([[2.0], [4.0], [6.0]]),
+                                     [(1, None, 30), (2, None, 20), (3, None, 10)], fit=fit)
+        except RuntimeError as e:
+            msg = str(e)
+            assert msg.startswith("标准点不单调") and "plot-bands" in msg and what in msg, msg
+            assert "\n" not in msg, msg
+        else:
+            raise AssertionError("递减的标准点（%s）该被拒绝" % fit)
+    # a std entry that is not (lane, band, mass), or no std at all
+    for bad, want in (([], "空的"), ("2=20", "空的"), ([(1, 20)], "不是"), ([("x", None, 20)], "不是整数"),
+                      ([(0, None, 20)], "≥ 1")):
+        try:
+            densitometry.build_curve(dens, bad)
+        except RuntimeError as e:
+            assert want in str(e) and "\n" not in str(e), (bad, str(e))
+        else:
+            raise AssertionError("std %r 该被拒绝" % (bad,))
+    # a dens dict without the baseline column (or with a non-finite one) is refused, not guessed
+    thin = _curve_dens([[2.5], [5.0]])
+    del thin["lanes"][0]["bands"][0]["area_flank"]
+    try:
+        densitometry.build_curve(thin, [(1, None, 22), (2, None, 42)])
+    except RuntimeError as e:
+        assert "area_flank" in str(e) and "\n" not in str(e), str(e)
+    else:
+        raise AssertionError("缺 area_flank 的带该被拒绝")
+    broken = _curve_dens([[2.5], [5.0]])
+    broken["lanes"][1]["bands"][0]["area_flank"] = float("inf")
+    try:
+        densitometry.build_curve(broken, [(1, None, 22), (2, None, 42)])
+    except RuntimeError as e:
+        assert "有限数" in str(e) and "\n" not in str(e), str(e)
+    else:
+        raise AssertionError("inf 面积该被拒绝")
+    for bad_dens, want in (({}, "lanes"), ({"lanes": []}, "lanes"),
+                           ({"lanes": [{"lane": 1}, {"lane": 1}]}, "两次"),
+                           ({"lanes": [{"label": "x"}]}, "整数 lane")):
+        try:
+            densitometry.build_curve(bad_dens, [(1, None, 22), (2, None, 42)])
+        except RuntimeError as e:
+            assert want in str(e) and "\n" not in str(e), (bad_dens, str(e))
+        else:
+            raise AssertionError("dens %r 该被拒绝" % (bad_dens,))
+    return True
+
+
+# ---------------------------------------------------------------- 15) curve JSON round trip
+
+def check_curve_json_io():
+    """`curve` twice → byte-identical JSON (no timestamps, §7.11) and a `load_json` round trip that
+    keeps every field of the §4.5 document (§7.10)."""
+    dens = _curve_dens([[2.5], [5.0], [9.8], [10.2], [15.0]])
+    std = [(1, None, 22), (2, None, 42), (3, None, 82), (4, None, 82), (5, None, 122)]
+    with tempfile.TemporaryDirectory() as td:
+        first = densitometry.build_curve(dens, std, drop=[5], dens_path="fig.dens.json",
+                                         std_text="1=22,2=42,3=82,4=82,5=122")
+        path1 = os.path.join(td, "a.curve.json")
+        densitometry.write_json(first, path1)
+        second = densitometry.build_curve(dens, std, drop=[5], dens_path="fig.dens.json",
+                                          std_text="1=22,2=42,3=82,4=82,5=122")
+        path2 = os.path.join(td, "b.curve.json")
+        densitometry.write_json(second, path2)
+        with open(path1, "rb") as f1, open(path2, "rb") as f2:
+            assert f1.read() == f2.read(), "curve 两次的 JSON 不一致"
+        with open(path1, encoding="utf-8") as f:
+            raw = f.read()
+        assert raw.endswith("\n") and "\\u" not in raw, "write_json 的 UTF-8 / ensure_ascii 变了"
+        back = densitometry.load_json(path1, "ep-craft-densitometry-curve")
+        assert back == json.loads(raw), "round trip 丢了字段"
+        assert back["kind"] == "ep-craft-densitometry-curve" and back["version"] == 1
+        # 数字仍是数字，None 仍是 null（不是字符串），盘点过的点保留 used: false
+        assert isinstance(back["fit_params"]["slope"], float)
+        assert back["points"][0]["sd"] is None and back["points"][0]["cv_pct"] is None
+        assert back["points"][-1]["used"] is False and back["source"]["drop"] == [5]
+        # kind 不符的 curve.json 被 load_json 拒绝（写错了文件的常见情形）
+        densitometry.write_json(dict(first, kind="ep-craft-densitometry"), path2)
+        try:
+            densitometry.load_json(path2, "ep-craft-densitometry-curve")
+        except RuntimeError as e:
+            assert "kind" in str(e) and "\n" not in str(e), str(e)
+        else:
+            raise AssertionError("kind 不符的 curve.json 该被拒绝")
+    return True
+
+
+# ---------------------------------------------------------------- 15) curve table (§5)
+
+def check_format_curve():
+    """The §5 table: header, aligned rows (heaviest first), `（n=1）` without CV, `（已弃用）`
+    instead of a residual, power equations, notes as `  注：`, and never `None` / `µg`."""
+    curve = _curve([2.5, 5.0, 9.8, 10.2, 15.0, 30.0], [22, 42, 82, 82, 122, 242])
+    text = densitometry.format_curve(curve)
+    lines = text.split("\n")
+    assert lines[0] == ("[标曲] 基线 flank，拟合 linear（ug）：mass = 2 + 8·area，r² 1.0000，5 点"
+                        "（1 个重复）"), lines[0]
+    assert len(lines) == 1 + len(curve["points"]), lines
+    wanted = ["  242 ug   面积  30（n=1）           残差 0.0%",
+              "   82 ug   面积  10（n=2，CV 2.8%）  残差 0.0%"]
+    for line, expect in zip([lines[1], lines[3]], wanted):
+        assert line == expect, (line, expect)
+    assert "None" not in text and "µ" not in text and "nan" not in text
+    # one line per point, columns aligned (the residual/已弃用 column starts at a fixed width)
+    heads, cols = [], []
+    for line in lines[1:]:
+        if "（已弃用）" in line:
+            cols.append(densitometry._dwidth(line[:line.index("（已弃用）")]))
+        else:
+            cols.append(densitometry._dwidth(line[:line.index("残差")]))
+        heads.append(densitometry._dwidth(line[:line.index("面积")]))
+    assert len(set(cols)) == 1, "残差列没有对齐：%r" % (cols,)
+    assert len(set(heads)) == 1, "面积列没有对齐：%r" % (heads,)
+    # dropped point: no residual, `（已弃用）` in its place, and the header counts used points
+    dropped = densitometry.format_curve(_curve([2.5, 5.0, 9.8, 10.2, 15.0, 30.0],
+                                               [22, 42, 82, 82, 122, 242], drop=[6]))
+    dlines = dropped.split("\n")
+    assert "4 点" in dlines[0] and "5 点" not in dlines[0], dlines[0]
+    assert "（已弃用）" in dlines[1] and "残差" not in dlines[1], dlines[1]
+    assert "242 ug" in dlines[1]
+    # power: both parameters, 2 dp like the §5 sample; the unit comes from the curve
+    power = _curve([2.0, 4.0, 6.0, 8.0], [0.2 * v ** 1.1 for v in (2.0, 4.0, 6.0, 8.0)], fit="power")
+    ptext = densitometry.format_curve(power)
+    assert ptext.split("\n")[0].startswith(
+        "[标曲] 基线 flank，拟合 power（ug）：mass = 0.2·area^1.1，r² 1.0000，4 点"), ptext.split("\n")[0]
+    # notes are printed with the 注 prefix, one line each, in curve order
+    noted = _curve([2.0, 2.5, 5.0], [20, 20, 30])
+    ntext = densitometry.format_curve(noted)
+    assert "  注：只有 2 个标准点，r² 不足以说明形状" in ntext
+    assert "  注：泳道 1/2 的重复 CV 16% > 15%" in ntext
+    assert ntext.split("\n")[-2].startswith("  注：") and ntext.split("\n")[-1].startswith("  注：")
+    # a hand-built curve with a 4-dp param still prints without trailing zeros
+    tidy = dict(curve, fit_params={"slope": 6.0200, "intercept": 0.4000, "r2": 0.9985, "n": 5,
+                                   "space": "linear"})
+    assert densitometry.format_curve(tidy).split("\n")[0].endswith(
+        "mass = 0.4 + 6.02·area，r² 0.9985，5 点（1 个重复）"), densitometry.format_curve(tidy)
+    return True
+
+
 # ---------------------------------------------------------------- entry point
 
 def run():
     checks = [check_single_gaussian, check_sloping_background, check_two_gaussians,
               check_band_free_lane, check_saturation_flags, check_profile_ends, check_parse_lanes,
-              check_lane_selection, check_schema, check_json_io, check_purity]
+              check_lane_selection, check_schema, check_json_io, check_purity,
+              check_curve_parse_std, check_curve_schema_and_fit, check_curve_bands,
+              check_curve_drop, check_curve_notes, check_curve_refusals, check_curve_json_io,
+              check_format_curve]
     for check in checks:
         check()
     print("selftest_densitometry %d/%d 通过" % (len(checks), len(checks)))

@@ -100,6 +100,68 @@ def _add_measure(actions):
     p.set_defaults(func=cmd_measure)
 
 
+# ---------------------------------------------------------------- curve
+
+def _curve_out_path(dens, out):
+    """curve.json output path (rulings R5 / R12): the chain suffix swapped, next to the dens.
+
+    The document stem carries the chain, so `fig.mw.json` → `fig.dens.json` → `fig.curve.json`
+    (a `--dens` as typed, in its own directory).  Falls back to dropping the final extension when
+    the dens path does not end in `.dens.json` (`mydens.json` / `mydens` → `mydens.curve.json`).
+
+    Same three refusals as `_out_path`: a directory target, a missing output directory, and (done
+    by the caller through `_refuse_overwrite`) a target that is one of the files read.
+    """
+    if out is None:
+        dens_abs = os.path.abspath(dens)
+        if dens_abs.lower().endswith(OUT_SUFFIX):
+            stem = dens_abs[:-len(OUT_SUFFIX)]
+        else:
+            stem = os.path.splitext(dens_abs)[0]
+        target = stem + densitometry.CURVE_SUFFIX
+    else:
+        target = os.path.abspath(out)
+    if os.path.isdir(target):
+        raise ValueError("--out 指向的是目录 %s（要写文件路径）" % target)
+    parent = os.path.dirname(target) or "."
+    if not os.path.isdir(parent):
+        raise ValueError("输出目录 %s 不存在（不自动创建，先建好它）" % parent)
+    return target
+
+
+def cmd_curve(args):
+    """dens.json + standard lanes → curve.json, then print the table (spec §3.2)."""
+    dens = densitometry.load_json(args.dens, densitometry.KIND)
+    out = _curve_out_path(args.dens, args.out)
+    _refuse_overwrite(out, (args.dens,))
+    std = densitometry.parse_std(args.std)
+    curve = densitometry.build_curve(dens, std, unit=args.unit, fit=args.fit,
+                                     baseline=args.baseline, drop=args.drop or (),
+                                     dens_path=args.dens, std_text=args.std)
+    densitometry.write_json(curve, out)
+    print(densitometry.format_curve(curve))
+    print("[i] 写出 %s" % out)
+    return 0
+
+
+def _add_curve(actions):
+    """`curve` — standard curve from the standard lanes (spec §3.2)."""
+    p = actions.add_parser("curve", help="Fit a standard curve from the standard lanes of a dens.json")
+    p.add_argument("--dens", required=True, help="dens.json written by `measure`")
+    p.add_argument("--std", required=True,
+                   help="standard lanes, e.g. 2=20,3:2=10,4:*=5 (lane[:band]=mass; default the "
+                        "lane's strongest band, :* the whole-lane total)")
+    p.add_argument("--out", help="curve.json path (default: fig.dens.json → fig.curve.json)")
+    p.add_argument("--baseline", choices=list(densitometry.BASELINES), default="flank",
+                   help="baseline column that drives the curve (default %(default)s)")
+    p.add_argument("--fit", choices=list(densitometry.FITS), default="linear",
+                   help="fit model (default %(default)s)")
+    p.add_argument("--unit", default="ug", help="mass unit recorded in the curve (default %(default)s)")
+    p.add_argument("--drop", type=int, action="append", default=[],
+                   help="standard lane to keep as `used: false` (repeatable)")
+    p.set_defaults(func=cmd_curve)
+
+
 # ---------------------------------------------------------------- registration
 
 def add_commands(sub):
@@ -108,3 +170,4 @@ def add_commands(sub):
                            help="Measure and quantify bands from a report v2 (offline)")
     actions = group.add_subparsers(dest="action", required=True)
     _add_measure(actions)
+    _add_curve(actions)
