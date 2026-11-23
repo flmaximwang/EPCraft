@@ -203,10 +203,10 @@ def _flank_levels(y, gray, y0, y1, y_up, y_dn, flank_cm, baseline):
 
     Left flank = rows in [max(y_up, y0 − fw·dy), y0); right flank = rows in (y1, min(y_dn, y1 +
     fw·dy)]; fw = max(2, round(flank_cm / dy)).  Level = median gray of those rows, placed at the
-    flank's y centre.  A flank with fewer than 2 rows takes the **global** baseline at the row
-    nearest the window edge instead (y0 / y1 — the first row outside the window, which is where a
-    missing flank sits; still a ramp endpoint) and reports ok=False — `measure` turns that into the
-    `flank_fallback_left/right` tag and a note.
+    flank's y centre.  A flank with fewer than 2 rows takes the **global** baseline at the window
+    edge row itself instead (y0 / y1, the last row inside the window on that side — which is where
+    a missing flank sits; still a ramp endpoint) and reports ok=False — `measure` turns that into
+    the `flank_fallback_left/right` tag and a note.
 
     `measure` needs the per-side fallback flags for the notes, so it calls this directly and
     builds the same dict through `_ramp_dict` that `flank_ramp` returns.
