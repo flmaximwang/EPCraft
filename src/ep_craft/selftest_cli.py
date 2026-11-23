@@ -90,6 +90,8 @@ def test_parser_hierarchy():
         (["workbench", "import", "f.vectorcraft", "--input", "d.json"],
          "workbench", "import", "cmd_workbench_import"),
         (["profile", "sync", "f.vectorcraft"], "profile", "sync", "cmd_sync"),
+        (["densitometry", "measure", "fig.mw.json"], "densitometry", "measure", "cmd_measure"),
+        (["dens", "measure", "fig.mw.json", "--lanes", "2-4"], "dens", "measure", "cmd_measure"),
         (["doctor"], "doctor", None, "cmd_doctor"),
         (["selftest"], "selftest", None, "cmd_selftest_all"),
     ]
@@ -112,9 +114,16 @@ def test_parser_hierarchy():
     a = ap.parse_args(["figure", "sync", "f.vectorcraft"])
     assert a.reset_peaks is None and a.dry_run is False and a.dpi == 300
 
+    # densitometry measure 的默认值（＝§4.1 的常量）与旗标
+    a = ap.parse_args(["dens", "measure", "fig.mw.json"])
+    assert a.flank_cm == 0.15 and a.min_ink == 0.5 and a.out is None and a.lanes is None
+    assert a.include_marker is False and a.include_trimmed is False
+    assert ap.parse_args(["dens", "measure", "fig.mw.json", "--include-marker"]).include_marker is True
+
     # 顶层不再有旧的扁平命令，组内也不会混入别的组的命令
     assert set(ap._subparsers._group_actions[0].choices) == {
-        "figure", "crop", "workbench", "profile", "launch", "workflow", "selftest", "doctor"}
+        "figure", "crop", "workbench", "profile", "launch", "workflow", "densitometry", "dens",
+        "selftest", "doctor"}
     for argv in (["probe", "x.jpg"], ["render", "x.jpg", "--out", "f"],
                  ["figure", "probe", "x.jpg"], ["crop", "render", "x.jpg", "--out", "f"],
                  ["figure", "export", "f.vectorcraft", "--artboard", "Workbench"]):
@@ -127,7 +136,7 @@ def test_parser_hierarchy():
                 raise AssertionError("该被拒绝的命令通过了：%r" % (argv,))
 
     # 组必须带 action：每个组单独出现时 argparse 打 usage 并以 2 退出
-    for group in ("figure", "crop", "workbench", "profile"):
+    for group in ("figure", "crop", "workbench", "profile", "densitometry", "dens"):
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             try:
@@ -329,6 +338,85 @@ def test_workbench_io_delegation():
     assert "--input" in err.getvalue(), err.getvalue()
 
 
+# ---------------------------------------------------------------- densitometry chain (1/5: measure)
+
+def test_densitometry_cli():
+    """`densitometry measure` end to end on a synthetic report: the printed table, the written
+    dens.json, both aliases, and every refusal path (stale report, --out onto an input, missing
+    output dir, bad --lanes) as one `[!] …` stderr line with exit 2."""
+    from . import selftest_densitometry
+
+    with tempfile.TemporaryDirectory() as td:
+        rep = selftest_densitometry._synthetic_report([
+            {"label": "M", "marker": True, "bands": [(1.0, 20.0, 0.03)]},
+            {"label": "S1", "bands": [(3.0, 30.0, 0.03), (4.0, 25.0, 0.05)]},
+            {"label": None, "bands": []},
+        ])
+        report = os.path.join(td, "fig.mw.json")
+        selftest_densitometry.densitometry.write_json(rep, report)
+        out = os.path.join(td, "fig.dens.json")
+
+        rc, stdout, stderr = _run(["densitometry", "measure", report])
+        assert rc == 0, stderr
+        assert stderr == "", "成功路径不该写 stderr：%r" % (stderr,)
+        lines = stdout.strip().splitlines()
+        assert lines[0].startswith("[i] 报告 ") and "2 条泳道" in lines[0], lines[0]
+        assert lines[1] == "泳道 2 S1：2 带，面积 5.3 / 3.7 gray·cm", lines[1]
+        assert lines[2] == "泳道 3：0 带，面积 0.0 / 0.0 gray·cm", lines[2]
+        assert lines[-1] == "[i] 写出 %s" % out, lines[-1]
+        assert os.path.isfile(out), out
+        dens = selftest_densitometry.densitometry.load_json(out, "ep-craft-densitometry")
+        assert dens["source"]["report"] == report, dens["source"]
+        assert [ln["lane"] for ln in dens["lanes"]] == [2, 3], dens["lanes"]
+        assert dens["params"]["lanes"] == "all sample lanes, trimmed and marker excluded", dens["params"]["lanes"]
+
+        # 别名 dens + 两个 include 旗标 + --lanes 覆盖默认选择
+        rc, stdout, stderr = _run(["dens", "measure", report, "--include-marker"])
+        assert rc == 0 and stderr == "", stderr
+        assert "3 条泳道" in stdout and "泳道 1 M：1 带" in stdout, stdout
+        rc, stdout, stderr = _run(["dens", "measure", report, "--lanes", "1"])
+        assert rc == 0 and stderr == "", stderr
+        assert "泳道 1 M：1 带，面积 1.5 / 1.1 gray·cm" in stdout, stdout
+
+        # .vectorcraft 参数解析到它的 <stem>.mw.json；报告比文档旧 → 先 sync
+        doc = os.path.join(td, "fig.vectorcraft")
+        with open(doc, "w", encoding="utf-8") as f:
+            f.write("document")
+        os.utime(report, (2000, 2000))
+        os.utime(doc, (3000, 3000))
+        rc, _o, err = _run(["dens", "measure", doc])
+        assert rc == 2 and "先 sync" in err and err.startswith("[!] "), err
+        assert "\n" not in err.rstrip("\n"), err
+
+        # 报告不存在 / 不是报告 v2 都是同一行错误
+        rc, _o, err = _run(["dens", "measure", os.path.join(td, "nope.mw.json")])
+        assert rc == 2 and err.startswith("[!] ") and "nope.mw.json" in err, err
+        broken = os.path.join(td, "broken.mw.json")
+        with open(broken, "w", encoding="utf-8") as f:
+            f.write("{}")
+        rc, _o, err = _run(["dens", "measure", broken])
+        assert rc == 2 and "v2" in err, err
+
+        # --out 指向命令读的文件 → 拒绝；目录不存在 / 目录目标 → 拒绝；--lanes 越界 → 拒绝
+        rc, _o, err = _run(["dens", "measure", report, "--out", report])
+        assert rc == 2 and "--out" in err and "输入文件" in err, err
+        rc, _o, err = _run(["dens", "measure", report, "--out", os.path.join(td, "no", "x.json")])
+        assert rc == 2 and "输出目录" in err, err
+        rc, _o, err = _run(["dens", "measure", report, "--lanes", "9"])
+        assert rc == 2 and "--lanes" in err, err
+        rc, _o, err = _run(["dens", "measure", report, "--out", td])
+        assert rc == 2 and "目录" in err, err
+
+        # 文档参数（报告已更新）：默认输出仍是 <report stem>.dens.json，不是 <doc stem>.dens.json；
+        # 文档本身也是本命令读的东西，--out 指向它同样被拒
+        os.utime(report, (4000, 4000))
+        rc, stdout, stderr = _run(["dens", "measure", doc])
+        assert rc == 0 and stderr == "", stderr
+        assert stdout.strip().splitlines()[-1] == "[i] 写出 %s" % out, stdout
+        rc, _o, err = _run(["dens", "measure", doc, "--out", doc])
+        assert rc == 2 and "--out" in err and "输入文件" in err, err
+
+
 # ---------------------------------------------------------------- executable
 
 def test_public_entry():
@@ -375,7 +463,7 @@ def test_public_entry():
 def selftest():
     tests = [test_parser_hierarchy, test_legacy_parser_unchanged, test_shared_sync_and_edit_dispatch,
              test_error_boundary, test_launch, test_figure_export, test_workbench_io_delegation,
-             test_public_entry]
+             test_densitometry_cli, test_public_entry]
     for t in tests:
         t()
     print("selftest_cli %d/%d 通过" % (len(tests), len(tests)))

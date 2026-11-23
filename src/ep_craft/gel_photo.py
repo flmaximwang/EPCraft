@@ -1086,7 +1086,7 @@ def build_parser(canvas=False):
     return ap
 
 
-CANVAS_COMMANDS = ("launch", "figure", "crop", "workbench", "profile", "workflow")
+CANVAS_COMMANDS = ("launch", "figure", "crop", "workbench", "profile", "workflow", "densitometry", "dens")
 
 
 def main(argv=None, canvas=None):

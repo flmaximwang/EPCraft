@@ -119,6 +119,8 @@ def add_commands(sub, groups):
     """在公开 CLI 骨架上补 workflow / launch / export / import。"""
     from .workflow_cli import add_commands as add_workflow
     add_workflow(sub)
+    from .densitometry_cli import add_commands as add_densitometry
+    add_densitometry(sub)
     lp = sub.add_parser("launch", help="启动或连接 VectorCraft 控制口；可选打开一份文档")
     lp.add_argument("doc", nargs="?", help="要打开的 fig.vectorcraft（省略则只启动/连接）")
     lp.add_argument("--port", type=int, default=vc_control.DEFAULT_PORT,

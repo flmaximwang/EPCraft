@@ -43,8 +43,10 @@ def test_import_direction():
              if name.endswith(".py") and not name.startswith("__")}
     # 管线：stage 1（gel_area）→ 泳道种子（well_grid）→ 剖面/条带（profiles）→ 模型（workbench）
     #       → 文档与 sync 计划（figure）→ 控制口执行（sync_exec）→ CLI（gel_photo）。只许依赖前面的。
+    # densitometry 是离线定量链的第一段（报告 v2 → dens.json），只吃 profiles 的报告、不碰画板。
     # canvas_cli / workbench_io 是 CLI 胶水层，双方都有延迟 import，不参与线性方向规则。
-    later = ["well_grid", "profiles", "workbench", "figure", "doc_edit", "sync_exec", "gel_photo"]
+    later = ["well_grid", "profiles", "densitometry", "workbench", "figure", "doc_edit", "sync_exec",
+             "gel_photo"]
     rules = {"gel_area": set(later), "gel_detect": set(later)}
     for i, mod in enumerate(later):
         rules[mod] = set(later[i + 1:])
@@ -1411,6 +1413,11 @@ def selftest():
     ok += selftest_sync.run()
     from . import selftest_crop
     ok += selftest_crop.run()
+
+    # 77+) 定量链第一段（densitometry；纯数学，假报告）：flank / global 双基线面积、窗口走墨量与
+    #     相邻带中点夹紧、flank 斜坡与 fallback、饱和/平顶标记、--lanes 语法、JSON 往返与幂等。
+    from . import selftest_densitometry
+    ok += selftest_densitometry.run()
 
     # 78) 标签角度（V9）：角度是逆时针度（90 = 从下往上读），写进点文字的 xf（绕锚点）；读回同值；
     #     旋转后按**墨迹框**摆位与量页边（竖排的泳道名框底离胶顶 4 pt、框中线=泳道中心，页顶留白
