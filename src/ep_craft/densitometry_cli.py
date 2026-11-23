@@ -46,10 +46,16 @@ def _out_path(report, out):
 
 
 def _refuse_overwrite(target, sources):
-    """R5: never overwrite a file the command reads (report / document as typed or resolved)."""
+    """R5: never overwrite a file the command reads, including through a hard link."""
     real = os.path.realpath(target)
-    for src in sources:
-        if src and os.path.realpath(src) == real:
+    for src in filter(None, sources):
+        aliases_input = os.path.realpath(src) == real
+        if not aliases_input:
+            try:
+                aliases_input = os.path.samefile(target, src)
+            except FileNotFoundError:
+                continue  # A new output has no inode to compare.
+        if aliases_input:
             raise ValueError("--out 不能指向输入文件 %s（它会覆盖本命令读的东西）" % src)
 
 
@@ -129,6 +135,38 @@ def _curve_out_path(dens, out):
     return target
 
 
+# ---------------------------------------------------------------- plot-bands (ticket ep-bqv.2)
+
+BANDS_SUFFIX = ".bands.png"        # default: <dens stem>.bands.png (fig.dens.json → fig.bands.png)
+
+
+def _bands_path(dens_path, out):
+    """plot-bands output path (lead ruling for ticket .2, rulings R12 / R5).
+
+    The default is derived from the dens path as typed: a `*.dens.json` name loses exactly
+    that suffix (`fig.dens.json` → `fig.bands.png`, same directory); any other name loses its
+    final extension and gains `.bands.png` (`mydens.json` → `mydens.bands.png`).  An explicit
+    `--out` is used as typed (made absolute).  A directory target or a missing output
+    directory is refused — the directory is never created implicitly.
+    """
+    if out is None:
+        text = str(dens_path)
+        if text.lower().endswith(OUT_SUFFIX):
+            target = text[:-len(OUT_SUFFIX)] + BANDS_SUFFIX
+        else:
+            stem = os.path.splitext(text)[0]
+            target = stem + BANDS_SUFFIX
+        target = os.path.abspath(target)
+    else:
+        target = os.path.abspath(out)
+    if os.path.isdir(target):
+        raise ValueError("--out 指向的是目录 %s（要写文件路径）" % target)
+    parent = os.path.dirname(target) or "."
+    if not os.path.isdir(parent):
+        raise ValueError("输出目录 %s 不存在（不自动创建，先建好它）" % parent)
+    return target
+
+
 def cmd_curve(args):
     """dens.json + standard lanes → curve.json, then print the table (spec §3.2)."""
     dens = densitometry.load_json(args.dens, densitometry.KIND)
@@ -162,6 +200,44 @@ def _add_curve(actions):
     p.set_defaults(func=cmd_curve)
 
 
+def cmd_plot_bands(args):
+    """dens.json → PNG grid of per-lane panels (spec §4.7)."""
+    from . import dens_plot              # lazy: the plot module pulls in magick_io / text_layout
+
+    dens_path = os.path.abspath(args.dens)
+    dens = densitometry.load_json(dens_path, densitometry.KIND)
+    out = _bands_path(dens_path, args.out)
+    _refuse_overwrite(out, (dens_path,))
+    lanes = None
+    if args.lanes is not None:
+        available = [int(ln["lane"]) for ln in dens.get("lanes") or []
+                     if isinstance(ln, dict) and isinstance(ln.get("lane"), int)]
+        count = max(available) if available else 1
+        lanes = [no for no in densitometry.parse_lanes(args.lanes, count) if no in available]
+        if not lanes:
+            raise RuntimeError("--lanes 选了 %s，但这份 dens 里只有泳道 %s"
+                               % (args.lanes, ", ".join(str(v) for v in available) or "（空）"))
+    w, h = dens_plot.plot_bands(dens, out, baseline=args.baseline, lanes=lanes,
+                                cols=args.cols, width=args.width)
+    print("[i] dens %s：%d 条泳道 → %s（%dx%d 像素，baseline %s）"
+          % (dens_path, len(lanes) if lanes is not None else len(dens.get("lanes") or []),
+             out, w, h, args.baseline))
+    return 0
+
+
+def _add_plot_bands(actions):
+    """`plot-bands` — one panel per lane, both baselines, shaded windows (spec §4.7)."""
+    p = actions.add_parser("plot-bands", help="Render a dens.json as a PNG grid of lane panels")
+    p.add_argument("--dens", required=True, help="dens.json written by measure")
+    p.add_argument("--out", help="output PNG (default: <dens stem>.bands.png)")
+    p.add_argument("--lanes", help="lane numbers to plot, e.g. 1,2,8-10 (default: all in the dens)")
+    p.add_argument("--baseline", choices=["flank", "global", "both"], default="both",
+                   help="which baseline is shaded and totalled (default %(default)s)")
+    p.add_argument("--cols", type=int, default=3, help="columns in the grid (default %(default)s)")
+    p.add_argument("--width", type=int, default=2400, help="image width in pixels (default %(default)s)")
+    p.set_defaults(func=cmd_plot_bands)
+
+
 # ---------------------------------------------------------------- registration
 
 def add_commands(sub):
@@ -171,3 +247,4 @@ def add_commands(sub):
     actions = group.add_subparsers(dest="action", required=True)
     _add_measure(actions)
     _add_curve(actions)
+    _add_plot_bands(actions)

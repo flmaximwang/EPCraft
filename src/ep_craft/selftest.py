@@ -47,7 +47,7 @@ def test_import_direction():
     # 链的其余模块（dens_plot 渲染、densitometry_cli 参数）排在管线末尾：数学不许依赖它们。
     # canvas_cli / workbench_io 是 CLI 胶水层，双方都有延迟 import，不参与线性方向规则。
     later = ["well_grid", "profiles", "densitometry", "workbench", "figure", "doc_edit", "sync_exec",
-             "gel_photo", "densitometry_cli"]
+             "gel_photo", "dens_plot", "densitometry_cli"]
     rules = {"gel_area": set(later), "gel_detect": set(later)}
     for i, mod in enumerate(later):
         rules[mod] = set(later[i + 1:])
@@ -1419,6 +1419,12 @@ def selftest():
     #     相邻带中点夹紧、flank 斜坡与 fallback、饱和/平顶标记、--lanes 语法、JSON 往返与幂等。
     from . import selftest_densitometry
     ok += selftest_densitometry.run()
+
+    # 77++) Band plot acceptance uses ImageMagick to verify PNG dimensions and window
+    #      fills for both baselines. It also checks grid options, input overwrite
+    #      protection, and temporary file cleanup.
+    from . import selftest_dens_plot
+    ok += selftest_dens_plot.run()
 
     # 78) 标签角度（V9）：角度是逆时针度（90 = 从下往上读），写进点文字的 xf（绕锚点）；读回同值；
     #     旋转后按**墨迹框**摆位与量页边（竖排的泳道名框底离胶顶 4 pt、框中线=泳道中心，页顶留白
