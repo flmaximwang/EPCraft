@@ -3,7 +3,7 @@
 """selftest_plot_curve_acceptance — independent acceptance suite for the matplotlib `plot-curve`.
 
 The renderer is a black box: every check calls the public `dens_plot.plot_curve(curve, out,
-quant=None, width=1600)` (or the public `dens plot-curve` CLI), captures the Matplotlib Figure
+quant=None, width=1020)` (or the public `dens plot-curve` CLI), captures the Matplotlib Figure
 that the renderer saves, and reads the PNG back with Matplotlib's own image reader.  There are
 no MVG strings, no ImageMagick pixel probes and no layout arithmetic copied from the renderer.
 
@@ -97,7 +97,7 @@ def _capture_figures():
         yield captured
 
 
-def _render(path, curve, quant=None, width=1600, api=True):
+def _render(path, curve, quant=None, width=1020, api=True):
     """Call plot_curve (or its CLI) → (returned, figure, captured warnings, output path)."""
     _matplotlib, _Figure, _Canvas, _np = _mpl()
     captured = []
@@ -115,7 +115,7 @@ def _render(path, curve, quant=None, width=1600, api=True):
     return ret, fig, caught, os.path.abspath(path)
 
 
-def _render_file(tmpdir, name, curve, quant=None, width=1600, api=True):
+def _render_file(tmpdir, name, curve, quant=None, width=1020, api=True):
     path = os.path.join(tmpdir, name)
     if api:
         ret, fig, caught, out = _render(path, curve, quant=quant, width=width, api=True)
@@ -463,8 +463,6 @@ def _fit_line(ax, curve):
             continue
         expected = _arr([_model(curve, float(x)) for x in xs])
         scale = max(1.0, float(abs(expected).max()))
-        # The renderer polylines go through pixel coordinates, so a dashed segment can
-        # differ from the ideal model by a small fraction of a pixel.
         if float(abs(ys - expected).max()) <= 1e-4 * scale + xtol:
             found.append(line)
     return found
@@ -641,7 +639,7 @@ def check_cli_parser():
         args = ap.parse_args([group, "plot-curve", "--curve", "fig.curve.json"])
         assert args.cmd == group and args.action == "plot-curve", (group, args.action)
         assert args.func.__name__ == "cmd_plot_curve", (group, args.func.__name__)
-        assert args.width == 1600 and args.quant is None and args.out is None, vars(args)
+        assert args.width == 1020 and args.quant is None and args.out is None, vars(args)
         args = ap.parse_args([group, "plot-curve", "--curve", "c.json", "--quant", "q.json",
                               "--out", "c.png", "--width", "800"])
         assert (args.curve, args.quant, args.out, args.width) == ("c.json", "q.json", "c.png", 800)
@@ -665,7 +663,7 @@ def check_default_path_and_alias():
             assert os.path.isfile("fig.curve.png"), out
             assert "fig.curve.png" in out, out
             w, h = _png_size("fig.curve.png")
-            assert w == 1600, w
+            assert w == 1020, w
 
             rc, out, err = _cli(["densitometry", "plot-curve", "--curve", "fig.curve.json",
                                  "--width", "800"])
@@ -678,7 +676,7 @@ def check_default_path_and_alias():
             assert rc == 0 and err == "", (rc, err)
             assert os.path.isfile("x.png")
             w, h = _png_size("x.png")
-            assert w == 1600, w
+            assert w == 1020, w
     return True
 
 
@@ -730,6 +728,16 @@ def check_fit_line_linear():
             assert float(abs(ys - expected).max()) <= \
                 1e-6 * max(1.0, float(abs(expected).max())), \
                 "拟合线不在 y = intercept + slope*x 上"
+        # Force the left extension to cross the bottom of the axes. The artist's
+        # data must still follow the model below zero so clipping preserves its slope.
+        curve["fit_params"]["intercept"] = -10.0
+        (_w, _h), fig, _caught, _out = _render_file(td, "lin-crossing.png", curve)
+        main, _resid = _pair(fig)
+        extensions = [line for line in _fit_line(main, curve) if _is_dashed(line)]
+        assert len(extensions) == 2, "拟合线两端的虚线必须沿用同一个模型"
+        left = min(extensions, key=lambda line: min(line.get_xdata()))
+        assert min(left.get_ydata()) < main.get_ylim()[0] < max(left.get_ydata()), \
+            "左侧虚线应由坐标轴裁切，不能把端点压到零线上"
     return True
 
 
@@ -909,6 +917,11 @@ def check_geometry_and_frames():
     with tempfile.TemporaryDirectory() as td:
         (w, h), fig, _caught, _out = _render_file(td, "geo.png", curve, width=1200)
         main, resid = _pair(fig)
+        for ax in (main, resid):
+            assert all(ax.spines[side].get_visible() for side in ("left", "right", "top", "bottom"))
+            assert any(line.get_visible() for line in ax.get_xgridlines())
+            assert any(line.get_visible() for line in ax.get_ygridlines())
+        assert list(main.get_xticks()) == list(resid.get_xticks())
         mp = main.get_position()
         rp = resid.get_position()
         assert mp.height > rp.height, "主轴不比残差带高：%.3f vs %.3f" % (mp.height, rp.height)
@@ -1152,7 +1165,7 @@ def check_chain_synthetic():
         assert rc == 0 and err == "", (rc, err)
         png = os.path.join(td, "synthetic.curve.png")
         assert os.path.isfile(png), out
-        _assert_png(png, 1600)
+        _assert_png(png, 1020)
         _ret, fig, _caught, _out = _render(os.path.join(td, "api.png"), curve)
         main, _resid = _pair(fig)
         assert _fit_line(main, curve), "实跑曲线没有拟合线"

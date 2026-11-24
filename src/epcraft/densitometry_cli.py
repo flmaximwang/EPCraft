@@ -336,7 +336,7 @@ def _add_plot_curve(actions):
     p.add_argument("--curve", required=True, help="curve.json written by `curve`")
     p.add_argument("--quant", help="quant.json written by `quantify`: adds the sample squares")
     p.add_argument("--out", help="output PNG (default: fig.curve.json -> fig.curve.png)")
-    p.add_argument("--width", type=int, default=1600, help="image width in pixels (default %(default)s)")
+    p.add_argument("--width", type=int, default=1020, help="image width in pixels (default %(default)s)")
     p.set_defaults(func=cmd_plot_curve)
 
 

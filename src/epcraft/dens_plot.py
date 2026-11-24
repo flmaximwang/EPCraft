@@ -17,7 +17,7 @@ no ImageMagick/MVG):
     by a per-group sequential scale.  Without groups each lane gets its own tile and every
     band in that lane is shown in the stable lane palette.
 
-``plot_curve(curve, out, quant=None, width=1600)``
+``plot_curve(curve, out, quant=None, width=1020)``
     The standard curve (and optional sample markers) with a residual strip that shares the
     area axis.  Replicate bars are horizontal on the area axis because ``curve.points[].sd``
     is the sample SD of replicate areas, not of masses.
@@ -1513,54 +1513,6 @@ def _ticks(lo, hi, target=6):
     return values
 
 
-def _fit_segment(geo, v0, v1):
-    """Pixel polyline of the fitted model between two volumes, clamped inside the axes box."""
-    x0, y0, x1, y1 = geo["main_box"]
-    steps = 2 if geo["fit"] == "linear" else 40
-    pts = []
-    for k in range(steps):
-        v = float(v0) + (float(v1) - float(v0)) * (k / float(steps - 1))
-        px = min(max(geo["axes"].x(v), x0 + 1.0), x1 - 1.0)
-        py = min(max(geo["axes"].y(geo["eval"](v)), y0 + 1.0), y1 - 1.0)
-        pts.append((px, py))
-    return pts
-
-
-def _dash_runs(points, on=7.0, off=5.0):
-    """Split a polyline into solid runs of a dash pattern, anchored at its LAST point."""
-    if len(points) < 2:
-        return [list(points)] if points else []
-    spans, total = [], 0.0
-    for (x0, y0), (x1, y1) in zip(points, points[1:]):
-        d = math.hypot(x1 - x0, y1 - y0)
-        spans.append((total, total + d, (x0, y0), (x1, y1)))
-        total += d
-    if total <= 0.0:
-        return [list(points)]
-
-    def at(s):
-        s = min(max(s, 0.0), total)
-        for start, end, a, b in spans:
-            if end >= s - 1e-9:
-                frac = 0.0 if end <= start else (s - start) / (end - start)
-                return (a[0] + (b[0] - a[0]) * frac, a[1] + (b[1] - a[1]) * frac)
-        return points[-1]
-
-    runs, end = [], total
-    while end > 0.0:
-        start = max(0.0, end - on)
-        inner = [pts for lo, hi, pts, _p in spans if lo >= start and hi < end]
-        runs.append([at(start)] + inner + [at(end)])
-        end = start - off
-    runs = list(reversed(runs))
-    # Make each recorded end visibly reached: a dash phase that opens the tail with a gap
-    # otherwise leaves the final endpoint blank (and hides where the model was sampled).
-    if total > 2.0:
-        cap = min(3.0, total / 2.0)
-        runs = [[at(0.0), at(cap)]] + runs + [[at(total - cap), at(total)]]
-    return runs
-
-
 def _boxes_touch(a, b, pad=3.0):
     """Do two label boxes overlap (with a little breathing room)?"""
     return (a[2] + pad > b[0] and b[2] + pad > a[0]
@@ -1635,7 +1587,7 @@ def _has_error_bar(axes, point, box):
     return _bar_extent(point["x"] if horizontal else point["y"], half, box, horizontal) is not None
 
 
-def curve_layout(curve, quant=None, width=1600):
+def curve_layout(curve, quant=None, width=1020):
     """Geometry of the plot-curve canvas — shared by `plot_curve` and its selftests."""
     fit, fn, eqn, r2 = _check_curve(curve)
     try:
@@ -1687,7 +1639,7 @@ def curve_layout(curve, quant=None, width=1600):
     if y_max <= 0.0:
         y_max = 1.0
 
-    height = max(int(round(w * 0.56)), 670)
+    height = max(round(896 + (w - 1020) * 0.56), 670)
     unit = curve.get("unit") if isinstance(curve.get("unit"), str) and curve.get("unit") else "ug"
     baseline = curve.get("baseline") if isinstance(curve.get("baseline"), str) else "flank"
     n_used = sum(1 for p in points if p["used"])
@@ -1805,12 +1757,13 @@ def curve_layout(curve, quant=None, width=1600):
 # ---------------------------------------------------------------- plot-curve: drawing
 
 def _style_curve_axes(ax, font):
-    for side in ("top", "right"):
-        ax.spines[side].set_visible(False)
     for spine in ax.spines.values():
+        spine.set_visible(True)
         spine.set_color(_mcolor(CURVE_FRAME_RGB))
         spine.set_linewidth(0.8)
     ax.set_facecolor("white")
+    ax.grid(True, axis="both", color="#dce5e9", linewidth=0.65)
+    ax.set_axisbelow(True)
     ax.tick_params(colors=_mcolor(MUTED_RGB), width=0.7, length=3.0,
                    labelsize=10.0, pad=3.0)
     for label in ax.get_xticklabels() + ax.get_yticklabels():
@@ -1931,21 +1884,19 @@ def _draw_curve_text(fig, geo):
 def _draw_curve_fit(ax, geo):
     """The fitted line: solid over the standard range, dashed ±10% extensions."""
     drawn = geo["fitted"]
-    solid = _fit_segment(geo, drawn["volume_min"], drawn["volume_max"])
-    ax.plot([geo["axes"].x_value(px) for px, _py in solid],
-            [geo["axes"].y_value(py) for _px, py in solid],
-            color="#11776f", linewidth=1.65, solid_capstyle="round", zorder=3)
-    for v0, v1 in ((drawn["drawn_min"], drawn["volume_min"]),
-                   (drawn["volume_max"], drawn["drawn_max"])):
-        if v1 <= v0 + 1e-12:
+    segments = (
+        (drawn["volume_min"], drawn["volume_max"], "-", 1.65),
+        (drawn["drawn_min"], drawn["volume_min"], "--", 1.2),
+        (drawn["volume_max"], drawn["drawn_max"], "--", 1.2),
+    )
+    steps = 2 if geo["fit"] == "linear" else 40
+    for start, stop, style, width in segments:
+        if stop <= start:
             continue
-        for run in _dash_runs(_fit_segment(geo, v0, v1)):
-            if len(run) < 2:
-                continue
-            ax.plot([geo["axes"].x_value(px) for px, _py in run],
-                    [geo["axes"].y_value(py) for _px, py in run],
-                    color="#11776f", linewidth=1.2, solid_capstyle="butt",
-                    zorder=3)
+        xs = [start + (stop - start) * k / (steps - 1) for k in range(steps)]
+        # Let the axes clip the path. Clamping its vertices would distort the fit.
+        ax.plot(xs, [geo["eval"](x) for x in xs], color="#11776f",
+                linestyle=style, linewidth=width, solid_capstyle="round", zorder=3)
 
 
 def _draw_curve_main(fig, geo):
@@ -1969,8 +1920,6 @@ def _draw_curve_main(fig, geo):
         label.set_color(_mcolor(MUTED_RGB))
     ax.set_ylabel(geo["y_label"], color=_mcolor(TEXT_RGB),
                   fontproperties=_font_prop(AXIS_FONT, font), labelpad=8)
-    ax.grid(axis="y", color="#dce5e9", linewidth=0.65)
-    ax.set_axisbelow(True)
     _draw_curve_fit(ax, geo)
 
     # replicate area bars: horizontal, clipped to the axes
@@ -2086,13 +2035,14 @@ def _draw_curve_main(fig, geo):
     # expand one view beyond geo["x_range"], leaving the main plot and the residual strip
     # with visibly different spans (acceptance: 0..11.88 vs 0..12).
     ax.set_xlim(geo["x_range"])
+    return ax
 
 
-def _draw_curve_resid(fig, geo):
+def _draw_curve_resid(fig, geo, main_ax):
     """Residual strip: frame, zero line, ±10 % guides and one marker per residual."""
     width, height = geo["width"], geo["height"]
     font = geo["font"]
-    ax = fig.add_axes(_fig_rect(geo["resid_box"], width, height))
+    ax = fig.add_axes(_fig_rect(geo["resid_box"], width, height), sharex=main_ax)
     ax.set_xlim(geo["x_range"])
     ax.set_ylim(geo["rel_range"])
     ax.set_autoscale_on(False)
@@ -2139,7 +2089,7 @@ def _draw_curve_resid(fig, geo):
     ax.set_xlim(geo["x_range"])
 
 
-def plot_curve(curve, out, quant=None, width=1600):
+def plot_curve(curve, out, quant=None, width=1020):
     """Render curve.json — and quant.json's sample markers when given — as a PNG (§4.7).
 
     Returns the actual pixel size written.  Missing matplotlib becomes one RuntimeError with
@@ -2154,8 +2104,8 @@ def plot_curve(curve, out, quant=None, width=1600):
     FigureCanvasAgg(fig)
     fig.patch.set_facecolor("white")
     _draw_curve_text(fig, geo)
-    _draw_curve_main(fig, geo)
-    _draw_curve_resid(fig, geo)
+    main_ax = _draw_curve_main(fig, geo)
+    _draw_curve_resid(fig, geo, main_ax)
     # Both axes share the same left edge, so their vertical labels share a column too.
     label_x = (30 - LEFT_PAD) / (geo["width"] - LEFT_PAD - CURVE_RIGHT_PAD)
     for ax in fig.axes:
