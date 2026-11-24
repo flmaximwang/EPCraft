@@ -8,7 +8,7 @@ ticket's acceptance criteria.
 This suite is deliberately SEPARATE from the implementation change's own selftests.  It drives
 only the contract the ticket publishes — `dens_plot.plot_curve(curve, out, quant=None,
 width=1600)`, `dens_plot.curve_layout(curve, quant=None, width=1600)` and the CLI
-(`ep-craft densitometry plot-curve` / `dens plot-curve`) — with hand-written curve.json /
+(`epcraft densitometry plot-curve` / `dens plot-curve`) — with hand-written curve.json /
 quant.json fixtures (spec §4.5 / §4.6 shapes) and one fixture built by the real upstream chain
 (`selftest_densitometry._synthetic_report` → `measure` → `build_curve`) so the picture is also
 tied to the numbers the earlier tickets produce.
@@ -45,7 +45,7 @@ picture (fitted line, axis frame, residual stems, ticks) tops out at 2 px, and `
 plus the positive control inside the bar-free check prove the same predicates DO fire on a real
 bar, so the negative side cannot be satisfied by a renderer that draws nothing anywhere.
 
-Run:  PYTHONPATH=src python3 -m ep_craft.selftest_plot_curve_acceptance
+Run:  PYTHONPATH=src python3 -m epcraft.selftest_plot_curve_acceptance
 `run()` returns the number of passed checks and prints `selftest_plot_curve_acceptance N/N 通过`.
 """
 import contextlib
@@ -78,7 +78,7 @@ def _plot():
     try:
         dens_plot = importlib.import_module(".dens_plot", __package__)
     except ImportError:
-        raise AssertionError("ep_craft.dens_plot 不存在——ep-bqv.4（plot-curve）还没落到这个分支上")
+        raise AssertionError("epcraft.dens_plot 不存在——ep-bqv.4（plot-curve）还没落到这个分支上")
     missing = [name for name in ("plot_curve", "curve_layout")
                if not callable(getattr(dens_plot, name, None))]
     if missing:
@@ -1600,7 +1600,7 @@ def check_api_errors():
                          RuntimeError, "曲线 kind 不对")
         assert KIND in message, "kind 错误的提示没点名该有的 kind：%r" % message
         message = expect(lambda: dens_plot.plot_curve(curve, os.path.join(td, "x.png"),
-                                                      quant=dict(quant, kind="ep-craft")),
+                                                      quant=dict(quant, kind="epcraft")),
                          RuntimeError, "quant kind 不对")
         assert QUANT_KIND in message, "quant kind 错误的提示没点名 kind：%r" % message
         message = expect(lambda: dens_plot.plot_curve(curve, os.path.join(td, "x.png"),

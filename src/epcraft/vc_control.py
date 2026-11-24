@@ -88,7 +88,7 @@ def connect(port=DEFAULT_PORT, path=None, launch=True, wait=30.0, app=APP,
                       % (port, app_exe(app), port))
     exe = app_exe(app)
     if not os.path.isfile(exe):
-        raise VCError("找不到 VectorCraft（%s）。装好 VectorCraft 0.14 后再跑；`python3 -m ep_craft doctor` 可自检。" % app)
+        raise VCError("找不到 VectorCraft（%s）。装好 VectorCraft 0.14 后再跑；`python3 -m epcraft doctor` 可自检。" % app)
     cmd = [exe, "--control", str(port)] + ([os.path.abspath(path)] if path else [])
     _popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     t_end = time.time() + wait
@@ -194,13 +194,13 @@ class Client:
                           % (w, h, ab.get("name"), dpi, ew, eh))
         return w, h, got
 
-    def batch(self, commands, label="ep-craft"):
+    def batch(self, commands, label="epcraft"):
         """command.batch：全有或全无、一个撤销步。commands = [(command, params), …]。"""
         return self.execute("command.batch", {"label": label, "commands": [
             {"command": c, "params": p or {}} for c, p in commands]})
 
     @contextlib.contextmanager
-    def undo_group(self, label="ep-craft sync"):
+    def undo_group(self, label="epcraft sync"):
         """with 块里的编辑并成一个撤销步；块里抛错 → cancel（回滚）再把错抛出去。"""
         self.execute("edit.undoGroup.begin", {"label": label})
         try:

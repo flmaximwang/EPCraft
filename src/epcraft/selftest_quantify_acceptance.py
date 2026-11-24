@@ -7,7 +7,7 @@ Contract: specs/ep-craft-densitometry.md §2.7, §2.8, §3.3, §4.6, §5, §7 it
 ticket's acceptance criteria.  This suite is deliberately SEPARATE from the implementation
 change's own selftests: it uses only the public API (`densitometry.quantify`,
 `densitometry.format_quant`, `densitometry.write_json`, `densitometry.load_json`), the public CLI
-(`ep-craft densitometry quantify` / `dens quantify`), and synthetic fixtures built in memory.  It
+(`epcraft densitometry quantify` / `dens quantify`), and synthetic fixtures built in memory.  It
 never reads a user file and never calls ImageMagick.
 
 What it covers
@@ -110,7 +110,7 @@ instead of as-typed) catches all 20.  Nothing in this file was tuned to either i
 every assertion cites the spec or the ruling, and every expected number is computed from the
 fixture.
 
-Run: `PYTHONPATH=src python3 -m ep_craft.selftest_quantify_acceptance`
+Run: `PYTHONPATH=src python3 -m epcraft.selftest_quantify_acceptance`
 (`run()` prints `selftest_quantify_acceptance N/N 通过` and returns the number of checks).
 """
 import contextlib

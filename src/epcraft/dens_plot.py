@@ -565,7 +565,7 @@ def band_layout(dens, baseline="both", lanes=None, cols=3, width=2400):
 
     params = dens.get("params") if isinstance(dens.get("params"), dict) else {}
     report = (dens.get("source") or {}).get("report") if isinstance(dens.get("source"), dict) else ""
-    title = "ep-craft densitometry plot-bands"
+    title = "epcraft densitometry plot-bands"
     if isinstance(report, str) and report:
         title += "  -  " + _ascii(os.path.basename(report), 80)
     params_line = "baseline %s  |  flank_cm %g  |  min_ink %g  |  %d lane%s" % (
@@ -1629,7 +1629,7 @@ def curve_layout(curve, quant=None, width=1600):
 
     source = curve.get("source") if isinstance(curve.get("source"), dict) else {}
     report = source.get("dens") if isinstance(source.get("dens"), str) else ""
-    title = "ep-craft densitometry plot-curve"
+    title = "epcraft densitometry plot-curve"
     if report:
         title += "  -  " + _ascii(os.path.basename(report), 80)
     # the bar clause only appears when a bar is actually drawn, so a curve whose replicate points

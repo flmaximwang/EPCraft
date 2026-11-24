@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""selftest_cli：公开 `ep-craft` 命令层自检 —— 不启动 VectorCraft、不读用户文件。
+"""selftest_cli：公开 `epcraft` 命令层自检 —— 不启动 VectorCraft、不读用户文件。
 
 覆盖：新旧两套 parser 的形状、四个组共用 sync / edit、缺 action 的组报 usage、
 launch 的 connect/open、figure export 的画板选择与输出保护、workbench export/import
 的参数转交，以及 main 的一行错误边界（RuntimeError / OSError / ValueError → 2）。
 
-运行：python3 -m ep_craft.selftest_cli（在 src/ 上或安装后）
+运行：python3 -m epcraft.selftest_cli（在 src/ 上或安装后）
 """
 import contextlib
 import io
@@ -18,7 +18,7 @@ import types
 from pathlib import Path
 
 
-import ep_craft                    # noqa: E402
+import epcraft                    # noqa: E402
 from . import canvas_cli          # noqa: E402
 from . import gel_photo           # noqa: E402
 from . import vc_control          # noqa: E402
@@ -292,11 +292,11 @@ def test_workbench_io_delegation():
         return 0
 
     mod.cmd_export, mod.cmd_import = cmd_export, cmd_import
-    key = "ep_craft.workbench_io"
+    key = "epcraft.workbench_io"
     old = sys.modules.get(key)
-    old_attr = getattr(ep_craft, "workbench_io", None)
+    old_attr = getattr(epcraft, "workbench_io", None)
     sys.modules[key] = mod
-    ep_craft.workbench_io = mod
+    epcraft.workbench_io = mod
     try:
         rc, _o, err = _run(["workbench", "export", "f.vectorcraft", "--port", "7802"])
         assert rc == 0, err
@@ -320,11 +320,11 @@ def test_workbench_io_delegation():
             sys.modules[key] = old
         if old_attr is None:
             try:
-                del ep_craft.workbench_io
+                del epcraft.workbench_io
             except AttributeError:
                 pass
         else:
-            ep_craft.workbench_io = old_attr
+            epcraft.workbench_io = old_attr
 
     # 缺 --input 是 argparse 用法错误（退出 2）
     err = io.StringIO()
@@ -597,38 +597,35 @@ def test_densitometry_curve_cli():
 # ---------------------------------------------------------------- executable
 
 def test_public_entry():
-    """入口 = python3 -m ep_craft（包可导入）与安装后的 console script；scripts/ 目录已删除。"""
+    """入口 = python3 -m epcraft（包可导入）与安装后的 console script。"""
     import importlib.util
-    from ep_craft import cli as package_cli
-    package = Path(__file__).resolve().parent                    # …/src/ep_craft（签出）或 site-packages/ep_craft
+    from epcraft import cli as package_cli
+    package = Path(__file__).resolve().parent                    # …/src/epcraft（签出）或 site-packages/epcraft
     repo = package.parent.parent if package.parent.name == "src" else None
     if repo is not None and not (repo / "pyproject.toml").is_file():
         repo = None
-    if repo is not None:
-        assert not (repo / "skills" / "ep-craft" / "scripts").exists(),             "skills/ep-craft/scripts 应当已删除（入口改为 console script / python -m ep_craft）"
-
     assert callable(package_cli.main), package_cli.main
-    assert importlib.util.find_spec("ep_craft.__main__") is not None, "缺少 python -m ep_craft 的 __main__"
+    assert importlib.util.find_spec("epcraft.__main__") is not None, "缺少 python -m epcraft 的 __main__"
 
     # 模块入口真的能跑（签出时用 repo/src，安装后用当前解释器里的包）
     env = dict(os.environ)
     if repo is not None:
         src = str(repo / "src")
         env["PYTHONPATH"] = src + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
-    r = subprocess.run([sys.executable, "-m", "ep_craft", "--help"],
+    r = subprocess.run([sys.executable, "-m", "epcraft", "--help"],
                        capture_output=True, text=True, env=env)
     assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
     for name in ("figure", "crop", "workbench", "profile", "launch", "doctor", "selftest"):
         assert name in r.stdout, (name, r.stdout, r.stderr)
 
-    # 安装形态：发行版的 console script 指向 ep_craft.cli:main（签出未安装时跳过）
+    # 安装形态：发行版的 console script 指向 epcraft.cli:main（签出未安装时跳过）
     from importlib.metadata import entry_points
     eps = entry_points()
-    selected = [ep for ep in (eps.select(group="console_scripts", name="ep-craft")
+    selected = [ep for ep in (eps.select(group="console_scripts", name="epcraft")
                               if hasattr(eps, "select") else eps.get("console_scripts", []))
-                if ep.name == "ep-craft"]
+                if ep.name == "epcraft"]
     if repo is None:
-        assert any(ep.value == "ep_craft.cli:main" for ep in selected), selected
+        assert any(ep.value == "epcraft.cli:main" for ep in selected), selected
 
     help_text = gel_photo.build_parser(canvas=True).format_help()
     for name in ("figure", "crop", "workbench", "profile", "launch", "doctor", "selftest"):

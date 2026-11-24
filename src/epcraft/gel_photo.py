@@ -288,7 +288,7 @@ def cmd_render(args):
     print("输出 %s、%s（%d×%d px, %d dpi）%s" % (out, stem + ".png", w, h, round(d),
                                               "" if args.no_mw else "、%s.mw.json" % stem))
     print("[i] VectorCraft 控制口 %d 上开着这份文档：在 Workbench 画板上改泳道线 / 积分窗 / band 线，"
-          "然后跑 `python3 -m ep_craft workbench sync %s`" % (args.port, out))
+          "然后跑 `python3 -m epcraft workbench sync %s`" % (args.port, out))
     _ask_names(model)
     return 0
 
@@ -550,7 +550,7 @@ def cmd_sync(args):
         return 0
     if ops:
         done = sync_exec.apply_ops_live(client, ops, dj)
-        print("[i] 已更新：%s（一个撤销步「ep-craft sync」，⌘Z 可整体撤回）" % sync_exec.describe(done))
+        print("[i] 已更新：%s（一个撤销步「epcraft sync」，⌘Z 可整体撤回）" % sync_exec.describe(done))
     else:
         print("[i] 文档已经是最新的（0 个改动）")
     client.save(path)
@@ -567,7 +567,7 @@ def cmd_sync(args):
 # ---------------------------------------------------------------- edit
 
 def cmd_edit(args):
-    """改哪些泳道进 Figure / 泳道名 / 用哪条泳道当 marker：一个撤销步「ep-craft edit」，然后照常 sync。"""
+    """改哪些泳道进 Figure / 泳道名 / 用哪条泳道当 marker：一个撤销步「epcraft edit」，然后照常 sync。"""
     from . import doc_edit
     from . import sync_exec
     if args.keep and args.trim is not None:
@@ -608,8 +608,8 @@ def cmd_edit(args):
     for line in lines:
         print("[i] %s" % line)
     if ops:
-        done = sync_exec.apply_ops_live(client, ops, dj, label="ep-craft edit")
-        print("[i] 已改：%s（一个撤销步「ep-craft edit」）" % sync_exec.describe(done))
+        done = sync_exec.apply_ops_live(client, ops, dj, label="epcraft edit")
+        print("[i] 已改：%s（一个撤销步「epcraft edit」）" % sync_exec.describe(done))
     else:
         print("[i] 文档里已经是这样了（0 个改动）")
     if args.no_sync:
@@ -915,7 +915,7 @@ def _reject_removed(args):
 
 
 def _removed_export(_args):
-    raise RuntimeError("export 已经去掉了：fig.png 由 VectorCraft 导出；改了文档就跑 `python3 -m ep_craft figure sync fig.vectorcraft`")
+    raise RuntimeError("export 已经去掉了：fig.png 由 VectorCraft 导出；改了文档就跑 `python3 -m epcraft figure sync fig.vectorcraft`")
 
 
 def _add_detect(a):
@@ -1039,10 +1039,10 @@ def cmd_selftest_all(_args):
 
 def build_parser(canvas=False):
     """→ argparse.ArgumentParser。canvas=False 保持旧的扁平命令（老用法与现有自检）；
-    canvas=True 是公开 ep-craft 的画板分组命令（见 canvas_cli.add_commands）。"""
+    canvas=True 是公开 epcraft 的画板分组命令（见 canvas_cli.add_commands）。"""
     ap = argparse.ArgumentParser(
-        prog="ep-craft" if canvas else None,
-        description=("Electrophoresis figures in VectorCraft, organized by canvas." if canvas else
+        prog="epcraft" if canvas else None,
+        description=("Electrophoresis gel labeling and offline densitometry, organized by canvas." if canvas else
                      "凝胶电泳照片 → fig.vectorcraft（VectorCraft 里可改）+ fig.png + fig.mw.json"))
     sub = ap.add_subparsers(dest="cmd", required=True)
 

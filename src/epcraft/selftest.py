@@ -711,9 +711,9 @@ def selftest():
         c = vc_control.Client(fv.port, timeout=5)
         cmds = lambda: [(r["params"]["command"], r["params"]["params"]) for r in fv.log
                         if r["method"] == "engine.execute"]
-        with c.undo_group("ep-craft sync"):
+        with c.undo_group("epcraft sync"):
             c.execute("text.setText", {"id": 1, "text": "A"})
-        assert cmds() == [("edit.undoGroup.begin", {"label": "ep-craft sync"}),
+        assert cmds() == [("edit.undoGroup.begin", {"label": "epcraft sync"}),
                           ("text.setText", {"id": 1, "text": "A"}),
                           ("edit.undoGroup.end", {})], cmds()
         fv.log.clear()

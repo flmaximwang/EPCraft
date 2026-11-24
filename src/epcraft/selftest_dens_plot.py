@@ -299,7 +299,7 @@ def check_parser():
     a = ap.parse_args(["dens", "plot-bands", "--dens", "d.json", "--out", "x.png",
                        "--lanes", "2-4", "--baseline", "flank", "--cols", "4", "--width", "1200"])
     assert (a.out, a.lanes, a.baseline, a.cols, a.width) == ("x.png", "2-4", "flank", 4, 1200), a
-    # the group is reachable from the public `ep-craft` command line, not only from build_parser
+    # the group is reachable from the public `epcraft` command line, not only from build_parser
     assert "dens" in gel_photo.CANVAS_COMMANDS, "dens 别名不在 CANVAS_COMMANDS"
     return True
 
@@ -656,10 +656,10 @@ def check_real_magick():
         cpv = subprocess.run([magick, "-version"], stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE)
         assert cpv.returncode == 0 and b"ImageMagick" in cpv.stdout, cpv.stderr[:200]
-        # out of process: the documented `python3 -m ep_craft dens …` entry point, real binary
+        # out of process: the documented `python3 -m epcraft dens …` entry point, real binary
         env = dict(os.environ, PYTHONPATH=os.path.dirname(os.path.dirname(
             os.path.abspath(__file__))))
-        cp = subprocess.run([sys.executable, "-m", "ep_craft", "dens", "plot-bands",
+        cp = subprocess.run([sys.executable, "-m", "epcraft", "dens", "plot-bands",
                              "--dens", dens_path, "--out", png],
                             cwd=td, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         assert cp.returncode == 0, (cp.returncode, cp.stderr.decode()[:300])
@@ -669,7 +669,7 @@ def check_real_magick():
         # a broken magick becomes ONE `[!]` line with rc 2 (no traceback), and writes nothing
         missing = os.path.join(td, "no-magick.png")
         env_bad = dict(env, GEL_MAGICK=os.path.join(td, "no-such-magick"))
-        cp2 = subprocess.run([sys.executable, "-m", "ep_craft", "dens", "plot-bands",
+        cp2 = subprocess.run([sys.executable, "-m", "epcraft", "dens", "plot-bands",
                               "--dens", dens_path, "--out", missing],
                              cwd=td, env=env_bad, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         assert cp2.returncode == 2, (cp2.returncode, cp2.stderr.decode()[:300])
