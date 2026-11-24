@@ -1433,6 +1433,12 @@ def selftest():
     from . import selftest_plot_curve_acceptance
     ok += selftest_plot_curve_acceptance.run()
 
+    # 77++++) Quantify acceptance: areas to masses with the stored fit, the out-of-range and
+    #      non-positive-mass refusals, --load, lane shares, the terminal block and the CLI. Written
+    #      independently from the spec and the ticket.
+    from . import selftest_quantify_acceptance
+    ok += selftest_quantify_acceptance.run()
+
     # 78) 标签角度（V9）：角度是逆时针度（90 = 从下往上读），写进点文字的 xf（绕锚点）；读回同值；
     #     旋转后按**墨迹框**摆位与量页边（竖排的泳道名框底离胶顶 4 pt、框中线=泳道中心，页顶留白
     #     装得下整条字）；marker 标签也能竖排（框内边离胶 4 pt）；render 完 plan_sync = 0（幂等）；

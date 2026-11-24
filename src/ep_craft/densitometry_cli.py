@@ -300,6 +300,65 @@ def _add_plot_curve(actions):
     p.set_defaults(func=cmd_plot_curve)
 
 
+# ---------------------------------------------------------------- quantify
+
+def _quant_out_path(curve, out):
+    """quant.json output path (rulings R5 / R12): the chain suffix swapped, next to the curve.
+
+    Mirrors `_curve_out_path`: `fig.curve.json` → `fig.quant.json` (the document stem carries the
+    chain, NOT `fig.curve.quant.json`).  Falls back to dropping the final extension when the curve
+    path does not end in `.curve.json` (`c.json` → `c.quant.json`).
+
+    Same three refusals as the other chain writers: a directory target, a missing output directory,
+    and (done by the caller through `_refuse_overwrite`) a target that is one of the files read.
+    """
+    if out is None:
+        curve_abs = os.path.abspath(curve)
+        if curve_abs.lower().endswith(densitometry.CURVE_SUFFIX):
+            stem = curve_abs[:-len(densitometry.CURVE_SUFFIX)]
+        else:
+            stem = os.path.splitext(curve_abs)[0]
+        target = stem + densitometry.QUANT_SUFFIX
+    else:
+        target = os.path.abspath(out)
+    if os.path.isdir(target):
+        raise ValueError("--out 指向的是目录 %s（要写文件路径）" % target)
+    parent = os.path.dirname(target) or "."
+    if not os.path.isdir(parent):
+        raise ValueError("输出目录 %s 不存在（不自动创建，先建好它）" % parent)
+    return target
+
+
+def cmd_quantify(args):
+    """dens.json + curve.json (+ `--load`) → quant.json, then print the table (spec §3.3).
+
+    Every refusal stays one `[!] …` line with exit 2: `load_json` / `quantify` / `parse_load` raise
+    RuntimeError, the path helpers raise ValueError, and `gel_photo.main` catches both.
+    """
+    dens = densitometry.load_json(args.dens, densitometry.KIND)
+    curve = densitometry.load_json(args.curve, densitometry.CURVE_KIND)
+    out = _quant_out_path(args.curve, args.out)
+    _refuse_overwrite(out, (args.dens, args.curve))
+    load = densitometry.parse_load(args.load)
+    quant = densitometry.quantify(dens, curve, load, dens_path=args.dens, curve_path=args.curve,
+                                  load_text=args.load)
+    densitometry.write_json(quant, out)
+    print(densitometry.format_quant(quant, curve=curve))
+    print("[i] 写出 %s" % out)
+    return 0
+
+
+def _add_quantify(actions):
+    """`quantify` — area → mass against the standard curve (spec §3.3)."""
+    p = actions.add_parser("quantify",
+                           help="Convert band areas to protein mass with the standard curve")
+    p.add_argument("--dens", required=True, help="dens.json written by `measure`")
+    p.add_argument("--curve", required=True, help="curve.json written by `curve`")
+    p.add_argument("--out", help="quant.json path (default: fig.curve.json → fig.quant.json)")
+    p.add_argument("--load", help="volume loaded per lane in uL, e.g. 9=2,10=2 (default: unknown)")
+    p.set_defaults(func=cmd_quantify)
+
+
 # ---------------------------------------------------------------- registration
 
 def add_commands(sub):
@@ -311,3 +370,4 @@ def add_commands(sub):
     _add_curve(actions)
     _add_plot_bands(actions)
     _add_plot_curve(actions)
+    _add_quantify(actions)

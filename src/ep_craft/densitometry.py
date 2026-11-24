@@ -659,7 +659,8 @@ def measure(report, lanes=None, flank_cm=FLANK_CM, min_ink=MIN_INK, smooth_cm=SM
 # Standard entries: `parse_std` owns the `LANE[[:INDEX]|[:*]]=MASS` grammar, `build_curve` owns the
 # data.  Replicates (entries with the same mass) collapse into one point (n / sd / cv_pct / lanes /
 # entries, §2.7), `drop` keeps a point with `used: false` so the plot can show it.  The stored
-# fit_params are rounded to 4 dp (ruling R2), so `quantify` inverts the STORED numbers.
+# fit_params are rounded to 4 dp (ruling R2), so `quantify` evaluates the STORED numbers (forward),
+# never a refit.
 
 CURVE_SUFFIX = ".curve.json"      # default: <document stem>.curve.json, i.e. fig.dens.json → fig.curve.json
 FITS = ("linear", "power")
@@ -1054,6 +1055,52 @@ def _fmt_fixed(value, nd):
     return "%.*f" % (nd, number)
 
 
+def _fmt_value(value):
+    """A measured mass / concentration as the terminal table prints it: up to 3 dp, trailing zeros
+    dropped, at least one decimal kept (`0.522`, `0.052`, `5.0`).
+
+    §5's sample (`3.1 ug`, `2.5 ug/uL`, `100%`) is unchanged by this rule, while real lanes whose
+    concentrations differ in the third decimal no longer collapse to the same `0.1 ug/uL` (lead
+    ruling on ep-bqv.5).  The JSON keeps ruling R2's fixed 3 dp — this is display only.  A value
+    that rounds to zero keeps no sign, the convention `_fmt_signed` already documents.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = 0.0
+    if not math.isfinite(number) or round(number, 3) == 0.0:
+        number = 0.0
+    text = "%.3f" % number
+    text = text.rstrip("0")
+    if text.endswith("."):
+        text += "0"
+    return text
+
+
+def _fmt_sig(value):
+    """Three significant digits, no scientific notation: 4.495 → '4.5', 12.0 → '12', 0.522 → '0.522'.
+
+    The out-of-range note and the lane line share this formatter, so a measurement can never print
+    the contradictory `面积 4.5 > 4.5` that separate precisions produced (area 4.495 against a
+    maximum of 4.484, both rounded to 1 dp).  It matches `%.3g` wherever the note used to be
+    readable; above 1000 `%.3g` switches to `1.2e+03`, which no note or table should show, so the
+    fixed form is kept with three significant digits instead.  A whole number keeps no trailing
+    decimal point (`12`).
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = 0.0
+    if number == 0.0 or not math.isfinite(number):
+        return "0"
+    digits = 2 - int(math.floor(math.log10(abs(number))))
+    if digits < 0:                       # ≥ 1000: round to three significant digits, no exponent
+        number, digits = round(number, digits), 0
+    # the cap keeps a tiny area from collapsing to a bare "0" in a note; 9 dp still shows three
+    # significant digits down to 1e-7, and no realistic area ever needs more
+    return _fmt_trim(number, min(9, digits))
+
+
 def _fmt_signed(value, nd):
     """+0.8 / -1.5: a signed percentage (a value that rounds to zero keeps no sign)."""
     try:
@@ -1122,5 +1169,511 @@ def format_curve(curve):
         lines.append("  " + _pad_left(mass_text, width_mass) + "   " +
                      _pad_right(body, body_width) + "  " + column)
     for note in curve.get("notes") or []:
+        lines.append("  注：%s" % note)
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- quantify (§2.8, §3.3; §4.6)
+#
+# dens.json + curve.json (+ the volume loaded per lane) ──► quant.json.  The area column is the one
+# the curve was fitted on (`area_<baseline>`), and a band whose area lies outside the calibrated
+# `range.volume_min … range.volume_max` gets NO number: mass null, the lane total and the
+# concentration null, the band listed in `out_of_range_bands`, and a note naming it (§2.8 — the
+# failure this chain exists to prevent is a plausible-looking extrapolation).
+#
+# A band whose area IS in range but whose fitted mass is not positive is rejected the same way (lead
+# ruling): mass null, `out_of_range` stays false (the area really is inside the range), rel_pct null,
+# the lane's total / concentration / share null, and one note naming the lane, the band and its area.
+# A line that crosses zero inside its own standard range says nothing at the low end; a negative mass
+# must never reach a total, and it is not written anywhere — not into the JSON, not into a note, not
+# into the terminal block, not even as a diagnostic (lead ruling).
+#
+# The mass comes from ONE internal function, `_mass_from_area`, which evaluates the STORED fit
+# parameters forward (volume → mass), the direction §4.5 `fit_params` and §4.7's printed equation
+# define and the one §7.8/§7.9's recovery checks are calibrated against (lead ruling for ep-bqv.5).
+
+QUANT_KIND = "ep-craft-densitometry-quant"
+QUANT_SUFFIX = ".quant.json"       # default: <document stem>.quant.json, i.e. fig.curve.json → fig.quant.json
+
+# ONE template for the "skipped standard lanes" note: `quantify` writes it, `format_quant` reads the
+# count back out of it (`_SKIP_NOTE_RE` is compiled from this very string, never hand-written), because
+# §4.6's exhaustive key list has no field for it and the note is the only record.
+SKIP_NOTE = "已跳过 %d 条标准道（泳道 %s）"
+_SKIP_NOTE_RE = re.compile(re.escape(SKIP_NOTE).replace("%d", "(\\d+)").replace("%s", "(.+)"))
+
+
+def _finite_number(value):
+    """A real, finite number (bool excluded) — the numeric contract of every chain file."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
+
+
+def parse_load(text):
+    """'9=2,10=2.5' → {9: 2.0, 10: 2.5}: microlitres loaded per lane (the spec lists no parser).
+
+    Comma separated `LANE=UL`; LANE a positive integer, UL a positive number, whitespace tolerated.
+    None or "" → {}.  Every bad input is one RuntimeError naming `--load` and the offending token:
+    an empty segment, a token without `=`, a lane that is not a positive integer, a volume that is
+    not a positive number, and the same lane named twice.
+    """
+    raw_text = "" if text is None else str(text)
+    if not raw_text.strip():
+        return {}
+    out, seen = {}, set()
+    for raw in raw_text.split(","):
+        token = raw.strip()
+        if not token:
+            raise RuntimeError("--load 里有一段是空的：%r（逗号之间不能没有 泳道=体积）" % raw_text)
+        left, eq, ul_text = token.partition("=")
+        if not eq:
+            raise RuntimeError("--load 里的一段没有 =：%r（写成 泳道=体积）" % token)
+        lane_text = left.strip()
+        if not re.fullmatch(r"[0-9]+", lane_text):
+            raise RuntimeError("--load 里的泳道号不是正整数：%r（那段是 %r）" % (lane_text, token))
+        lane = int(lane_text)
+        if lane < 1:
+            raise RuntimeError("--load 里的泳道号必须 ≥ 1：%r（那段是 %r）" % (lane_text, token))
+        try:
+            volume = float(ul_text.strip())
+        except (TypeError, ValueError):
+            raise RuntimeError("--load 里 %r 的体积不是数字：%r" % (token, ul_text.strip()))
+        if not math.isfinite(volume) or volume <= 0.0:
+            raise RuntimeError("--load 里 %r 的体积必须是正数" % token)
+        if lane in seen:
+            raise RuntimeError("--load 里泳道 %d 出现了两次（一个泳道只能给一个体积）" % lane)
+        seen.add(lane)
+        out[lane] = volume
+    return out
+
+
+def _quant_range(curve):
+    """`range.volume_min … range.volume_max` of a curve (full precision, as build_curve stored it)."""
+    rng = curve.get("range")
+    if not isinstance(rng, dict):
+        raise RuntimeError("quantify：curve 里没有 range（先用 curve 生成 curve.json）")
+    bounds = []
+    for key in ("volume_min", "volume_max"):
+        value = rng.get(key)
+        if not _finite_number(value):
+            raise RuntimeError("quantify：curve 的 range 缺少数值 %s（重跑 curve）" % key)
+        bounds.append(float(value))
+    if bounds[1] < bounds[0]:
+        raise RuntimeError("quantify：curve 的 range 反了（volume_min %.3f > volume_max %.3f）"
+                           % (bounds[0], bounds[1]))
+    return bounds[0], bounds[1]
+
+
+def _quant_fit(curve):
+    """Validate `fit` and the STORED `fit_params` → `(params, fit)`, refusing what cannot be used.
+
+    Only the two models `curve` fits exist.  A hand-edited curve.json could carry a slope / scale
+    that is zero or negative (which would make the mapping meaningless), so that is refused too.
+    """
+    fit = curve.get("fit")
+    if fit not in FITS:
+        raise RuntimeError("quantify：curve 的 fit 不是 linear 或 power（收到 %r）" % (fit,))
+    params = curve.get("fit_params")
+    if not isinstance(params, dict):
+        raise RuntimeError("quantify：curve 里没有 fit_params（先用 curve 生成 curve.json）")
+    if fit == "linear":
+        keys, positive = ("intercept", "slope"), "slope"
+    else:
+        keys, positive = ("scale", "exponent"), "scale"
+    for key in keys:
+        if not _finite_number(params.get(key)):
+            raise RuntimeError("quantify：curve 的 fit_params 缺少数值 %s（重跑 curve）" % key)
+    if float(params[positive]) <= 0.0:
+        raise RuntimeError("quantify：curve 的 fit_params.%s 不是正数（收到 %r；重跑 curve）"
+                           % (positive, params[positive]))
+    return params, fit
+
+
+def _quant_std_lanes(curve):
+    """Standard lane numbers: every lane in ANY `points[*].entries`, used or dropped (§4.6).
+
+    `entries` is the only trail back from a fitted point to the lanes it came from, so a curve
+    without it cannot say which dens lanes are standards — one line, refuse.
+    """
+    points = curve.get("points")
+    if not isinstance(points, list):
+        raise RuntimeError("quantify：curve 里没有 points 列表（先用 curve 生成 curve.json）")
+    lanes = set()
+    for pos, point in enumerate(points, 1):
+        if not isinstance(point, dict):
+            raise RuntimeError("quantify：curve 的 points 里有不是对象的条目")
+        entries = point.get("entries")
+        if not isinstance(entries, list):
+            raise RuntimeError("quantify：curve 的 points 第 %d 个点缺少 entries（重跑 curve）" % pos)
+        for entry in entries:
+            if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+                raise RuntimeError("quantify：curve 的 points 第 %d 个点的 entries 条目不是 [泳道, 带]：%r"
+                                   % (pos, entry))
+            lane = entry[0]
+            if isinstance(lane, bool) or not isinstance(lane, int) or lane < 1:
+                raise RuntimeError("quantify：curve 的 entries 里的泳道号不是正整数：%r" % (lane,))
+            lanes.add(lane)
+    return lanes
+
+
+def _quant_dens_lanes(dens):
+    """The dens lanes in report order, refusing a dict `quantify` cannot read (lane / bands shape)."""
+    lanes = dens.get("lanes")
+    if not isinstance(lanes, list) or not lanes:
+        raise RuntimeError("quantify：dens 里没有 lanes（先用 measure 生成 dens.json）")
+    ordered, seen = [], set()
+    for lane in lanes:
+        if not isinstance(lane, dict):
+            raise RuntimeError("quantify：dens 的 lanes 里有不是对象的条目")
+        no = lane.get("lane")
+        if isinstance(no, bool) or not isinstance(no, int) or no < 1:
+            raise RuntimeError("quantify：dens 的泳道条目缺少正整数 lane（收到 %r）" % (no,))
+        if no in seen:
+            raise RuntimeError("quantify：dens 里泳道 %d 出现了两次" % no)
+        if not isinstance(lane.get("bands"), list):
+            raise RuntimeError("quantify：dens 的泳道 %d 没有 bands 列表（重跑 measure）" % no)
+        seen.add(no)
+        ordered.append(lane)
+    return ordered
+
+
+def _quant_load(load, lanes):
+    """Validate the `{lane: ul}` dict (from `parse_load`) against the lanes dens actually has."""
+    if load is None:
+        return {}
+    if not isinstance(load, dict):
+        raise RuntimeError("quantify：load 不是 dict（收到 %s）" % type(load).__name__)
+    out = {}
+    for key, value in load.items():
+        if isinstance(key, bool) or not isinstance(key, int) or key < 1:
+            raise RuntimeError("quantify：load 的键不是泳道号：%r（写成 {9: 2.0}）" % (key,))
+        if not _finite_number(value) or float(value) <= 0.0:
+            raise RuntimeError("quantify：load 里泳道 %d 的体积必须是正数（收到 %r）" % (key, value))
+        if key not in lanes:
+            raise RuntimeError("quantify：--load 里的泳道 %d 不在 dens 里（dens 有 %s）"
+                               % (key, _runs(sorted(lanes))))
+        out[key] = float(value)
+    return out
+
+
+def _range_advice(below):
+    """The direction-specific advice of §2.8 / the ticket: too little stain vs too much."""
+    return "多加点或浓缩后再跑" if below else "稀释或少点一点再跑"
+
+
+def _out_of_range_note(lane_no, index, area, vmin, vmax, below, total_is_none):
+    """One Chinese sentence per out-of-range band (§4.6): what was measured, the range, the advice."""
+    text = ("泳道 %d 的带 %d 面积 %s 超出标曲范围（%s–%s）：%s"
+            % (lane_no, index, _fmt_sig(area), _fmt_sig(vmin), _fmt_sig(vmax),
+               _range_advice(below)))
+    if total_is_none:
+        text += "；该道的合计与浓度不给数"
+    return text
+
+
+def _non_positive_note(lane_no, index, area):
+    """One Chinese sentence for an in-range band whose fitted mass is not positive (lead ruling).
+
+    The area is inside `range.volume_min … range.volume_max`, so this is not `out_of_range`; what
+    failed is the fit itself at the low end (the line crosses zero inside its own standard range).
+    The area uses `_fmt_sig`, the same formatter the out-of-range note uses.
+
+    The value the fit produced is NOT included, not even as a diagnostic: a mass <= 0 must never
+    appear in quant.json or in the terminal block, and a negative number leaked through a note
+    still counts as leaking it (lead ruling).  The advice names the two fixes instead.
+    """
+    return ("泳道 %d 的带 %d 面积 %s 在标曲范围内，但标曲给出的质量不为正："
+            "标曲低面积端不可信，试 --drop 最低标准点或 --fit power 后重跑 curve"
+            % (lane_no, index, _fmt_sig(area)))
+
+
+def _non_positive_reason():
+    """What a lane line prints where the mass would be: the fit failed, and how to fix the curve.
+
+    One sentence, same advice as the note (§2.8's rule that a number the fit cannot support is
+    never printed); the band's own index / MW / area stay in front of it, so the slot still says
+    which band it is.
+    """
+    return "— 标曲给出的质量不为正：试 --drop 最低标准点或 --fit power"
+
+
+def _mass_from_area(area, curve, fit_params=None):
+    """area (the curve's baseline column) → protein mass in `curve["unit"]`, full precision.
+
+    Evaluates the STORED fit FORWARD (volume → mass), the direction §4.5 `fit_params` and §4.7's
+    printed equation define, and the one §7.8/§7.9's recovery checks are calibrated against
+    (lead ruling for ep-bqv.5; §4.6's "inverse of the fit" is the same equation read for its
+    response, not its predictor).  Nothing is refitted, so a reader of curve.json and one of
+    quant.json see the same numbers:
+
+        linear  mass = intercept + slope · area
+        power   mass = scale · area ** exponent        (scale = 10^c, as build_curve stores it)
+
+    `area` has already been checked to lie inside `range.volume_min … range.volume_max` within
+    FUZZ, so both models are evaluated inside the calibrated band only.  `fit_params` is the
+    already-validated dict when `quantify` has one, otherwise it is read from `curve` (and refused
+    the same way).  A result that is not a finite number raises — it never becomes a NaN in the
+    JSON (a curve fitted with a negative intercept and an area below mass 0 would do that).
+    Rounding happens only when `quantify` builds the returned dict (ruling R2).
+    """
+    if fit_params is None:
+        fit_params, _unused = _quant_fit(curve)
+    fit = curve.get("fit")
+    if fit == "linear":
+        intercept, slope = fit_params["intercept"], fit_params["slope"]
+        mass = float(intercept) + float(slope) * float(area)
+    else:
+        scale, exponent = fit_params["scale"], fit_params["exponent"]
+        if area < 0.0 or (area == 0.0 and float(exponent) < 0.0):
+            raise RuntimeError("quantify：幂律标曲不能算负面积的 %r 次方（面积 %r）"
+                               % (exponent, area))
+        mass = float(scale) * float(area) ** float(exponent)
+    if not _finite_number(mass):
+        raise RuntimeError("quantify：面积 %r 按标曲算出的质量不是有限数（%r；标曲与轴可能反了）"
+                           % (area, mass))
+    return mass   # callers must refuse a non-positive value; it is never a reportable mass
+
+
+def quantify(dens, curve, load=None, *, dens_path="", curve_path="", load_text=""):
+    """dens.json + curve.json (+ loaded volumes) → quant.json (§4.6).  Pure: no I/O, no rounding
+    before the maths.
+
+    Lane order is the dens order; the standard lanes (any lane named in `curve["points"][*]
+    ["entries"]`, used or dropped) are left out of the table and counted in one note.  Every area
+    is read from the column the curve was fitted on (`area_<baseline>`), and a band outside
+    `range.volume_min … range.volume_max` gets `mass: None` + `out_of_range: True` + a note; that
+    lane's `mass_total` / `conc` / `frac_pct_among_lanes` are then `None` too (§2.8).  In-range
+    bands are converted by `_mass_from_area`, which evaluates the stored fit forward (see its
+    docstring); when that value is not positive the band also gets `mass: None` + `rel_pct: None`
+    with `out_of_range: False` (the area really is inside the range) and one note naming the lane,
+    the band and its area, and the lane's total / concentration / share drop out exactly as above
+    (lead ruling: a line crossing zero inside its own standard range must not reach a total).  The
+    non-positive value itself is not written anywhere — not into the JSON, not into the note, not
+    into the terminal line.
+    No JSON key changes; only `bands[*].mass` and the lane totals become `None`.
+
+    `load` is the dict from `parse_load` (`{lane: ul}`); a lane that is not in dens is refused.
+    `dens_path` / `curve_path` / `load_text` are recorded verbatim in `source` (ruling R6) and feed
+    nothing else.  Bad `baseline` / `fit` / `fit_params`, a missing key the function needs, or a
+    load lane that dens does not have raise one Chinese RuntimeError; none of the return values is
+    ever a NaN.
+    """
+    if not isinstance(dens, dict):
+        raise RuntimeError("quantify：dens 不是 dict（收到 %s）" % type(dens).__name__)
+    if not isinstance(curve, dict):
+        raise RuntimeError("quantify：curve 不是 dict（收到 %s）" % type(curve).__name__)
+    baseline = curve.get("baseline")
+    if baseline not in BASELINES:
+        raise RuntimeError("quantify：curve 的 baseline 不是 flank 或 global（收到 %r）" % (baseline,))
+    fit_params, fit = _quant_fit(curve)
+    unit = curve.get("unit")
+    if not isinstance(unit, str) or not unit.strip():
+        raise RuntimeError("quantify：curve 里没有 unit（先用 curve 生成 curve.json）")
+    vmin, vmax = _quant_range(curve)
+    std_lanes = _quant_std_lanes(curve)
+
+    ordered = _quant_dens_lanes(dens)
+    lane_numbers = {lane["lane"] for lane in ordered}
+    loads = _quant_load(load, lane_numbers)
+
+    skipped_nos = [lane["lane"] for lane in ordered if lane["lane"] in std_lanes]
+    notes = []
+    if skipped_nos:
+        notes.append(SKIP_NOTE % (len(skipped_nos), _runs(skipped_nos)))
+
+    rows, raw_totals = [], []
+    for lane in ordered:
+        no = lane["lane"]
+        if no in std_lanes:
+            continue
+        lane_load = loads.get(no)
+        bands, raw_masses, out_bands, pending, nonpos = [], [], [], [], []
+        for pos, band in enumerate(lane["bands"], 1):
+            if not isinstance(band, dict):
+                raise RuntimeError("quantify：泳道 %d 的第 %d 个带不是对象" % (no, pos))
+            index = band.get("index")
+            if isinstance(index, bool) or not isinstance(index, int) or index < 1:
+                raise RuntimeError("quantify：泳道 %d 的第 %d 个带的 index 不是正整数（收到 %r；重跑 measure）"
+                                   % (no, pos, index))
+            y_cm = band.get("y_cm")
+            if not _finite_number(y_cm):
+                raise RuntimeError("quantify：泳道 %d 的第 %d 个带缺少数值 y_cm（重跑 measure）"
+                                   % (no, index))
+            area = _area_of(band, no, "第 %d 个带" % index, baseline)
+            below = area < vmin - FUZZ
+            above = area > vmax + FUZZ
+            if below or above:
+                out_bands.append(index)
+                pending.append((index, area, below))
+                mass = None
+            else:
+                mass = _mass_from_area(area, curve, fit_params)
+                if not _finite_number(mass):
+                    raise RuntimeError("quantify：泳道 %d 的第 %d 个带算出的质量不是有限数（%r）"
+                                       % (no, index, mass))
+                mass = float(mass)
+                if mass <= 0.0:
+                    # the value itself is deliberately not kept: it must not reach a note, a lane
+                    # line or the JSON, so only the band it belongs to is recorded
+                    nonpos.append((index, area))
+                    mass = None
+            raw_masses.append(mass)
+            bands.append({"index": index, "y_cm": _num(y_cm, 4), "mw_kda": band.get("mw_kda"),
+                          "area": _num(area, 3), "mass": None if mass is None else _num(mass, 3),
+                          "out_of_range": bool(below or above), "rel_pct": None})
+
+        total = None if (out_bands or nonpos) else sum(raw_masses)
+        for index, area, below in pending:
+            notes.append(_out_of_range_note(no, index, area, vmin, vmax, below, total is None))
+        for index, area in nonpos:
+            notes.append(_non_positive_note(no, index, area))
+        if total is not None and total != 0.0:
+            for band, mass in zip(bands, raw_masses):
+                if mass is not None:
+                    band["rel_pct"] = _num(mass / total * 100.0, 2)
+
+        conc = None if (lane_load is None or total is None) else _num(total / lane_load, 3)
+        raw_totals.append(total)
+        rows.append({"lane": no, "label": lane.get("label"),
+                     "load_ul": None if lane_load is None else float(lane_load),
+                     "bands": bands, "mass_total": None if total is None else _num(total, 3),
+                     "conc": conc, "out_of_range": bool(out_bands),
+                     "out_of_range_bands": out_bands, "frac_pct_among_lanes": None})
+
+    known = [total for total in raw_totals if total is not None]
+    overall = sum(known)
+    for row, total in zip(rows, raw_totals):
+        if total is None or overall <= 0.0:
+            continue
+        row["frac_pct_among_lanes"] = _num(total / overall * 100.0, 2)
+
+    load_source = "" if load_text is None else str(load_text)
+    return {
+        "version": VERSION,
+        "kind": QUANT_KIND,
+        "unit": unit,
+        "baseline": baseline,
+        "fit": fit,
+        "source": {"dens": str(dens_path), "curve": str(curve_path),
+                   "load": load_source if load_source.strip() else None},
+        "lanes": rows,
+        "overall_mass": _num(overall, 3),
+        "notes": notes,
+    }
+
+
+def _skipped_count(quant):
+    """How many standard lanes the table skipped, read back from the one note that states it.
+
+    §4.6's key list has no dedicated field, so the note is the only record: the pattern is compiled
+    from `SKIP_NOTE`, the very template `quantify` writes, so writer and reader cannot drift.  When
+    the note is absent (nothing was skipped) the header simply omits the clause.
+    """
+    for note in quant.get("notes") or []:
+        match = _SKIP_NOTE_RE.match(str(note))
+        if match:
+            return int(match.group(1))
+    return 0
+
+
+def _quant_header(quant, curve=None):
+    """§5 header: baseline · fit · unit, the standard range / point count / r², skipped standards.
+
+    The range and the fit parameters are NOT in quant.json (§4.6's key list is fixed), so the
+    CLI passes the curve it just read (display metadata only, never persisted); without it the
+    header keeps every part it can still derive from the quant dict.
+    """
+    baseline = quant.get("baseline") or "flank"
+    fit = quant.get("fit") or "linear"
+    unit = str(quant.get("unit") or "ug")
+    head = "[定量] 基线 %s · %s · %s" % (baseline, fit, unit)
+    bits = []
+    rng = curve.get("range") if isinstance(curve, dict) else None
+    params = curve.get("fit_params") if isinstance(curve, dict) else None
+    if isinstance(rng, dict) and _finite_number(rng.get("mass_min")) \
+            and _finite_number(rng.get("mass_max")):
+        bits.append("标曲 %s–%s %s" % (_fmt_trim(rng["mass_min"], 3),
+                                       _fmt_trim(rng["mass_max"], 3), unit))
+    if isinstance(params, dict):
+        n = params.get("n")
+        if isinstance(n, int) and not isinstance(n, bool):
+            bits.append("%d 点" % n)
+        if _finite_number(params.get("r2")):
+            bits.append("r² %s" % _fmt_fixed(params["r2"], 4))
+    if bits:
+        head += "（%s）" % "，".join(bits)
+    skipped = _skipped_count(quant)
+    if skipped:
+        head += "；跳过 %d 条标准道" % skipped
+    return head
+
+
+def _band_text(band, unit, curve=None):
+    """One band of a lane line (§5): mass + share, or the rejected band's reason in one slot.
+
+    Two rejections print no number: the area is outside the standard range (`out_of_range`, whose
+    comparison needs `range.volume_min … range.volume_max` — a value §4.6 does not let quant.json
+    keep, hence the optional `curve`), or the area is in range but the fit gives a non-positive
+    mass (`mass is None` while `out_of_range` is false, lead ruling).
+
+    Precision: the measured mass and the lane total use `_fmt_value` (up to 3 dp, trailing zeros
+    trimmed) so two real concentrations no longer collapse into one printed value; the in-range
+    area keeps §5's single decimal, and the out-of-range comparison uses `_fmt_sig` — the same
+    three significant digits the note prints — so a measurement can never read `面积 4.5 > 4.5`
+    when it is really 4.495 against 4.484.
+    """
+    mw = band.get("mw_kda")
+    mw_text = ("%.1f kDa" % float(mw)) if _finite_number(mw) else "—"
+    area = band.get("area")
+    if band.get("out_of_range"):
+        area_text = _fmt_sig(area) if _finite_number(area) else "?"
+        rng = curve.get("range") if isinstance(curve, dict) else None
+        if isinstance(rng, dict) and _finite_number(rng.get("volume_min")) \
+                and _finite_number(rng.get("volume_max")) and _finite_number(area):
+            vmin, vmax = float(rng["volume_min"]), float(rng["volume_max"])
+            below = float(area) < vmin - FUZZ
+            bound = vmin if below else vmax
+            return "—  超出标曲范围（面积 %s %s %s）：%s" % (
+                area_text, "<" if below else ">", _fmt_sig(bound), _range_advice(below))
+        return "—  超出标曲范围（面积 %s）" % area_text
+    text = "带%d %s  面积 %s" % (band.get("index") or 0, mw_text,
+                                 _fmt_fixed(area, 1) if _finite_number(area) else "?")
+    if band.get("mass") is None:
+        return text + "  " + _non_positive_reason()
+    text += "  %s %s" % (_fmt_value(band["mass"]), unit)
+    if _finite_number(band.get("rel_pct")):
+        text += " (%.0f%%)" % band["rel_pct"]
+    return text
+
+
+def format_quant(quant, *, curve=None):
+    """Terminal table (§5): the header, one line per sample lane, then `  注：` lines.
+
+    `curve` is optional display metadata: it supplies the standard range / point count / r² and the
+    out-of-range bounds, none of which §4.6 lets quant.json carry.  `None` never appears in the
+    output: a value that is absent (no load, an unknown total, an unknown share) is simply omitted,
+    and an out-of-range band prints `—` with the range comparison and the advice instead of a mass.
+    """
+    unit = str(quant.get("unit") or "ug")
+    lanes = [lane for lane in (quant.get("lanes") or []) if isinstance(lane, dict)]
+    label_w = max((_dwidth(str(lane.get("label"))) for lane in lanes if lane.get("label")),
+                  default=0)
+    lines = [_quant_header(quant, curve)]
+    for lane in lanes:
+        body = "  泳道 " + _pad_left("%d" % int(lane.get("lane") or 0), 2)
+        if label_w:
+            body += " " + _pad_right(str(lane.get("label") or ""), label_w)
+        parts = [_band_text(band, unit, curve)
+                 for band in (lane.get("bands") or []) if isinstance(band, dict)]
+        body += "  " + (" · ".join(parts) if parts else "（无带）")
+        tail = []
+        if _finite_number(lane.get("mass_total")):
+            tail.append("合计 %s %s" % (_fmt_value(lane["mass_total"]), unit))
+            if _finite_number(lane.get("conc")):
+                tail.append("浓度 %s %s/uL" % (_fmt_value(lane["conc"]), unit))
+            if _finite_number(lane.get("frac_pct_among_lanes")):
+                tail.append("占全胶 %.0f%%" % lane["frac_pct_among_lanes"])
+        if tail:
+            body += " │ " + "  ".join(tail)
+        lines.append(body)
+    for note in quant.get("notes") or []:
         lines.append("  注：%s" % note)
     return "\n".join(lines)
