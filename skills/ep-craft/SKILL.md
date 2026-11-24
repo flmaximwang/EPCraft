@@ -1,6 +1,6 @@
 ---
 name: ep-craft
-description: Use when labeling an electrophoresis gel photo (SDS-PAGE, agarose). Crops, straightens and rescales the gel to real size, seeds lanes from the wells and marker lines from the ladder, and writes an editable VectorCraft document (fig.vectorcraft), the figure PNG exported from it, and a MW report with raw per-lane profiles. The user corrects lanes and bands by hand in VectorCraft; `sync` follows the correction.
+description: Use when labeling an electrophoresis gel photo (SDS-PAGE, agarose), or when quantifying protein bands of an SDS-PAGE gel from its standard lanes (mass calibration needs loaded standards; agarose gels have none). Crops, straightens and rescales the gel to real size, seeds lanes from the wells and marker lines from the ladder, and writes an editable VectorCraft document (fig.vectorcraft), the figure PNG exported from it, and a MW report with raw per-lane profiles. The user corrects lanes and bands by hand in VectorCraft; `sync` follows the correction. An optional offline densitometry chain turns the report into band areas, a standard curve and per-band masses (fig.dens.json, fig.curve.json, fig.quant.json and two PNGs).
 compatibility: macOS; python3 (stdlib only), ImageMagick 7 (`magick`), VectorCraft 0.14.x (driven through its `--control` port; the skill launches it)
 ---
 
@@ -10,7 +10,7 @@ Turn a phone photo of a gel into a labeled figure at true physical size. Detecti
 
 ## Scope
 
-- In: one gel photo, a marker preset, **a gel preset (`--gel-size`, mandatory; no default)**, a name for each lane, which wells hold ladders, lanes to leave out of the figure (optional), a label angle (optional: `--label-angle` for lane names, `--marker-label-angle` for marker labels, or `angle` on a single `lanes.json` / `markers.json` entry; degrees, counter-clockwise, 90 = reads bottom-to-top).
+- In: one gel photo, a marker preset, **a gel preset (`--gel-size`, mandatory; no default)**, a name for each lane, which wells hold ladders, lanes to leave out of the figure (optional), a label angle (optional: `--label-angle` for lane names, `--marker-label-angle` for marker labels, or `angle` on a single `lanes.json` / `markers.json` entry; degrees, counter-clockwise, 90 = reads bottom-to-top), and — only for the optional densitometry chain on an **SDS-PAGE** gel — which lanes are protein standards and how much mass each holds (agarose gels have no such standards, so they can be labeled but not mass-quantified).
 - Out (exactly three files, same stem):
 
 | File | Content |
@@ -19,18 +19,20 @@ Turn a phone photo of a gel into a labeled figure at true physical size. Detecti
 | `fig.png` | The Figure artboard, **exported by VectorCraft** at `--dpi` (pHYs set). Always matches what the user sees. |
 | `fig.mw.json` | Report v2: calibration points, every lane's raw `gray`/`baseline`/`ink` profile, called bands with MW (`--no-mw` drops it). MW comes from two-point interpolation between neighbouring marker bands — no global fit. |
 
-- Not covered: perspective correction (shoot straight, or `--angle`), band quantification (profiles are raw data, not densitometry), identifying what a band is, brightness/contrast edits, a crop frame with a non-preset aspect (crop position/angle/scale **are** editable on `Crop`).
+These three files are what `render` / `sync` write, and nothing below changes them. **Densitometry is a separate, opt-in chain** over `fig.mw.json`: it writes its own sibling files with the same stem (`fig.dens.json`, `fig.curve.json`, `fig.quant.json`, `fig.bands.png`, `fig.curve.png`) and never edits the document, the figure PNG or the MW report (conventions §14).
+
+- Not covered: perspective correction (shoot straight, or `--angle`), identifying what a band is, brightness/contrast edits, a crop frame with a non-preset aspect (crop position/angle/scale **are** editable on `Crop`). Band quantification is the optional chain above, not part of render / sync.
 
 ## Files
 
 | Path | Use |
 |---|---|
-| `ep-craft` | Installed console command (normal use). Install with `uv tool install .` (or `-e .` while developing); commands grouped by canvas (`launch`, `figure`, `crop`, `workbench`, `profile`, `doctor`, `selftest`). |
+| `ep-craft` | Installed console command (normal use). Install with `uv tool install .` (or `-e .` while developing); commands grouped by canvas (`launch`, `figure`, `crop`, `workbench`, `profile`, `densitometry`, `doctor`, `selftest`). |
 | `python3 -m ep_craft` | Same CLI without the console script: from the repo root `PYTHONPATH=src python3 -m ep_craft …`, or in the installed tool environment. There is no `scripts/` directory. |
 | `src/ep_craft/data/markers.json` | Marker preset library: `--markers src/ep_craft/data/markers.json --preset <number or keyword>` (an ambiguous choice lists all presets). Installed wheel: ask `ep_craft.data_dir()`. |
 | `src/ep_craft/data/gel_size.json` | Gel preset (`--gel-size`). `lane_count × lane_pitch_cm ≈ width_cm` (±10 %) is checked on load. |
 | `src/ep_craft/templates/mini-gel-15lanes.{lanes,markers}.json` | Example configs; copy and edit. |
-| `references/photo-labeling-conventions.md` | Config fields, document structure and ownership, Workbench reading rules, seeding and band calling, `fig.mw.json`, Figure/Profiles layout, `sync` semantics, the Workbench JSON exchange, the module map (§12), the label-text recipe. |
+| `references/photo-labeling-conventions.md` | Config fields, document structure and ownership, Workbench reading rules, seeding and band calling, `fig.mw.json`, Figure/Profiles layout, `sync` semantics, the densitometry chain and its JSON keys (§14), the Workbench JSON exchange, the module map (§12), the label-text recipe. |
 | `references/special-cases-and-pitfalls.md` | Close band pairs, cropped photos, damaged gel edge, wells cut off, history. Read when a checkpoint fires. |
 | `references/vectorcraft.md` | VectorCraft 0.14 file format and control-port commands (measured). Read only when an edit through the port isn't covered by conventions §9c. |
 
@@ -52,7 +54,12 @@ Turn a phone photo of a gel into a labeled figure at true physical size. Detecti
 | `ep-craft workbench export DOC [--out PATH] [--port 7797]` | Write lane-data JSON; without `--out` it goes to stdout. |
 | `ep-craft workbench import DOC --input PATH [--no-sync] [--dpi 300] [--port 7797]` | Validate the JSON, apply it to the live document, then sync (unless `--no-sync`). |
 | `ep-craft profile sync DOC …` | Shared sync handler; updates the Profiles canvas too. |
-| `ep-craft doctor` / `ep-craft selftest` | Environment check / offline self-test (legacy suite + CLI suite + Workbench IO suite). |
+| `ep-craft densitometry measure REPORT [--out dens.json] [--flank-cm 0.15] [--min-ink 0.5] [--lanes 2-15] [--include-marker] [--include-trimmed]` | Offline (no VectorCraft): band areas on both baselines from `fig.mw.json` → writes `fig.dens.json` (default: the report stem with `.mw` dropped, so `fig.mw.json` → `fig.dens.json`). A `.vectorcraft` argument resolves to its `fig.mw.json` (a report older than the document is refused: `先 sync`). |
+| `ep-craft densitometry curve --dens dens.json --std "2=20,3=10,4=5" [--out curve.json] [--baseline flank\|global] [--fit linear\|power] [--unit ug] [--drop 4]` | Fit the standard curve from the standard lanes → writes `fig.curve.json` (default; reads `fig.dens.json` as `--dens` gave it). |
+| `ep-craft densitometry quantify --dens dens.json --curve curve.json [--out quant.json] [--load "9=2,10=2"]` | Area of every sample band → mass with the stored fit → writes `fig.quant.json` (default). |
+| `ep-craft densitometry plot-bands --dens dens.json [--out dens.png] [--lanes 2-15] [--baseline flank\|global\|both] [--cols 3] [--width 2400]` | PNG grid, one panel per lane: gray profile, both baselines, the shaded integration windows → writes `fig.bands.png` (default, next to the dens). |
+| `ep-craft densitometry plot-curve --curve curve.json [--quant quant.json] [--out curve.png] [--width 1600]` | PNG of the standard curve, its residuals, and (with `--quant`) the sample points → writes `fig.curve.png` (default, next to the curve). |
+| `ep-craft doctor` / `ep-craft selftest` | Environment check / offline self-test (legacy suite + CLI suite + Workbench IO suite + four densitometry suites: `selftest_densitometry`, `selftest_dens_plot`, `selftest_plot_curve_acceptance`, `selftest_quantify_acceptance`). |
 
 `sync` flags: `--port 7797`, `--dpi 300`, `--dry-run`, `--reset-peaks [N ...]`. `edit` flags: `--keep RANGE | --trim RANGE`, `--labels a,b,,c`, `--label N=TEXT` (repeatable), `--shift-labels K`, `--marker-lane N`, `--no-sync`, `--port`, `--dpi`. Exit `0` = success; `2` = expected user/environment error (message on stderr, no traceback).
 
@@ -72,6 +79,8 @@ ep-craft workflow export fig.vectorcraft --out fig.png --dpi 300
 ```
 
 Initialization creates four empty canvases and refuses to overwrite an existing document. `img-to-crop` imports the photo and seeds an editable Crop frame; adjust it in VectorCraft before `crop-to-workbench`. That step seeds Workbench lanes and marker bands from the current frame; repeat it only when reseeding Workbench is intended. `workbench-to-profile` and `workbench-to-figure` read the live Workbench and update the requested canvas independently. These transitions save the document without exporting PNG; `workflow export` exports the Figure canvas. Use the existing `figure render` / `sync` flow below when the user requests the full output in one operation. All stages accept `--port` and `--dpi`; photo detection flags belong to `img-to-crop`, marker/lane/layout flags to `crop-to-workbench`. The derived-canvas commands accept `--dry-run` and `--reset-peaks [N ...]`.
+
+The densitometry chain reads `fig.mw.json`, which no stage here writes (the staged transitions save the document only) — so in a staged run it comes **after** a `render` / `fig sync` has produced the report, not between `workbench-to-profile` and `workflow export`.
 
 ## Hard rules: do the work, don't audit it
 
@@ -125,6 +134,16 @@ Detection is a **first guess the user corrects by hand** in VectorCraft. The age
    Options combine in one call (one call per document). Lane numbers are the Workbench's current lanes. A name set on a lane without a label creates the label at the document's lane-label angle. Rotating a label is the only port recipe left (conventions §9c); or ask the user to do it on the Figure; then `sync`. Labels keep their user text, font, size, colour and **angle**; only their position (the anchor) is the agent's — `sync` reads the angle back and re-anchors, it never rewrites it.
 10. **New lanes come back as "?"**: `sync` prints `[?] 泳道 [n] 还没有名字`. Ask the user for the names, set them with `edit --label n=…` (step 9).
 11. **Lane-data exchange** (optional): `ep-craft workbench export DOC --out workbench.json` snapshots the live Workbench — lane separators, window, marker bands, trim, lane names and sample-band edits — as versioned JSON (stdout without `--out`). `ep-craft workbench import DOC --input workbench.json [--no-sync]` validates the whole file against the document and applies it in one undo step, then syncs. This is **lane data**, not the render config (`lanes.json` / `markers.json`) and not `fig.mw.json`. It is meant to be readable and editable (e.g. lane `name` values, the same text as the labels); import validates and applies the edit in one step. Format, validation rules and an example: conventions §13.
+12. **Densitometry (optional, opt-in):** only when the user asks how much protein a band holds. The chain is offline — it reads the `fig.mw.json` that step 5 or 8 already wrote and never launches VectorCraft; it writes its own sibling files and leaves `fig.vectorcraft`, `fig.png` and `fig.mw.json` untouched. Run the steps in order and stop where an artifact looks wrong:
+    ```bash
+    ep-craft densitometry measure fig.mw.json                  # → fig.dens.json: per-band areas on both baselines
+    ep-craft densitometry plot-bands --dens fig.dens.json      # → fig.bands.png: judge the windows and baselines
+    ep-craft densitometry curve --dens fig.dens.json --std "2=20,3=10,4=5"   # → fig.curve.json
+    ep-craft densitometry plot-curve --curve fig.curve.json    # → fig.curve.png: judge the fit
+    ep-craft densitometry quantify --dens fig.dens.json --curve fig.curve.json [--load "9=2,10=2"]
+    ep-craft densitometry plot-curve --curve fig.curve.json --quant fig.quant.json   # sample points on the curve
+    ```
+    `--std` names the standard lanes as `lane=mass` (default: that lane's strongest band), `lane:2=mass` (the 2nd band from the top) or `lane:*=mass` (the lane total); mass is in `--unit` (default `ug`). `measure` skips the marker lane and trimmed lanes unless `--include-marker` / `--include-trimmed` / `--lanes` say otherwise. **Leave out lanes that are not samples with `measure --lanes`**: the chain decides "marker" from the report's `marker` flag, not from the label, so a second ladder labelled `Marker`, a blank lane or a pooled lane would otherwise be measured and counted as a sample in `frac_pct_among_lanes`. Look at `fig.bands.png`: the shaded region is exactly the area that was integrated, so a wrong window or a dipping baseline is visible there. Look at `fig.curve.png`: points, fitted line and the residual strip, so a bent calibration is not taken on trust. Readout: each band in `quant.json` has a `mass` and a `rel_pct` — that band's share of **its own lane's** measured mass; `frac_pct_among_lanes` is the **lane's** share of the gel's total — a lane share, not a band share. The two are different questions (share of the lane vs share of the gel), so do not multiply or average them into one "purity" number; report the field the user actually asked for. `--load` adds `conc`. A band whose area falls outside the standard range gets no mass (`mass: null`, `out_of_range: true`) — the chain never extrapolates (checkpoint below). Choices and the full JSON key list: conventions §14.
 
 ## Checkpoints
 
@@ -145,6 +164,9 @@ Detection is a **first guess the user corrects by hand** in VectorCraft. The age
 | Figure is spliced (non-adjacent kept lanes) | The figure legend **must** state that non-adjacent lanes were spliced from one gel; labels keep the original lane numbers. |
 | Marker lane is trimmed | Calibration still uses it; no marker labels are drawn on the Figure. Tell the user. If they want marker labels on that figure and another ladder lane is kept, `edit --marker-lane <kept ladder lane>`. |
 | A band prints `超出 marker 范围` | Its y lies outside the ladder's span, so two-point interpolation gives it no number (never extrapolate). If a real band of interest fell outside, check the `band` lines on the Workbench — a misplaced line shrinks the calibrated span. |
+| `densitometry quantify` prints `超出标曲范围` (`out_of_range: true`, `mass: null`) | The band's area lies below the smallest or above the largest standard area, so there is no mass — never extrapolate, and never invent a curve point to fit it. The band and the lane are still in `quant.json` with `mass: null` (and the lane's `mass_total` / `conc` are `null` too). Relay which lane and band, then give the fix in the right direction: below the range `多加点或浓缩后再跑` (load more or concentrate), above it `稀释或少点一点再跑` (dilute or load less) — or add a standard lane that brackets it and refit. Look at `fig.bands.png` first if it is the *area* that looks wrong (a bad window, a band that ran off the top of the profile). |
+| `densitometry quantify` gives no number for an in-range band (`out_of_range: false`, `mass: null`) | The stored fit evaluated to zero or less at the low-area end of the curve, so there is nothing to report — the band and lane keep `null` (totals too) and one `note` names the lane, the band and the area. The value the fit produced is **never printed anywhere**, not even as a diagnostic, so do not go looking for a number or reconstruct one: say the low-area end of the curve is not trustworthy and fix the curve, not the sample (`--drop` the lowest standard, or try `--fit power`, then re-run `curve` and `quantify`). |
+| `densitometry curve` refuses `标准点不单调：…` | The fitted slope (linear) or exponent (power) came out ≤ 0: as measured, the standard areas do not grow with the mass they were assigned. The fit alone cannot say *why* — it only reports what the areas and the `--std` mapping imply. Read `fig.bands.png` and `fig.dens.json` before changing anything: are the `--std` lanes the titration lanes, is their band index right, do the shaded windows run into a neighbour or stop short, and do the flags say anything about the row values in the window (`clipped`, `flat top`, `invisible`) — those are observations to check against the photo, not a verdict. Then fix what the artifacts show: correct the `--std` mapping, or `--drop` a lane (`--drop 4`) and refit without it. Trying the other fit is legitimate, but it changes the model, not the measurement. Never fake a standard point. |
 | Two bands too close for separate labels (21/20 kD) | One label with `"rows": 2` (two band lines, one label). |
 | User says the photo is cropped | `--gel-lanes N` (N visible lanes); otherwise the scale is wrong. |
 | A removed flag (`--keep-lanes`, `--svg`, `--debug`, `--record`, old flat `export`, …) | The command names the replacement; follow it (conventions §11). Public `ep-craft figure export` only exports the `Figure` artboard PNG. |
@@ -155,3 +177,4 @@ Detection is a **first guess the user corrects by hand** in VectorCraft. The age
 - `fig.vectorcraft`, `fig.png` and `fig.mw.json` exist; `fig.png` has the intended dpi; the document is open in VectorCraft on the control port.
 - The reply includes the MW table (strongest band per lane; bands outside the ladder span are reported as having no number), the configs used, the script's warnings (including a low-confidence marker and any `识别条带偏多` note), which lanes are unnamed, and anything not verified. If lanes were spliced, it states the splice.
 - After every `sync`, the reply relays the printed change summary.
+- If densitometry was asked for: `fig.dens.json`, `fig.curve.json`, `fig.quant.json` and the two PNGs exist next to `fig.mw.json`; the three render files are unchanged; the reply quotes the fit (baseline, fit model, `r²`, points), each lane's masses (or the out-of-range refusal with the reason), and anything unverified (for example which standard lanes were assumed and in what unit).

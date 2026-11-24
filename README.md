@@ -22,6 +22,8 @@ Output (three files, same stem):
 
 Built-in data: three epizyme (雅酶) pre-stained marker presets (WJ101, WJ103 in Tris-Glycine and Tris-Tricine) and a `mini-gel` size preset. See [`skills/ep-craft/SKILL.md`](skills/ep-craft/SKILL.md) for the full workflow, checkpoints and flags.
 
+Optional beyond the three files: **band densitometry** for SDS-PAGE gels with loaded protein standards turns that report into band areas, a standard curve and per-band masses. It is a separate offline chain, opt-in per gel — see the `densitometry` commands below.
+
 ## Commands
 
 The public entry point is the executable `ep-craft`. Commands are grouped by the VectorCraft canvas they work on; every sync refreshes the document and all dependent canvases in one undo step.
@@ -40,9 +42,16 @@ The public entry point is the executable `ep-craft`. Commands are grouped by the
 | `ep-craft workbench export DOC [--out PATH]` | Dump lane geometry, window, marker bands, trim and lane names as JSON (stdout when `--out` is omitted). |
 | `ep-craft workbench import DOC --input PATH [--no-sync]` | Validate and apply an exported lane-data JSON to the live document; sync unless `--no-sync`. |
 | `ep-craft profile sync DOC ...` | Recompute the Profiles canvas (shared sync handler). |
-| `ep-craft doctor` / `ep-craft selftest` | Environment check / offline self-test. |
+| `ep-craft densitometry measure REPORT [--out DENS] ...` | Measure every band's area on two baselines from `fig.mw.json`; writes `fig.dens.json` next to it. |
+| `ep-craft densitometry curve --dens DENS --std ...` | Fit the standard curve from the standard lanes; writes `fig.curve.json`. |
+| `ep-craft densitometry quantify --dens DENS --curve CURVE ...` | Map each sample band's area to mass; writes `fig.quant.json`. |
+| `ep-craft densitometry plot-bands --dens DENS ...` | Render the lane profiles, both baselines and the shaded integration windows; writes `fig.bands.png`. |
+| `ep-craft densitometry plot-curve --curve CURVE ...` | Render the standard curve, residuals and (with `--quant`) the sample points; writes `fig.curve.png`. |
+| `ep-craft doctor` / `ep-craft selftest` | Environment check / offline self-test (legacy, CLI, Workbench IO and the densitometry suites). |
 
 `sync` accepts `--port 7797`, `--dpi 300`, `--dry-run` and `--reset-peaks [N ...]`; `render` keeps all its detection and layout flags (see `SKILL.md`). Exit code `0` = success, `2` = expected user/environment error (message on stderr, no traceback).
+
+**Densitometry is opt-in and touches no other file.** The five `ep-craft densitometry` commands (short alias `ep-craft dens`: `measure`, `curve`, `quantify`, `plot-bands`, `plot-curve`) read the `fig.mw.json` that `render` / `sync` already wrote and write **sibling** JSON/PNG files next to it — `fig.dens.json`, `fig.curve.json`, `fig.quant.json`, `fig.bands.png`, `fig.curve.png`. They never launch VectorCraft, never modify `fig.vectorcraft`, and never rewrite `fig.png` or `fig.mw.json`: the three-file render output is exactly what it was. The chain is meant to be inspected between the steps, so each command reads the previous file and a bad window or a bent fit is caught before the next one runs. `--std` names the standard lanes (`2=20` = that lane's strongest band, `3:2=10` = the second band from the top, `4:*=5` = the lane total). A band whose area falls outside the standard range gets no mass (`mass: null`, `out_of_range: true`) — below the range that means loading more or concentrating, above it loading less — and the chain never extrapolates the curve.
 
 ### Staged workflow
 

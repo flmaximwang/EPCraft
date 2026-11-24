@@ -1,6 +1,6 @@
 {
   "skill": "ep-craft",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "test_cases": [
     {
       "id": "should-trigger-01",
@@ -66,11 +66,11 @@
       "notes": "诱饵：同为 VectorCraft，但不是本 skill 的文档。"
     },
     {
-      "id": "should-not-trigger-08",
-      "type": "should_not_trigger",
-      "prompt": "帮我从这张胶图上数条带、算一下纯度百分比。",
-      "expected_behavior": "越界：本 skill 不做定量（剖面是原始灰度数据，不是光密度定量）。可以指出 `fig.mw.json` 里有每道的原始剖面供用户自己分析，但不给纯度百分比；要定量走专门的图像分析工具。",
-      "notes": ""
+      "id": "should-trigger-08",
+      "type": "should_trigger",
+      "prompt": "帮我从这张胶图上数条带、算一下我这几个样品里目标带的占比：2、3、4 道是标准，分别上了 20、10、5 ug。",
+      "expected_behavior": "In scope (the optional densitometry chain, SDS-PAGE only: the standard lanes hold protein standards loaded by hand; an agarose gel has no such standards and can be labeled but not quantified by mass). First confirm that `fig.mw.json` exists (if not, run render / sync first: the report is the input of the whole chain), and confirm the `--std` lanes and masses with the user (default is that lane's strongest band; `3:2=10` names the second band, `4:*=5` the lane total; replicate lanes with the same mass collapse into one point with n>1). Then run the chain in order:\n`ep-craft densitometry measure fig.mw.json`\n`ep-craft densitometry plot-bands --dens fig.dens.json` (look at the plot first: the shaded rows are what was integrated and the two baselines are the dashed lines)\n`ep-craft densitometry curve --dens fig.dens.json --std \"2=20,3=10,4=5\"` -> `fig.curve.json`\n`ep-craft densitometry plot-curve --curve fig.curve.json` (check the fit and the residual strip)\n`ep-craft densitometry quantify --dens fig.dens.json --curve fig.curve.json [--load \"9=2,10=2\"]`\n`ep-craft densitometry plot-curve --curve fig.curve.json --quant fig.quant.json` (draw the sample points on the curve)\nWhen reporting numbers, keep the three fields apart and never merge them into one \"purity\": `bands[].rel_pct` is this band's share of **its own lane's** measured mass (a within-lane band share); `lanes[].frac_pct_among_lanes` is this lane's measured mass as a share of the gel's known total (a lane-to-lane share, not a band share); `conc` exists only when `--load` was given. If the user asks \"how much of this lane is the target band\", answer with `rel_pct`; if they ask \"how much of the gel is this lane\", answer with `frac_pct_among_lanes`; if they ask both, report both and say they answer different questions. Before running `measure`, ask which lanes are actually samples: the chain decides \"marker\" from the report's `marker` flag, not from the label, so a second ladder, a blank or a pooled lane has to be left out with `measure --lanes 9-12` or it will be counted as a sample in `frac_pct_among_lanes`. A band outside the standard range is `mass: null` + `out_of_range: true` (that lane's `mass_total` is `null` too): say plainly that its area falls outside the standard range and so has no mass, and give the fix in the right direction — below the range `多加点或浓缩后再跑` (load more or concentrate), above it `稀释或少点一点再跑` (dilute or load less) — or add a standard lane that brackets it and re-run `curve`; never extrapolate. A band whose area is inside the range but whose stored fit evaluates to zero or less is also `mass: null`, with `out_of_range: false` and lane totals `null`; the note names only the lane, the band and the area, and the fitted value is never printed anywhere, so state that the low-area end of the curve is not trustworthy and fix it with `--drop` on the lowest standard or `--fit power` and a re-run of `curve` and `quantify`, not by loading differently — never reconstruct or quote a negative or zero mass. Quote the percentage fields from `quant.json` rather than from the terminal table (the JSON keeps 2 decimals, the table prints whole percent); the table prints masses and concentrations with up to 3 decimals, trailing zeros dropped. If `curve` refuses with `标准点不单调`, go back to `fig.bands.png` and check windows, standard-lane order and flags, then either fix the `--std` mapping or `--drop` a lane — do not force a positive number, and do not assert that saturation is the cause. Every new file is a sibling of `fig.mw.json`; do not re-run render and do not touch `fig.vectorcraft` / `fig.png` / `fig.mw.json`.",
+      "notes": "This case used to be should_not_trigger: quantification used to be out of scope and is now an optional chain. The old answer (\"no quantification, use another tool\") is obsolete; `rel_pct` and `frac_pct_among_lanes` are not the same quantity and must not be presented together as one \"purity\"."
     },
     {
       "id": "edge-case-09",
