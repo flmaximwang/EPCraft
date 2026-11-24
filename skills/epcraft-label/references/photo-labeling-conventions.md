@@ -443,7 +443,7 @@ epcraft figure sync fig.vectorcraft
 
 ```bash
 epcraft doctor                             # python / magick / 字体 / VectorCraft 版本与控制口 / 数据文件
-epcraft selftest                           # 不读用户文件、不开 app；全绿即可（项数以当次输出为准）
+epcraft selftest                           # 离线冒烟检查：胶体预设、文档模板和定量计算
 
 # 只探测（不写文件、不开 app）：胶面、孔距/首道/孔深、每道叫出的带 y；给了 --markers 还打 marker 候选道的前 N 名与闸门
 epcraft crop probe photo.jpeg --gel-size src/epcraft/data/gel_size.json [--gel-lanes N] [--rect x0,y0,x1,y1] \
@@ -550,7 +550,7 @@ render 的其它开关（全是 stage 1；出图后也可以在 Crop 画板上�
 | `src/epcraft/env_check.py` | `doctor` |
 | `src/epcraft/canvas_cli.py` | 公开层级命令：`launch`、`figure export`、`workbench export` / `import` 的参数、路径保护与错误边界 |
 | `src/epcraft/workbench_io.py` | Workbench JSON 的导出 / 导入与整份校验（§13） |
-| `src/epcraft/selftest.py`、`selftest_sync.py`、`selftest_crop.py`、`selftest_cli.py`、`selftest_workbench_io.py` | `selftest` 的各套件（`selftest_sync` 用假控制口测 sync 执行器；`selftest_crop` 测裁切框几何与读回；`selftest_cli` 测命令树与分发；`selftest_workbench_io` 测 JSON 往返与校验）。|
+| `tests/` | 仓库回归测试，从仓库根运行 `PYTHONPATH=src python3 -m tests`。覆盖假控制口上的 sync、裁切框几何与读回、CLI 分发以及 Workbench JSON 往返与校验。 |
 
 ## 13. Workbench 数据交换（`src/epcraft/workbench_io.py`）
 

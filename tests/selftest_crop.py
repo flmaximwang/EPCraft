@@ -11,10 +11,10 @@ import math
 import os
 import tempfile
 
-from . import crop
-from . import profiles
-from .geometry import load_dims_after
-from .magick_io import MAGICK, _run
+from epcraft import crop
+from epcraft import profiles
+from epcraft.geometry import load_dims_after
+from epcraft.magick_io import MAGICK, _run
 
 
 PT = 72.0 / 2.54

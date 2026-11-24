@@ -110,7 +110,7 @@ instead of as-typed) catches all 20.  Nothing in this file was tuned to either i
 every assertion cites the spec or the ruling, and every expected number is computed from the
 fixture.
 
-Run: `PYTHONPATH=src python3 -m epcraft.selftest_quantify_acceptance`
+Run: `PYTHONPATH=src python3 -m tests.selftest_quantify_acceptance`
 (`run()` prints `selftest_quantify_acceptance N/N 通过` and returns the number of checks).
 """
 import contextlib
@@ -122,8 +122,8 @@ import os
 import re
 import tempfile
 
-from . import densitometry
-from . import gel_photo
+from epcraft import densitometry
+from epcraft import gel_photo
 from . import selftest_densitometry
 
 QUANT_KIND = "ep-craft-densitometry-quant"
@@ -905,7 +905,7 @@ def check_cli_default_path():
     parser shape/defaults, both group names, default `fig.curve.json → fig.quant.json` (never
     `fig.curve.quant.json`), the fallback names, the §5 terminal block (header + one line per
     sample lane, no standard lane), and two identical CLI runs writing byte-identical JSON."""
-    from . import densitometry_cli  # noqa: F401  (the group must be registered by canvas_cli)
+    from epcraft import densitometry_cli  # noqa: F401  (the group must be registered by canvas_cli)
 
     # the sub-command must be discoverable, and its help must name every option of §3.3
     group_help = _help(["dens", "--help"])

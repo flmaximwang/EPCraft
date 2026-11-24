@@ -14,22 +14,23 @@ import shutil
 import subprocess
 import time
 
-from .config import load_gel_size
-from .gel_area import compute, estimate_pitch_px
-from .magick_io import MAGICK, _run, read_ppm, to_gray
-from .gel_detect import bg_plane, components, detect_gel, ink_mask
-from .lane_select import layout as lane_layout, parse_keep, strips as lane_strips
-from .geometry import load_dims_after, rotate_pt, rotated_rect_bbox
-from .mw_report import (build_cal, estimate, expand_marker_mws, format_report_v2, parse_mw,
+from epcraft import data_dir, package_root
+from epcraft.config import load_gel_size
+from epcraft.gel_area import compute, estimate_pitch_px
+from epcraft.magick_io import MAGICK, _run, read_ppm, to_gray
+from epcraft.gel_detect import bg_plane, components, detect_gel, ink_mask
+from epcraft.lane_select import layout as lane_layout, parse_keep, strips as lane_strips
+from epcraft.geometry import load_dims_after, rotate_pt, rotated_rect_bbox
+from epcraft.mw_report import (build_cal, estimate, expand_marker_mws, format_report_v2, parse_mw,
                         split_peak_note, write_v2)
-from . import vc_file
-from . import vc_control
-from . import workbench
-from . import profiles
-from . import well_grid
-from . import figure
-from . import doc_edit
-from . import workbench_io
+from epcraft import vc_file
+from epcraft import vc_control
+from epcraft import workbench
+from epcraft import profiles
+from epcraft import well_grid
+from epcraft import figure
+from epcraft import doc_edit
+from epcraft import workbench_io
 
 
 def test_import_direction():
@@ -38,7 +39,7 @@ def test_import_direction():
     用 ast 解析真正的 import 语句（不 grep 文本：注释/文档里提到模块名不算依赖）。
     返回违规列表，每条写明「哪个模块 import 了哪个」。
     """
-    package = os.path.dirname(os.path.abspath(__file__))
+    package = package_root()
     local = {os.path.splitext(name)[0] for name in os.listdir(package)
              if name.endswith(".py") and not name.startswith("__")}
     # 管线：stage 1（gel_area）→ 泳道种子（well_grid）→ 剖面/条带（profiles）→ 模型（workbench）
@@ -53,6 +54,8 @@ def test_import_direction():
     rules = {"gel_area": set(later), "gel_detect": set(later)}
     for i, mod in enumerate(later):
         rules[mod] = set(later[i + 1:])
+    exports = {node.name for node in ast.parse((package / "__init__.py").read_text(encoding="utf-8")).body
+               if isinstance(node, (ast.FunctionDef, ast.ClassDef))}
     bad = []
     for mod in sorted(local):
         path = os.path.join(package, mod + ".py")
@@ -81,7 +84,7 @@ def test_import_direction():
                         imported.extend((a.name, node.lineno) for a in node.names)
                 # level > 1 在当前扁平包内不应该出现；留给下面的未知名检查兜底
         for name, lineno in imported:
-            if name not in local:
+            if name not in local and name not in exports:
                 bad.append("%s 导入了不存在的包内模块 %r（第 %d 行）" % (mod, name, lineno))
             if name in rules.get(mod, set()):
                 bad.append("%s import 了 %s（第 %d 行）" % (mod, name, lineno))
@@ -200,7 +203,7 @@ def selftest():
 
     # 18) 强制预设闸门：probe 没给 --gel-size 必须在**跑检测之前**就失败。
     #     用一张不存在的图：真跑到 detect_gel 会报别的错，只有先过闸门才会是 spec 那一行。
-    from .gel_photo import main as gp_main
+    from epcraft.gel_photo import main as gp_main
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
         rc = gp_main(["probe", "/nonexistent/t1-gate-no-preset.png"])
@@ -259,7 +262,7 @@ def selftest():
             assert "anchor" in str(e), str(e)
 
         # 随包预设自身必须过 schema/不变式（lane_count=15）
-        shipped = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "gel_size.json")
+        shipped = data_dir() / "gel_size.json"
         if os.path.isfile(shipped):
             sg = load_gel_size(shipped)
             assert sg["lane_count"] == 15 and sg["anchor"] == "bottom", sg
@@ -1221,7 +1224,7 @@ def selftest():
     #      crop 层不锁不打印；照片 image/jpeg、等比到 0.5 % 以内；框四角 = crop_layout 的 frame_pt；
     #      read_frame 读回 frame_px（≤ 0.01 px）无错；render 完第一次 sync = 0 个操作（ep-meta 带着 crop）；
     #      crop=None 仍是三画板、没有 photo / crop 层、没有 JPEG。
-    from . import crop as crop_geom
+    from epcraft import crop as crop_geom
     with tempfile.TemporaryDirectory() as td:
         ph = os.path.join(td, "photo.jpg")
         _run([MAGICK, "-size", "2401x1601", "xc:gray(210)", "-fill", "gray(90)",
@@ -1346,8 +1349,8 @@ def selftest():
 
     # 74) 去掉的输出与参数（V6）：--keep-lanes / --svg / --no-editor / --debug / --record 与 export 子命令
     #     都报「已经去掉了：用什么代替」并非 0 退出（不静默忽略）；孔距核对只在偏差 > 10% 时警告。
-    from .gel_photo import main as gp_main
-    from . import gel_session
+    from epcraft.gel_photo import main as gp_main
+    from epcraft import gel_session
     for extra in (["--keep-lanes", "1-3"], ["--svg"], ["--no-editor"], ["--debug", "d.png"], ["--record", "r.json"]):
         buf = io.StringIO()
         with contextlib.redirect_stderr(buf):
@@ -1443,7 +1446,7 @@ def selftest():
     #     装得下整条字）；marker 标签也能竖排（框内边离胶 4 pt）；render 完 plan_sync = 0（幂等）；
     #     sync 读到用户转过的标签 → 只挪位置、不改角度，并把角度记进 ep-meta。
     import types
-    from . import text_layout
+    from epcraft import text_layout
     with tempfile.TemporaryDirectory() as td:
         # (a) 框几何 + xf 往返
         b0 = text_layout.box_offsets(20.0, 8.0, 0.0, "Center")
@@ -1525,7 +1528,7 @@ def selftest():
         assert figure.plan_sync(d_u, m_u2, profiles.analyze(m_u2, png_c, [None] * 15))[0] == [], "第二次 sync 不幂等"
 
         # (d) 配置入口：lanes.json 每项 {text, angle}；markers.json 每项 angle
-        from . import gel_session
+        from epcraft import gel_session
         p_lanes = os.path.join(td, "lanes.json")
         with open(p_lanes, "w", encoding="utf-8") as f:
             json.dump({"labels": ["M", {"text": "A", "angle": 90}, ""], "marker_lanes": [1, 2]}, f)
@@ -1593,7 +1596,7 @@ def selftest():
         assert any("后面 1 行没有 MW" in n for n in mcr["notes"]), mcr["notes"]
     # 低置信标记：marker_confidence.ok = false → fig.mw.json 的 calibration.low_confidence = true，
     # 报告首注换成「低置信，可人工核对」；ok 的报告不带这个键（旧文档 sync 后逐字节不变）
-    from . import gel_session as _gs
+    from epcraft import gel_session as _gs
     rep_low = _gs.mark_low_confidence({"meta": {"marker_confidence": {"ok": False, "gate": "断崖不够"}}},
                                       {"calibration": {"method": "interp", "marker_lane": 1, "points": []},
                                        "notes": ["别的提示"]})
@@ -1722,7 +1725,7 @@ def selftest():
     # 123) ep-meta 的 peak_auto（spec §4.6）：render 与 sync 写刻度时都记「这一轮检测器叫出的样品带」
     #      （id 键是泳道号字符串、自上而下、四位小数；marker 道与空道不列）；其它 ep-meta 键原样；
     #      render 写出的文档第一次 sync 仍是 0 个操作，peak_auto 原样留着。
-    from . import gel_session
+    from epcraft import gel_session
     raw5 = {}
     profiles.analyze(m5, png5, names5, overrides={}, raw=raw5)    # 与 cmd_render 同一句（无 override）
     pa5 = gel_session.peak_auto(raw5, m5["marker_lane"])
@@ -1753,7 +1756,7 @@ def selftest():
     # 124) 旧文档（刻度还在 analysis 层、名字 peak <lane>，ep-meta 没有 peak_auto）：sync 时先建 sample bands
     #      层、删掉 analysis 里的旧刻度、在同一个撤销组里按 peak n.k 重建；peak_auto 记上、其它键原样；
     #      再 sync 一次 0 个操作。
-    from . import gel_session as _gs
+    from epcraft import gel_session as _gs
     d_old = json.loads(json.dumps(d5))
     L_old = {l["name"]: l for l in d_old["layers"]}
     old_ids = []
@@ -1806,7 +1809,7 @@ def selftest():
     #      （manual=True、显著度 ≤ 0 记 0、MW 按 y 换算、参与 strongest 与排序）；无 override 时报告与
     #      改动前逐字段相同；raw / peak_auto 始终是**抑制之前**的检测器叫带，手加带不混进去；
     #      mw_report 给手加带标 ✎；Profiles 画板与 sample bands 刻度跟着报告走。
-    from . import gel_session as _gs_ov
+    from epcraft import gel_session as _gs_ov
     with tempfile.TemporaryDirectory() as td:
         gp_ov = os.path.join(td, "gel.png")
         rows_ov = [1.0, 2.0, 3.0, 4.0]
@@ -2146,7 +2149,7 @@ def selftest():
         assert ops2 and "peak_overrides" not in meta2, meta2.get("peak_overrides")
         assert json.dumps(workbench.from_document(d)[0]["meta"], sort_keys=True) != meta_before
 
-    from . import gel_photo as _gp_arg
+    from epcraft import gel_photo as _gp_arg
     seen = {}
     orig_sync = _gp_arg.cmd_sync
     _gp_arg.cmd_sync = lambda a: (seen.update(reset_peaks=a.reset_peaks) or 0)
@@ -2200,7 +2203,7 @@ def selftest():
         _rows0, info0 = profiles.pick_marker(*_blank_profile(), px_per_cm=100.0, need=3)
         assert _rows0 == [] and info0["ok"] is False and "局部极小只有 0 个" in info0["reason"], info0
 
-        from . import gel_session as _gs_rt
+        from epcraft import gel_session as _gs_rt
 
         def _roundtrip(m, png, names, nb, low):
             """建文档 → 读回 → 导出/导入，断言带数不变、marker 泳道靠 ep-meta 回退。
@@ -2421,7 +2424,7 @@ def _peak_gel(path, lane3_py=197):
 
 def _peak_doc(td):
     """selftest：render 出的一份 4 道样品带文档（ep-meta 有 peak_auto，刻度已按报告写好）→ (top, png)。"""
-    from . import gel_session
+    from epcraft import gel_session
     p = os.path.join(td, "gel.png")
     _peak_gel(p)
     png = open(p, "rb").read()
@@ -2454,7 +2457,7 @@ def _peak_sync(top, png, reset=None, apply=True):
     analyze → 记 peak_auto → plan_sync → 落 op）。reset 同 --reset-peaks：None = 没给、[] = 全部道、
     [道号…] = 指定道；apply=False = --dry-run（算出 ops 但不改文档）。
     返回 (模型, 报告, ops, ep-meta, 样品带摘要行, 警告行)。"""
-    from . import gel_photo, gel_session
+    from epcraft import gel_photo, gel_session
     d = top["document"]
     m, _notes = workbench.from_document(d)
     old = dict(m["meta"])

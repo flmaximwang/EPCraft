@@ -4,9 +4,9 @@ import io
 import os
 import tempfile
 
-from . import gel_photo
+from epcraft import gel_photo
 from .selftest_cli import _FakeClient, _patched, _run
-from . import canvas_cli
+from epcraft import canvas_cli
 
 
 STAGES = ("init-canvas", "img-to-crop", "crop-to-workbench",
@@ -29,7 +29,7 @@ def test_workflow_parser():
         else:
             raise AssertionError("workflow requires a stage")
     # The module's automatic public/legacy parser selection recognizes workflow.
-    from . import workflow_cli
+    from epcraft import workflow_cli
     with _patched(workflow_cli, "cmd_init_canvas", lambda args: 0):
         assert _run(["workflow", "init-canvas", "x.vectorcraft"], canvas=None)[0] == 0
 
@@ -54,7 +54,7 @@ def test_workflow_export():
 
 
 def test_workflow_init():
-    from . import workflow_start, vc_file, workbench
+    from epcraft import workflow_start, vc_file, workbench
     with tempfile.TemporaryDirectory() as tmp:
         doc = os.path.join(tmp, "new.vectorcraft")
         client = _FakeClient()
@@ -88,7 +88,7 @@ def test_workflow_init():
 
 
 def test_workflow_stage_isolation():
-    from . import workflow_stages as stages
+    from epcraft import workflow_stages as stages
     document = {"artboards": [{"name": name} for name in ("Crop", "Profiles", "Workbench", "Figure")],
                 "layers": [{"name": name, "kind": {"children": [{"id": i, "kind": {}}]}}
                            for i, name in enumerate(("gel", "labels", "profiles", "lanes", "sample bands", "ep-meta"), 10)]}
@@ -115,7 +115,7 @@ def test_workflow_stage_isolation():
 
 
 def test_workflow_refresh_figure_pixels():
-    from . import workflow_stages as stages
+    from epcraft import workflow_stages as stages
     image_kind = {"type": "image", "key": "current", "width": 200, "height": 150,
                   "xf": [0.5, 0, 0, 0.5, 20, 30]}
     stale_kind = dict(image_kind, key="previous")

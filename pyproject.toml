@@ -39,5 +39,4 @@ package-dir = { "" = "src" }
 epcraft = [
     "data/*.json",
     "templates/*",
-    "fixtures/*.json",
 ]

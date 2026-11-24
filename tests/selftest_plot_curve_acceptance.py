@@ -22,7 +22,7 @@ What is asserted is the scientific content of the picture:
 Matplotlib is an optional `[plot]` extra; the gateway / base selftest decides whether the
 suites run at all, so this module does not silently skip.
 
-Run:  PYTHONPATH=src python3 -m epcraft.selftest_plot_curve_acceptance
+Run:  PYTHONPATH=src python3 -m tests.selftest_plot_curve_acceptance
 `run()` returns the number of passed checks and prints
 `selftest_plot_curve_acceptance N/N 通过`.
 """
@@ -38,7 +38,7 @@ import warnings
 
 os.environ.setdefault("MPLBACKEND", "Agg")
 
-from . import densitometry
+from epcraft import densitometry
 
 KIND = densitometry.CURVE_KIND
 QUANT_KIND = "ep-craft-densitometry-quant"
@@ -51,7 +51,7 @@ _NUM = re.compile(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?")
 
 def _plot():
     """The renderer module, with the two public names this suite exercises."""
-    from . import dens_plot
+    from epcraft import dens_plot
     for name in ("plot_curve",):
         assert callable(getattr(dens_plot, name, None)), \
             "dens_plot.%s 不是可调用对象" % name
@@ -585,7 +585,7 @@ def _quant():
 
 def _cli(argv):
     """Run the public CLI in-process → (rc, stdout, stderr); argparse exits count as rc 2."""
-    from . import gel_photo
+    from epcraft import gel_photo
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         try:
@@ -633,7 +633,7 @@ def _write_json(path, payload):
 
 def check_cli_parser():
     """`plot-curve` stays registered under both groups with §3.4 defaults."""
-    from . import gel_photo
+    from epcraft import gel_photo
     for group in ("dens", "densitometry"):
         ap = gel_photo.build_parser(canvas=True)
         args = ap.parse_args([group, "plot-curve", "--curve", "fig.curve.json"])
@@ -1104,7 +1104,7 @@ def check_no_magick_no_temp():
     """The renderer does not touch ImageMagick and leaves no script/temp debris."""
     curve = _linear_curve()
     with tempfile.TemporaryDirectory() as td:
-        from . import magick_io
+        from epcraft import magick_io
         boom = AssertionError("matplotlib 渲染不应调用 ImageMagick")
         with unittest.mock.patch.object(magick_io, "_run", side_effect=boom):
             (_w, _h), _fig, _caught, out = _render_file(td, "clean.png", curve)

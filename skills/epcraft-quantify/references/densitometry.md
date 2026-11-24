@@ -238,6 +238,6 @@ The chain lives in the same installed package as labeling; these are its modules
 | `src/epcraft/densitometry.py` | densitometry math: `measure` (areas on both baselines), `parse_std` / `parse_lanes` / `parse_load`, `build_curve` (both fits), `format_curve`, `quantify` (area → mass through the stored fit), `format_quant`, JSON writing |
 | `src/epcraft/dens_plot.py` | the two PNGs: `plot_bands` / `plot_curve`. headless Matplotlib layout and display coordinates |
 | `src/epcraft/densitometry_cli.py` | argparse and handlers for `densitometry` (alias `dens`): flags, path guards, error boundary |
-| `src/epcraft/selftest_densitometry.py`, `selftest_dens_plot.py`, `selftest_plot_curve_acceptance.py`, `selftest_quantify_acceptance.py` | the four offline suites under `epcraft selftest`: analytic truth of areas/fits/quantification, checks of both PNGs and their plotted data (including horizontal area bars), and quantify acceptance (stored-fit masses, both refusals, `--load`, lane shares, terminal block, CLI) |
+| `tests/` | Repository regressions for area and fit math, both PNGs, and quantification including range refusals, `--load`, lane shares and CLI output. Run `PYTHONPATH=src python3 -m tests` from the repository root. |
 
 Design contract: `specs/ep-craft-densitometry.md` (historical file name and contents are preserved; the CLI name in it belongs to the pre-split runtime).

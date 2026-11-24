@@ -62,7 +62,7 @@ Turn a phone photo of a gel into a labeled figure at true physical size. Detecti
 | `epcraft workbench export DOC [--out PATH] [--port 7797]` | Write lane-data JSON; without `--out` it goes to stdout. |
 | `epcraft workbench import DOC --input PATH [--no-sync] [--dpi 300] [--port 7797]` | Validate the JSON, apply it to the live document, then sync (unless `--no-sync`). |
 | `epcraft profile sync DOC …` | Shared sync handler; updates the Profiles canvas too. |
-| `epcraft doctor` / `epcraft selftest` | Environment check / offline self-test (legacy suite + CLI suite + Workbench IO suite + the shared densitometry suites). |
+| `epcraft doctor` / `epcraft selftest` | Environment check / offline smoke check for the installed package. |
 
 `sync` flags: `--port 7797`, `--dpi 300`, `--dry-run`, `--reset-peaks [N ...]`. `edit` flags: `--keep RANGE | --trim RANGE`, `--labels a,b,,c`, `--label N=TEXT` (repeatable), `--shift-labels K`, `--marker-lane N`, `--no-sync`, `--port`, `--dpi`. Exit `0` = success; `2` = expected user/environment error (message on stderr, no traceback).
 

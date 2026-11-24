@@ -17,8 +17,8 @@ import socketserver
 import tempfile
 import threading
 
-from . import sync_exec
-from . import vc_control
+from epcraft import sync_exec
+from epcraft import vc_control
 
 
 # ---------------------------------------------------------------- 假 app
@@ -541,13 +541,13 @@ def _crop_ops():
 
 def _crop_read():
     """gel_photo._read_all：Crop 画板的读回、重新裁切、报错与旧文档补画板（照片是 magick 现画的）。"""
-    from . import crop
-    from . import figure
-    from . import gel_photo
-    from . import gel_session
-    from . import vc_file
-    from . import workbench
-    from .magick_io import MAGICK, _run
+    from epcraft import crop
+    from epcraft import figure
+    from epcraft import gel_photo
+    from epcraft import gel_session
+    from epcraft import vc_file
+    from epcraft import workbench
+    from epcraft.magick_io import MAGICK, _run
     ok = 0
     dpi, wpx, hpx = 127, 250, 175                      # 胶面图 250×175 px @127 dpi = 5.00 × 3.50 cm（补画板按 0.01 cm 取整预设）
     width_cm = wpx * 2.54 / dpi

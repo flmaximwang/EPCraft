@@ -616,6 +616,10 @@ def _load_json(path):
 
 def cmd_import(args):
     """`epcraft workbench import DOC --input PATH [--no-sync] [--dpi DPI] [--port PORT]`。"""
+    no_sync = getattr(args, "no_sync", False)
+    sync = getattr(args, "sync", None)
+    if not no_sync and not callable(sync):
+        raise RuntimeError("workbench import 需要 sync 处理函数（由 canvas_cli.add_commands 注入 args.sync）")
     path = _abs_doc(args.doc)
     data = _load_json(os.path.abspath(args.input))
     client, document = _live_document(path, getattr(args, "port", None) or 7797, launch=True)
@@ -634,12 +638,9 @@ def cmd_import(args):
         print("[i] 已写入：%s（一个撤销步「%s」，⌘Z 可整体撤回）" % (sync_exec.describe(done), LABEL))
     else:
         print("[i] 文档已经是最新的（0 个改动）")
-    if getattr(args, "no_sync", False):
+    if no_sync:
         print("[i] 未 sync（--no-sync）：改动在 VectorCraft 里还没存盘")
         return 0
-    sync = getattr(args, "sync", None)          # canvas_cli.add_commands 注入；本模块不 import gel_photo
-    if sync is None:
-        raise RuntimeError("workbench import 需要 sync 处理函数（由 canvas_cli.add_commands 注入 args.sync）")
     return sync(argparse.Namespace(doc=path, port=getattr(args, "port", None) or 7797,
                                    dpi=getattr(args, "dpi", 300), dry_run=False, reset_peaks=None))
 

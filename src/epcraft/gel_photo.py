@@ -51,7 +51,6 @@ from .env_check import cmd_doctor                                               
 from .lane_select import parse_keep                                                     # noqa: E402
 from .mw_report import format_report_v2, write_v2                                       # noqa: E402
 from .text_layout import window_deg                                                     # noqa: E402
-from .selftest import selftest                                                          # noqa: E402
 
 SKILL_VERSION = "vectorcraft-1"
 
@@ -686,26 +685,10 @@ def _add_edit_parser(parent):
     return ed
 
 
-def cmd_selftest_legacy(_args):
-    selftest()
-    return 0
+def cmd_selftest(_args):
+    from .smoke import selftest
 
-
-def cmd_selftest_all(_args):
-    """公开入口：先跑原来的算法自检，再跑新 CLI 与 Workbench IO 的自检。
-
-    新套件延迟 import，避免 selftest * → canvas_cli → gel_photo 的循环。"""
-    selftest()
-    from .selftest_cli import selftest as cli_selftest
-    cli_selftest()
-    try:
-        from .selftest_workbench_io import selftest as io_selftest
-    except ImportError as e:
-        raise RuntimeError("Workbench IO selftest missing: %s" % e)
-    io_selftest()
-    from .selftest_workflow import selftest as workflow_selftest
-    workflow_selftest()
-    return 0
+    return selftest()
 
 
 def build_parser(canvas=False):
@@ -739,8 +722,6 @@ def build_parser(canvas=False):
 
         from .canvas_cli import add_commands
         add_commands(sub, groups, sync=cmd_sync)   # workbench import 导入后跟着同一个 sync
-        t = sub.add_parser("selftest", help="自检：算法 + CLI + Workbench IO（不开 app）")
-        t.set_defaults(func=cmd_selftest_all)
     else:
         _add_probe_parser(sub)
         _add_render_parser(sub)
@@ -749,9 +730,9 @@ def build_parser(canvas=False):
         e = sub.add_parser("export", help=argparse.SUPPRESS)
         e.add_argument("rest", nargs=argparse.REMAINDER)       # 老用法的任何参数都吞下，只为报那一句
         e.set_defaults(func=_removed_export)
-        t = sub.add_parser("selftest")
-        t.set_defaults(func=cmd_selftest_legacy)
 
+    t = sub.add_parser("selftest", help="Offline smoke check for the installed package")
+    t.set_defaults(func=cmd_selftest)
     d = sub.add_parser("doctor", help="环境自检：python / magick / 字体 / VectorCraft / 数据文件")
     d.set_defaults(func=cmd_doctor)
     return ap

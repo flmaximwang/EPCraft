@@ -15,8 +15,8 @@ import math
 import os
 import tempfile
 
-from . import densitometry
-from . import profiles
+from epcraft import densitometry
+from epcraft import profiles
 
 
 # ---------------------------------------------------------------- synthetic report v2
