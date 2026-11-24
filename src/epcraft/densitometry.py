@@ -70,6 +70,16 @@ def _num(value, nd):
     return 0.0 if r == 0 else float(r)
 
 
+def _num_or_none(value, nd):
+    """`_num` for a statistic that may be UNDEFINED: `None` in, `None` out (never NaN, never 0).
+
+    `_linfit` leaves its standard errors undefined when the fit has no residual degrees of freedom
+    (n <= 2); writing `0.0` there would claim a perfect fit, and the JSON must not carry NaN
+    either, so an absent statistic stays absent all the way into `curve.json` (ep-c1i §3).
+    """
+    return None if value is None else _num(value, nd)
+
+
 def _nearest(y, value):
     """Index of the row whose y is closest to value (y is ascending)."""
     return min(range(len(y)), key=lambda k: abs(y[k] - value))
@@ -793,7 +803,23 @@ def _std_area(lane, lane_no, band, baseline):
 
 
 def _linfit(xs, ys):
-    """Least squares y = a + b·x → (b, a, r2) with r2 = 1 − SSres / SStot (§4.5)."""
+    """Ordinary least squares y = a + b·x → a dict of the fit AND its sampling statistics (§4.5).
+
+    Returns `n`, `mx`, `sxx` (Σ(x − x̄)²), `b`, `a`, `r2` plus the error numbers ep-c1i needs:
+    `s` (residual standard deviation `sqrt(SSres / (n − 2))`), `se_b` (`s / sqrt(sxx)`), `se_a`
+    (`s · sqrt(1/n + x̄²/sxx)`) and `cov_ab` (`−s² · x̄ / sxx`).  A dict, not the old `(b, a, r2)`
+    tuple, because the callers no longer want only the line: `curve` stores the slope / intercept
+    standard errors and `sxx` / `mx`, and `quantify` turns those into the per-sample prediction SD
+    without ever refitting (ep-c1i §2-§4).
+
+    `s`, `se_b`, `se_a` and `cov_ab` are `None` when `n <= 2`: with no residual degrees of
+    freedom the residual scatter is not estimable, and a `0.0` there would claim a perfect fit —
+    every propagated uncertainty downstream stays `None` instead (ep-c1i §3).  `r2` keeps its old
+    behaviour exactly (`1.0` when SStot is 0), because a degenerate fit is still defined.
+
+    Callers guarantee `n >= 2` with at least two distinct x (`_require_two_points`), so `sxx > 0`
+    here; nothing in this module calls it on a degenerate set.
+    """
     n = len(xs)
     mx = sum(xs) / n
     my = sum(ys) / n
@@ -804,7 +830,14 @@ def _linfit(xs, ys):
     ssres = sum((y - (a + b * x)) ** 2 for x, y in zip(xs, ys))
     sstot = sum((y - my) ** 2 for y in ys)
     r2 = 1.0 - ssres / sstot if sstot > 0.0 else 1.0
-    return b, a, r2
+    s = se_b = se_a = cov_ab = None
+    if n > 2:
+        s = math.sqrt(ssres / (n - 2))
+        se_b = s / math.sqrt(sxx)
+        se_a = s * math.sqrt(1.0 / n + mx ** 2 / sxx)
+        cov_ab = -s ** 2 * mx / sxx
+    return {"n": n, "mx": mx, "sxx": sxx, "b": b, "a": a, "r2": r2,
+            "s": s, "se_b": se_b, "se_a": se_a, "cov_ab": cov_ab}
 
 
 def _distinct_count(values):
@@ -932,22 +965,47 @@ def build_curve(dens, std, unit="ug", fit="linear", baseline="flank", drop=(),
             raise RuntimeError("curve：标准点的质量必须 > 0（收到 %r）" % (point["mass"],))
 
     if fit == "linear":
-        slope, intercept, r2 = _linfit([p["volume"] for p in used], [p["mass"] for p in used])
+        line = _linfit([p["volume"] for p in used], [p["mass"] for p in used])
+        slope, intercept, r2 = line["b"], line["a"], line["r2"]
         if slope <= 0.0:
             raise _not_monotonic(fit, "斜率", slope)
+        # ep-c1i §3: the OLS statistics `quantify` needs to propagate the fit error, stored next
+        # to the point estimates (4 dp, ruling R2) in the SAME space `space` names — here the area
+        # column itself.  When n <= 2 there is no residual degree of freedom: `_linfit` reports
+        # `s` / `se_b` / `se_a` / `cov_ab` as None and `sxx` / `mean_x` are withheld too (a stored
+        # real sum from which no error could be derived would invite a fake zero later).
+        stats_ok = line["s"] is not None
         fit_params = {"slope": _num(slope, 4), "intercept": _num(intercept, 4),
-                      "r2": _num(r2, 4), "n": len(used), "space": "linear"}
+                      "r2": _num(r2, 4), "n": len(used), "space": "linear",
+                      "slope_sd": _num_or_none(line["se_b"], 4),
+                      "intercept_sd": _num_or_none(line["se_a"], 4),
+                      "cov_slope_intercept": _num_or_none(line["cov_ab"], 4),
+                      "residual_sd": _num_or_none(line["s"], 4),
+                      "sxx": _num_or_none(line["sxx"], 4) if stats_ok else None,
+                      "mean_x": _num_or_none(line["mx"], 4) if stats_ok else None}
     else:
         for point in used:
             if point["volume"] <= 0.0:
                 raise RuntimeError("curve：power 拟合要求面积 > 0（泳道 %s 的面积是 %.3f）"
                                    % ("/".join(str(v) for v in point["lanes"]), point["volume"]))
-        exponent, log_c, r2 = _linfit([math.log10(p["volume"]) for p in used],
-                                     [math.log10(p["mass"]) for p in used])
+        line = _linfit([math.log10(p["volume"]) for p in used],
+                       [math.log10(p["mass"]) for p in used])
+        exponent, log_c, r2 = line["b"], line["a"], line["r2"]
         if exponent <= 0.0:
             raise _not_monotonic(fit, "指数", exponent)
-        fit_params = {"exponent": _num(exponent, 4), "scale": _num(10.0 ** log_c, 4),
-                      "r2": _num(r2, 4), "n": len(used), "space": "log10"}
+        scale = 10.0 ** log_c
+        # Same statistics in log10 space (like `r2`): `sxx` / `mean_x` are log-space sums and
+        # `residual_sd` is a log-space SD.  `scale = 10^log_c`, so its SD follows from log_c's by
+        # the delta method, d(10^c)/dc = 10^c · ln(10) (ep-c1i §3).
+        stats_ok = line["s"] is not None
+        fit_params = {"exponent": _num(exponent, 4), "scale": _num(scale, 4),
+                      "r2": _num(r2, 4), "n": len(used), "space": "log10",
+                      "exponent_sd": _num_or_none(line["se_b"], 4),
+                      "scale_sd": _num_or_none(None if line["se_a"] is None
+                                               else scale * math.log(10.0) * line["se_a"], 4),
+                      "residual_sd": _num_or_none(line["s"], 4),
+                      "sxx": _num_or_none(line["sxx"], 4) if stats_ok else None,
+                      "mean_x": _num_or_none(line["mx"], 4) if stats_ok else None}
 
     points = [{"mass": _num(p["mass"], 3), "volume": _num(p["volume"], 3), "n": p["n"],
                "sd": None if p["sd"] is None else _num(p["sd"], 3),
@@ -1432,6 +1490,71 @@ def _mass_from_area(area, curve, fit_params=None):
     return mass   # callers must refuse a non-positive value; it is never a reportable mass
 
 
+def _quant_stats(fit_params):
+    """The stored OLS statistics the sample uncertainty needs → `{s, n, mx, sxx}`, or `None`.
+
+    ep-c1i §4: `quantify` never refits, so the whole input is what `build_curve` already wrote into
+    `fit_params` — the residual SD (`residual_sd`), the x mean (`mean_x`) and the x sum of squares
+    (`sxx`), all in the space `space` names (`linear` = the area column, `log10` = log10(area)).
+    A hand-written curve.json and a two-point fit carry none of them (`build_curve` stores `None`,
+    see §3), and a curve is also refused when the numbers are present but unusable (a negative SD,
+    a zero or negative `sxx`).  `None` therefore means "the calibration has no residual scatter to
+    propagate", never "assume zero" — a fake 0 would print `± 0` and claim a perfect fit.
+    """
+    n = fit_params.get("n")
+    if isinstance(n, bool) or not isinstance(n, int) or n <= 2:
+        return None
+    values = (fit_params.get("residual_sd"), fit_params.get("mean_x"),
+              fit_params.get("sxx"))
+    if not all(_finite_number(value) for value in values):
+        return None
+    s, mx, sxx = (float(value) for value in values)
+    if s < 0.0 or sxx <= 0.0:
+        return None
+    return {"s": s, "n": n, "mx": mx, "sxx": sxx}
+
+
+# ONE template for the "no residual scatter" note: a fit without a usable `residual_sd` gets no
+# invented uncertainty, and this sentence says why (ep-c1i §4).  It is emitted only when at least
+# one band actually received a mass — otherwise there was no uncertainty to withhold and the note
+# would describe nothing the reader can see.
+NO_SCATTER_NOTE = ("标曲没有可用的残差散布（fit_params 缺 residual_sd / sxx / mean_x 或 n ≤ 2），"
+                   "样本质量与浓度的不确定度不给数")
+
+
+def _prediction_sd(area, mass, fit, stats):
+    """The OLS PREDICTION standard deviation of the mass at `area`, in the curve's unit (ep-c1i §4).
+
+        linear  sd = s · sqrt(1 + 1/n + (x − x̄)² / sxx)                    x = area
+        power   sd = mass · ln(10) · s · sqrt(1 + 1/n + (u − ū)² / sxx)     u = log10(area)
+
+    The prediction interval, not the confidence band of the line: a sample is a NEW observation, so
+    its own measurement scatter adds the leading `1` to the variance of the fitted mean at that x.
+    Without it the SD would describe how well the LINE is pinned down and would go to zero at x̄ —
+    exactly where a real sample's uncertainty is largest in the mass it was converted from.
+
+    The power fit's `s`, `mean_x`, `sxx` and therefore `sd_log` live in log10 space (like its `r2`);
+    the response scale is reached by the delta method, `d(scale·x^e)/d(log10 x) = mass·ln(10)`, the
+    same transformation `scale_sd` uses in §3.  `_quant_stats` has already guaranteed `sxx > 0` and
+    `n > 2`, and a positive `mass` guarantees `area > 0` for the power fit (scale > 0), so the
+    logarithm is defined.  A result that is not a finite non-negative number is not propagated.
+    """
+    x = float(area)
+    if fit == "power":
+        if x <= 0.0:
+            return None
+        u = math.log10(x)
+        sd_log = stats["s"] * math.sqrt(1.0 + 1.0 / stats["n"]
+                                        + (u - stats["mx"]) ** 2 / stats["sxx"])
+        sd = float(mass) * math.log(10.0) * sd_log
+    else:
+        sd = stats["s"] * math.sqrt(1.0 + 1.0 / stats["n"]
+                                    + (x - stats["mx"]) ** 2 / stats["sxx"])
+    if not _finite_number(sd) or sd < 0.0:
+        return None
+    return float(sd)   # a SD is never negative; `_num` also folds a -0.0 into 0.0 when stored
+
+
 def quantify(dens, curve, load=None, *, dens_path="", curve_path="", load_text=""):
     """dens.json + curve.json (+ loaded volumes) → quant.json (§4.6).  Pure: no I/O, no rounding
     before the maths.
@@ -1448,13 +1571,23 @@ def quantify(dens, curve, load=None, *, dens_path="", curve_path="", load_text="
     (lead ruling: a line crossing zero inside its own standard range must not reach a total).  The
     non-positive value itself is not written anywhere — not into the JSON, not into the note, not
     into the terminal line.
-    No JSON key changes; only `bands[*].mass` and the lane totals become `None`.
+
+    UNCERTAINTY (ep-c1i §4): every band that got a positive mass also gets `mass_sd`, its OLS
+    prediction SD (`_prediction_sd`), and every lane whose total is known gets `mass_total_sd`
+    (`sqrt(Σ mass_sd²)` over the bands carrying a mass — the band errors are combined as
+    independent) plus `conc_sd` (`mass_total_sd / load_ul`) when a load is known.  The file also
+    names the convention once in a top-level `uncertainty` block.  Nothing is invented when the
+    stored fit has no residual degrees of freedom: `_quant_stats` returns `None`, every propagated
+    value stays `None`, and ONE note says the calibration carries no residual scatter (`n == 2`, a
+    hand-written curve.json, or an unusable statistic).  Totals, `rel_pct`,
+    `frac_pct_among_lanes` and every refusal are unchanged — they keep using the point estimates,
+    because the error belongs next to the value, not inside the arithmetic that defines it.
 
     `load` is the dict from `parse_load` (`{lane: ul}`); a lane that is not in dens is refused.
     `dens_path` / `curve_path` / `load_text` are recorded verbatim in `source` (ruling R6) and feed
     nothing else.  Bad `baseline` / `fit` / `fit_params`, a missing key the function needs, or a
     load lane that dens does not have raise one Chinese RuntimeError; none of the return values is
-    ever a NaN.
+    ever a NaN, and no SD is ever negative (`_num` folds a -0.0 into 0.0).
     """
     if not isinstance(dens, dict):
         raise RuntimeError("quantify：dens 不是 dict（收到 %s）" % type(dens).__name__)
@@ -1478,6 +1611,13 @@ def quantify(dens, curve, load=None, *, dens_path="", curve_path="", load_text="
     notes = []
     if skipped_nos:
         notes.append(SKIP_NOTE % (len(skipped_nos), _runs(skipped_nos)))
+
+    # The fit's scatter is a property of the stored curve, not of any one lane: read it once.  When
+    # it is absent every mass_sd / mass_total_sd / conc_sd below stays None and one note explains
+    # why — the flag `withheld` records whether any band actually had a mass to attach an error to,
+    # so the note is only written when there was something to withhold.
+    stats = _quant_stats(fit_params)
+    withheld = False
 
     rows, raw_totals = [], []
     for lane in ordered:
@@ -1503,7 +1643,7 @@ def quantify(dens, curve, load=None, *, dens_path="", curve_path="", load_text="
             if below or above:
                 out_bands.append(index)
                 pending.append((index, area, below))
-                mass = None
+                mass, mass_sd = None, None
             else:
                 mass = _mass_from_area(area, curve, fit_params)
                 if not _finite_number(mass):
@@ -1514,28 +1654,49 @@ def quantify(dens, curve, load=None, *, dens_path="", curve_path="", load_text="
                     # the value itself is deliberately not kept: it must not reach a note, a lane
                     # line or the JSON, so only the band it belongs to is recorded
                     nonpos.append((index, area))
-                    mass = None
-            raw_masses.append(mass)
+                    mass, mass_sd = None, None
+                elif stats is not None:
+                    mass_sd = _prediction_sd(area, mass, fit, stats)
+                    withheld = withheld or mass_sd is None
+                else:
+                    mass_sd = None
+                    withheld = True
+            raw_masses.append((mass, mass_sd))
             bands.append({"index": index, "y_cm": _num(y_cm, 4), "mw_kda": band.get("mw_kda"),
                           "area": _num(area, 3), "mass": None if mass is None else _num(mass, 3),
+                          "mass_sd": None if mass_sd is None else _num(mass_sd, 3),
                           "out_of_range": bool(below or above), "rel_pct": None})
 
-        total = None if (out_bands or nonpos) else sum(raw_masses)
+        total = None if (out_bands or nonpos) else sum(mass for mass, _sd in raw_masses)
         for index, area, below in pending:
             notes.append(_out_of_range_note(no, index, area, vmin, vmax, below, total is None))
         for index, area in nonpos:
             notes.append(_non_positive_note(no, index, area))
         if total is not None and total != 0.0:
-            for band, mass in zip(bands, raw_masses):
+            for band, (mass, _sd) in zip(bands, raw_masses):
                 if mass is not None:
                     band["rel_pct"] = _num(mass / total * 100.0, 2)
 
+        # lane uncertainty: the band errors are independent, so their variances add (ep-c1i §4).
+        # `mass_total_sd` exists only where `mass_total` does — a lane whose total is withheld has
+        # no error to propagate either — and `conc_sd` divides it by the very load `conc` used.
+        # When any contributing band has no SD (the fit carries no residual scatter) the sum is
+        # not defined and stays None rather than being quietly computed from a subset.
+        band_masses = [mass for mass, _sd in raw_masses if mass is not None]
+        band_sds = [sd for mass, sd in raw_masses if mass is not None and sd is not None]
+        total_sd = None
+        if total is not None and band_masses and len(band_sds) == len(band_masses):
+            total_sd = math.sqrt(sum(sd * sd for sd in band_sds))
         conc = None if (lane_load is None or total is None) else _num(total / lane_load, 3)
+        conc_sd = (None if (lane_load is None or total_sd is None)
+                   else _num(total_sd / float(lane_load), 3))
+
         raw_totals.append(total)
         rows.append({"lane": no, "label": lane.get("label"),
                      "load_ul": None if lane_load is None else float(lane_load),
                      "bands": bands, "mass_total": None if total is None else _num(total, 3),
-                     "conc": conc, "out_of_range": bool(out_bands),
+                     "mass_total_sd": None if total_sd is None else _num(total_sd, 3),
+                     "conc": conc, "conc_sd": conc_sd, "out_of_range": bool(out_bands),
                      "out_of_range_bands": out_bands, "frac_pct_among_lanes": None})
 
     known = [total for total in raw_totals if total is not None]
@@ -1544,6 +1705,9 @@ def quantify(dens, curve, load=None, *, dens_path="", curve_path="", load_text="
         if total is None or overall <= 0.0:
             continue
         row["frac_pct_among_lanes"] = _num(total / overall * 100.0, 2)
+
+    if withheld:
+        notes.append(NO_SCATTER_NOTE)
 
     load_source = "" if load_text is None else str(load_text)
     return {
@@ -1556,6 +1720,9 @@ def quantify(dens, curve, load=None, *, dens_path="", curve_path="", load_text="
                    "load": load_source if load_source.strip() else None},
         "lanes": rows,
         "overall_mass": _num(overall, 3),
+        # the file states its own convention, so a reader of quant.json needs no doc (ep-c1i §4):
+        # 1 SD of the OLS prediction, one sigma, in the curve's unit
+        "uncertainty": {"basis": "ols_prediction", "k": 1, "unit": unit},
         "notes": notes,
     }
 
@@ -1580,6 +1747,11 @@ def _quant_header(quant, curve=None):
     The range and the fit parameters are NOT in quant.json (§4.6's key list is fixed), so the
     CLI passes the curve it just read (display metadata only, never persisted); without it the
     header keeps every part it can still derive from the quant dict.
+
+    ep-c1i §4 adds one tail clause naming the uncertainty basis (`±1 SD 来自拟合`), read back from
+    the file's own `uncertainty` block so a hand-written quant.json without one simply prints no
+    clause.  It is a fixed Chinese phrase rather than a translation of `basis` / `k`: the JSON
+    carries the machine-readable name and this line is for the person reading the table.
     """
     baseline = quant.get("baseline") or "flank"
     fit = quant.get("fit") or "linear"
@@ -1603,7 +1775,26 @@ def _quant_header(quant, curve=None):
     skipped = _skipped_count(quant)
     if skipped:
         head += "；跳过 %d 条标准道" % skipped
+    unc = quant.get("uncertainty")
+    k = unc.get("k") if isinstance(unc, dict) else None
+    basis = unc.get("basis") if isinstance(unc, dict) else None
+    if isinstance(k, int) and not isinstance(k, bool) and basis:
+        head += "；±%d SD 来自拟合" % k
     return head
+
+
+def _with_sd(value_text, sd, unit):
+    """`0.522` + `0.031` + `ug` → `0.522 ± 0.031 ug`, and just `0.522 ug` when the SD is unknown.
+
+    ep-c1i §4: the uncertainty sits next to the value it qualifies, at three significant digits
+    (`_fmt_sig`, the same formatter the out-of-range note uses), with the unit after both numbers so
+    the line still reads as one quantity.  A value without an SD prints no `±` at all rather than
+    `± —`: a calibration with no residual scatter has nothing to add, and an unknown must not look
+    like a measured zero.
+    """
+    if not _finite_number(sd):
+        return "%s %s" % (value_text, unit)
+    return "%s ± %s %s" % (value_text, _fmt_sig(sd), unit)
 
 
 def _band_text(band, unit, curve=None):
@@ -1618,7 +1809,8 @@ def _band_text(band, unit, curve=None):
     trimmed) so two real concentrations no longer collapse into one printed value; the in-range
     area keeps §5's single decimal, and the out-of-range comparison uses `_fmt_sig` — the same
     three significant digits the note prints — so a measurement can never read `面积 4.5 > 4.5`
-    when it is really 4.495 against 4.484.
+    when it is really 4.495 against 4.484.  The mass also carries its `±mass_sd` when the curve
+    supports one (ep-c1i §4); a rejected band has no mass, hence no error to print either.
     """
     mw = band.get("mw_kda")
     mw_text = ("%.1f kDa" % float(mw)) if _finite_number(mw) else "—"
@@ -1638,7 +1830,7 @@ def _band_text(band, unit, curve=None):
                                  _fmt_fixed(area, 1) if _finite_number(area) else "?")
     if band.get("mass") is None:
         return text + "  " + _non_positive_reason()
-    text += "  %s %s" % (_fmt_value(band["mass"]), unit)
+    text += "  " + _with_sd(_fmt_value(band["mass"]), band.get("mass_sd"), unit)
     if _finite_number(band.get("rel_pct")):
         text += " (%.0f%%)" % band["rel_pct"]
     return text
@@ -1651,6 +1843,11 @@ def format_quant(quant, *, curve=None):
     out-of-range bounds, none of which §4.6 lets quant.json carry.  `None` never appears in the
     output: a value that is absent (no load, an unknown total, an unknown share) is simply omitted,
     and an out-of-range band prints `—` with the range comparison and the advice instead of a mass.
+
+    ep-c1i §4: the totals and concentrations print their uncertainty the same way a band does
+    (`合计 7.5 ± 0.12 ug`, `浓度 3.75 ± 0.06 ug/uL`), and the header names the basis.  The `±` is
+    only ever appended INSIDE the last slot of a line, never in the label column, so the table's
+    width padding (`_dwidth`, `_pad_right`) is unaffected.
     """
     unit = str(quant.get("unit") or "ug")
     lanes = [lane for lane in (quant.get("lanes") or []) if isinstance(lane, dict)]
@@ -1666,9 +1863,11 @@ def format_quant(quant, *, curve=None):
         body += "  " + (" · ".join(parts) if parts else "（无带）")
         tail = []
         if _finite_number(lane.get("mass_total")):
-            tail.append("合计 %s %s" % (_fmt_value(lane["mass_total"]), unit))
+            tail.append("合计 " + _with_sd(_fmt_value(lane["mass_total"]),
+                                          lane.get("mass_total_sd"), unit))
             if _finite_number(lane.get("conc")):
-                tail.append("浓度 %s %s/uL" % (_fmt_value(lane["conc"]), unit))
+                tail.append("浓度 " + _with_sd(_fmt_value(lane["conc"]),
+                                              lane.get("conc_sd"), unit + "/uL"))
             if _finite_number(lane.get("frac_pct_among_lanes")):
                 tail.append("占全胶 %.0f%%" % lane["frac_pct_among_lanes"])
         if tail:
