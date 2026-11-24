@@ -24,12 +24,26 @@ value ranges, the fitted line's ends, the annotation text and the font.
 Requires a real ImageMagick (like the other pixel suites): every pixel below is read back from
 an actually rendered PNG.
 
-One contract question is deliberately NOT settled here: `curve.points[].sd` is the spread of the
-replicate AREAS (spec §4.5) while §4.7 asks for vertical error bars, i.e. a spread in MASS.  The
-suite checks that the renderer is self-consistent about the axis it picks
-(`check_error_bar_axis_conflict`) and prints the conflict as a separate `注意：…` line after the
-count; the literal vertical form the ticket asks for is checked by `check_error_bars`, which
-fails if the renderer switches axis until the spec/ticket decides.  See `ERROR_BAR_CONFLICT`.
+Replicate error bars: `curve.points[].sd` is the spread of the replicate AREAS (spec §4.5,
+gray*cm), and ep-bqv.7 settles the question §4.7 left open — the bar is HORIZONTAL, along the
+area axis, drawn at the point's own row.  `check_error_bars` asserts exactly that: a solid 2-px
+stem out to `sd` on both sides (a continuous rule, not a few stray pixels), a cap across each
+end, nothing past `sd`, no vertical bar on ANY standard point, the legend naming the bar as a
+replicate AREA SD whenever such a bar is drawn, and — with an `sd` that reaches past the frame —
+a bar clipped to the main axes instead of running over the margins.  It therefore FAILS on the
+pre-ep-bqv.7 renderer that still draws the vertical form.
+
+`check_bar_free_without_replicates` covers the other half: points without a replicate, points
+whose `sd` is 0, and even an `n = 1` point whose JSON happens to carry an `sd` show no bar stroke
+at all, and the `sd = 0` curve renders byte-identically to the same curve without replicates (so
+taking the bar code path draws nothing and the legend stays put).  Those negative assertions are
+CONTIGUOUS-RUN tests (`_longest_run`), not per-pixel colour presence: the fitted line anti-aliases
+against white and, where its diagonal edge crosses a marker's row, leaves a single pixel whose
+blend lands within the bar colour's tolerance — a `_has()`-style window counts that as a bar.
+A real stem/cap is >= `_BAR_STEM_MIN` px of unbroken stroke, while every non-bar artifact in the
+picture (fitted line, axis frame, residual stems, ticks) tops out at 2 px, and `check_error_bars`
+plus the positive control inside the bar-free check prove the same predicates DO fire on a real
+bar, so the negative side cannot be satisfied by a renderer that draws nothing anywhere.
 
 Run:  PYTHONPATH=src python3 -m ep_craft.selftest_plot_curve_acceptance
 `run()` returns the number of passed checks and prints `selftest_plot_curve_acceptance N/N 通过`.
@@ -49,15 +63,6 @@ from . import text_layout
 KIND = densitometry.CURVE_KIND
 QUANT_KIND = "ep-craft-densitometry-quant"
 WHITE = (255, 255, 255)
-
-# Known contract conflicts this suite must NOT settle on its own (reported to the lead/ticket).
-ERROR_BAR_CONFLICT = (
-    "sd-axis",
-    "§4.7 / ep-bqv.4 的验收要的是竖直（质量轴）误差棒，而 curve.points[].sd 是重复点【面积】"
-    "（gray*cm，§4.5）的离散度。渲染器把 sd 原样画在 %s 轴上，棒半长读作 %s；两种读法在像素上"
-    "差 6 倍以上。要么改成面积轴上的水平棒，要么由 curve 提供质量单位的 sd——"
-    "需要 spec/工单拍板，本套件只验证渲染器与自己的合同自洽，不替它挑。",
-)
 
 
 # ---------------------------------------------------------------- public API guard
@@ -816,157 +821,341 @@ def check_points_and_dropped():
 
 # ---------------------------------------------------------------- 6) replicate error bars
 
-def check_error_bars():
-    """A repeat point (n>1, sd) carries a vertical bar whose ends reach the sd in MASS units and
-    whose caps straddle the stem; n=1 points carry no bar.
+# A drawn bar stroke (stem or cap) is a continuous rule tens of pixels long; the longest
+# horizontal run of bar-coloured pixels anywhere else in the picture — anti-aliased fitted line,
+# axis frame, residual stems, tick text — is at most 2 px, so 8 px tells a stroke from noise
+# without any dependency on which pixels a particular diagonal happens to touch.
+_BAR_STEM_MIN = 8
+# The bar must be long enough to read as a bar rather than to be confused with the marker.
+_BAR_REACH_MIN = 20.0
 
-    NOTE (contract conflict, documented in the ticket): `curve.points[].sd` is the spread of the
-    replicate AREAS (gray*cm), while §4.7 / this ticket ask for y-error bars, i.e. a spread in
-    MASS.  The renderer takes the literal §4.7 reading (sd on the vertical mass axis); this check
-    therefore verifies the literal vertical form ONLY and does not bless it as the correct
-    science.  The conflict is reported separately to the lead.
+
+def _bar_half(geo, sd):
+    """`sd` — a spread in AREA units (gray*cm, §4.5) — as a length along the x axis, in pixels."""
+    box = geo["main_box"]
+    lo, hi = geo["x_range"]
+    return abs(float(sd)) / (hi - lo) * (box[2] - box[0])
+
+
+def _rows_with(pic, colour, box, tol=8):
+    """How many rows of `box` carry at least one pixel of `colour` (a cap's height)."""
+    x0, y0, x1, y1 = _window(box, pic.w, pic.h)
+    rows = 0
+    for yy in range(y0, y1 + 1):
+        if any(_match(pic.rgb, (yy * pic.w + xx) * 3, colour, tol)
+               for xx in range(x0, x1 + 1)):
+            rows += 1
+    return rows
+
+
+def _longest_run(pic, colour, box, axis="x", tol=8):
+    """Longest CONTIGUOUS run of `colour` pixels inside `box`, in pixels, scanning rows (`axis`="x")
+    or columns (`axis`="y"); plus the row/column and the two ends of that run.
+
+    A bar stroke is a continuous rule (tens of pixels long); a fitted line crossing the same
+    band leaves ONE anti-aliased pixel per row (its blend with white can land within `tol` of the
+    bar colour, which is how a per-pixel `_has` negative assertion produced a false positive at
+    point 20 of the linear fixture).  A run length separates the two exactly, so the negative
+    assertions below stay strict without depending on which pixels a diagonal happens to touch.
     """
-    dens_plot = _plot()
-    axis = str(getattr(dens_plot, "ERROR_BAR_AXIS", "y"))
-    assert axis == "y", \
-        "§4.7 与工单验收要求竖直（质量轴）误差棒，渲染器的 ERROR_BAR_AXIS 却是 %r；" \
-        "sd 的单位与轴对不上，见 check_error_bar_axis_conflict 与 ERROR_BAR_CONFLICT" % (axis,)
-    colours = _colours()
-    curve = _linear_curve()
-    reps = [p for p in curve["points"] if p["used"] and p["n"] and p["n"] > 1]
-    assert reps, "fixture 该有一个重复点（n=2）"
-    single = [p for p in curve["points"] if p["used"] and not (p["n"] and p["n"] > 1)]
-    with tempfile.TemporaryDirectory() as td:
-        png, _w, _h, geo = _api_render(td, curve, name="bars.png")
-        pic = _Pic(png)
-        box = geo["main_box"]
-        radius = 6.0                        # POINT_R: the bar must be visible outside it
-        for point in reps:
-            x, y = _x(geo, point["volume"]), _y(geo, point["mass"])
-            half = abs(point["sd"]) / geo["y_range"][1] * (box[3] - box[1])
-            assert half >= radius + 3.0, \
-                "fixture 的误差棒只有 %.1f px，看不出（半径 %.0f）" % (half, radius)
-            for sign in (-1, +1):
-                rows = (y + sign * (radius + 2), y + sign * max(radius + 2, half - 1))
-                assert _has(pic, colours["err"], (x - 2, min(rows), x + 2, max(rows)), tol=8), \
-                    "重复点 %g 在 %s 方向没有伸出点的误差棒" % (
-                        point["mass"], "上" if sign < 0 else "下")
-                # the bar ENDS at sd: a cap (a short horizontal stroke) sits on the sd row, and
-                # nothing of the bar colour is found past it
-                cap_y = y - sign * half
-                # the cap is the short horizontal stroke at the sd row: look OUTSIDE the stem
-                # (|dx| >= 2) so the stem itself cannot satisfy this check
-                for side in (-1, +1):
-                    assert _has(pic, colours["err"],
-                                (x + side * 6.0, cap_y - 1, x + side * 2.0, cap_y + 1), tol=8), \
-                        "重复点 %g 的误差棒在 sd 处没有端帽（y=%.1f, 侧 %d）" % (
-                            point["mass"], cap_y, side)
-                past = y - sign * (half + 4.0)
-                assert not _has(pic, colours["err"], (x - 2, min(past, past), x + 2, past), tol=8), \
-                    "重复点 %g 的误差棒伸过了 sd（y=%.1f 还有棒色）" % (point["mass"], past)
-        for point in single:
-            x, y = _x(geo, point["volume"]), _y(geo, point["mass"])
-            half = 12.0                     # a bar would be obvious just outside the radius
-            for sign in (-1, +1):
-                assert not _has(pic, colours["err"],
-                                (x - 1, y + sign * (radius + 2), x + 1,
-                                 y + sign * (radius + half)), tol=8), \
-                    "n=1 的点 %g 也画了误差棒" % point["mass"]
+    x0, y0, x1, y1 = _window(box, pic.w, pic.h)
+    best, at = 0, None
+    if axis == "x":
+        for yy in range(y0, y1 + 1):
+            base = yy * pic.w
+            run = 0
+            for xx in range(x0, x1 + 1):
+                if _match(pic.rgb, (base + xx) * 3, colour, tol):
+                    run += 1
+                    if run > best:
+                        best, at = run, (yy, xx - run + 1, xx)
+                else:
+                    run = 0
+    else:
+        for xx in range(x0, x1 + 1):
+            run = 0
+            for yy in range(y0, y1 + 1):
+                if _match(pic.rgb, (yy * pic.w + xx) * 3, colour, tol):
+                    run += 1
+                    if run > best:
+                        best, at = run, (xx, yy - run + 1, yy)
+                else:
+                    run = 0
+    return best, at
+
+
+def _no_horizontal_bar(pic, colour, x, y, near=9.0, far=60.0, tol=8):
+    """True when no row through `y` carries a horizontal bar stroke on either side of `x`.
+
+    A drawn bar (stem + caps) is a continuous run of the bar colour at least `_BAR_STEM_MIN`
+    pixels long somewhere in `y±2` between `near` and `far` from the marker; anti-aliasing of a
+    fitted line, a guide or the axes frame gives isolated pixels only.
+    """
+    for sign in (-1, +1):
+        for dy in (-2.0, -1.0, 0.0, 1.0, 2.0):
+            run, _at = _longest_run(pic, colour,
+                                    (min(x + sign * near, x + sign * far), y + dy,
+                                     max(x + sign * near, x + sign * far), y + dy), tol=tol)
+            if run >= _BAR_STEM_MIN:
+                return False
     return True
 
 
-# ---------------------------------------------------------------- 6b) the sd-axis conflict
-
-def _probe(x, y, distance, along, thickness=2):
-    """A thin probe box `distance` px from (x, y), centred on both sides along `along`."""
-    boxes = []
+def _no_vertical_bar(pic, colour, x, y, near=6.0, far=60.0, tol=8):
+    """True when no column through `x` carries a vertical bar stroke above or below `y`."""
     for sign in (-1, +1):
-        if along == "y":
-            boxes.append((x - thickness, y + sign * (distance - 1), x + thickness,
-                          y + sign * (distance + 1)))
-        else:
-            boxes.append((x + sign * (distance - 1), y - thickness,
-                          x + sign * (distance + 1), y + thickness))
-    return boxes
+        for dx in (-1.0, 0.0, 1.0):
+            run, _at = _longest_run(pic, colour,
+                                    (x + dx, min(y + sign * near, y + sign * far),
+                                     x + dx, max(y + sign * near, y + sign * far)),
+                                    axis="y", tol=tol)
+            if run >= _BAR_STEM_MIN:
+                return False
+    return True
 
 
-def _span(pic, colour, box):
-    """How far `colour` reaches across `box` on its long side (a cap's width)."""
-    x0, y0, x1, y1 = _window(box, pic.w, pic.h)
-    reached = 0
-    if x1 - x0 >= y1 - y0:                       # measure the horizontal extent
-        for xx in range(x0, x1 + 1):
-            if any(_match(pic.rgb, (yy * pic.w + xx) * 3, colour, 8)
-                   for yy in range(y0, y1 + 1)):
-                reached += 1
-    else:
-        for yy in range(y0, y1 + 1):
-            if any(_match(pic.rgb, (yy * pic.w + xx) * 3, colour, 8)
-                   for xx in range(x0, x1 + 1)):
-                reached += 1
-    return reached
+def _bar_span(geo, x, half):
+    """The horizontal pixel span a correct renderer draws a bar over: `x ± half`, clipped to the
+    axes frame exactly as `_bar_extent` does (the frame wins when `sd` reaches past it)."""
+    box = geo["main_box"]
+    return max(x - half, box[0] + 2.0), min(x + half, box[2] - 2.0)
 
 
-def check_error_bar_axis_conflict():
-    """The sd bar is drawn on ONE axis, consistently with that axis' own scale.
+def _assert_horizontal_bar(pic, geo, point, colours, label):
+    """One replicate point's bar: a 2-px horizontal stem out to `sd` on both sides, on the point's
+    own row, a cap across each end, nothing past `sd`, and nothing vertical (ep-bqv.7)."""
+    radius = 6.0                       # POINT_R: the bar starts at the rim of the circle
+    x, y = _x(geo, point["volume"]), _y(geo, point["mass"])
+    half = _bar_half(geo, abs(float(point["sd"])))
+    left, right = _bar_span(geo, x, half)
+    assert half >= radius + _BAR_REACH_MIN, \
+        "%s: 重复点 %g 的 sd 在面积轴上只有 %.1f px，看不出是横向棒" % (label, point["mass"], half)
+    assert x - left >= radius + 2.0 and right - x >= radius + 2.0, \
+        "%s: 重复点 %g 的棒被轴框裁掉了（左 %.1f / 右 %.1f px）" % (
+            label, point["mass"], x - left, right - x)
 
-    This is the separate, deliberately lenient record of the conflict described in
-    `ERROR_BAR_CONFLICT`: whichever axis the renderer names in `ERROR_BAR_AXIS`, the bar must be
-    a bar on THAT axis — ink from the point's rim out to the sd, a cap across the sd, and no ink
-    at the other axis' reading of the same sd.  Passing does not mean the science is settled.
-    """
-    dens_plot = _plot()
-    axis = str(getattr(dens_plot, "ERROR_BAR_AXIS", ""))
-    assert axis in ("x", "y"), \
-        "dens_plot.ERROR_BAR_AXIS 该是 'x' 或 'y'，实际 %r（套件不知道 sd 画在哪根轴上）" % (axis,)
-    other_axis = "x" if axis == "y" else "y"
+    for sign, side, reach in ((-1, "左", x - left), (+1, "右", right - x)):
+        # the stem: a CONTINUOUS ERR-coloured rule from the circle's rim out to the cap, on the
+        # point's own row — a real stem is solid, so (nearly) the whole span must be one run;
+        # the fitted line crossing it punches out a few pixels, which the slack covers
+        near, far = x + sign * (radius + 3.0), x + sign * (reach - 2.0)
+        width = max(near, far) - min(near, far)
+        run, at = _longest_run(pic, colours["err"],
+                               (min(near, far), y - 1.0, max(near, far), y + 1.0), tol=8)
+        assert run >= width - 6.0 and at is not None and abs(at[0] - y) <= 2.0, \
+            "%s: 重复点 %g 的%s侧没有从圆边伸到 sd 的连续横向棒（x %.1f~%.1f，最长连续 %d px）" % (
+                label, point["mass"], side, min(near, far), max(near, far), run)
+        # the cap: a stroke across the bar at the end, i.e. several rows of ERR ink
+        cap_x = x + sign * reach
+        rows = _rows_with(pic, colours["err"],
+                          (cap_x - 2.0, y - 9.0, cap_x + 2.0, y + 9.0), tol=8)
+        assert rows >= 7, \
+            "%s: 重复点 %g 的横向棒在%s端（x=%.1f）没有贯穿的端帽（只有 %d 行）" % (
+                label, point["mass"], side, cap_x, rows)
+        # nothing past sd: no stroke (only stray anti-aliased pixels are tolerated here)
+        past_near, past_far = x + sign * (reach + 4.0), x + sign * (reach + 24.0)
+        run, _at = _longest_run(pic, colours["err"],
+                                (min(past_near, past_far), y - 1.0,
+                                 max(past_near, past_far), y + 1.0), tol=8)
+        assert run < _BAR_STEM_MIN, \
+            "%s: 重复点 %g 的横向棒伸过了 sd（x=%.1f 以外还有 %d px 的连续棒色）" % (
+                label, point["mass"], x + sign * reach, run)
+    # and no vertical bar at all: a mass-united sd (or the literal §4.7 form) would put a
+    # stroke above/below the marker, which the renderer must not draw any more
+    assert _no_vertical_bar(pic, colours["err"], x, y, near=radius + 2.0, far=60.0), \
+        "%s: 重复点 %g 在上/下方向仍有竖直误差棒（ep-bqv.7 要求横向、沿面积轴）" % (
+            label, point["mass"])
+    # positive control for the negative helpers: the very same `_no_horizontal_bar` /
+    # `_no_vertical_bar` predicates the bar-free check relies on must REJECT this drawn bar, so a
+    # renderer that really drew one at an n=1 point could never slip past them
+    assert not _no_horizontal_bar(pic, colours["err"], x, y), \
+        "%s: 同一套负向断言没有认出这根真棒——负向断言被削得太弱" % label
+    return True
+
+
+def check_error_bars():
+    """A replicate point (n>1, sd) carries a HORIZONTAL bar along the area axis (ep-bqv.7):
+    a solid 2-px stem from the circle's rim out to `sd` on both sides at the point's own row,
+    a cap across the bar at each end, nothing past `sd`, nothing vertical at any point, and — when
+    `sd` reaches past the frame — the bar clipped to the main axes instead of running over the
+    margins.  The legend names the bar as a replicate AREA SD whenever such a bar is drawn."""
     colours = _colours()
     curve = _linear_curve()
     reps = [p for p in curve["points"] if p["used"] and p["n"] and p["n"] > 1]
     assert reps, "fixture 该有一个重复点（n=2）"
     with tempfile.TemporaryDirectory() as td:
-        png, _w, _h, geo = _api_render(td, curve, name="axis.png")
+        png, _w, _h, geo = _api_render(td, curve, name="bars.png")
         pic = _Pic(png)
-        box, radius = geo["main_box"], 6.0
         for point in reps:
+            _assert_horizontal_bar(pic, geo, point, colours, "横向误差棒")
+        # no vertical bar on ANY standard point — neither an n=1 point, nor a dropped one (a
+        # renderer that still drew the pre-ep-bqv.7 vertical form fails here on every point)
+        for point in curve["points"]:
             x, y = _x(geo, point["volume"]), _y(geo, point["mass"])
-            sd = abs(float(point["sd"]))
-            half = {"x": sd / geo["x_range"][1] * (box[2] - box[0]),
-                    "y": sd / geo["y_range"][1] * (box[3] - box[1])}
-            assert abs(half["x"] - half["y"]) > 20.0, \
-                "两种读法的棒长只差 %.2f px（x %.2f / y %.2f），这个 fixture 分辨不出用了哪根轴" % (
-                    abs(half["x"] - half["y"]), half["x"], half["y"])
-            own, other = half[axis], half[other_axis]
-            assert own >= radius + 4.0, "sd 在 %s 轴上只有 %.1f px，看不出" % (axis, own)
+            assert _no_vertical_bar(pic, colours["err"], x, y), \
+                "标准点 %g 在上/下方向有竖直棒色（ep-bqv.7 要求横向、沿面积轴）" % point["mass"]
+        # the legend says WHICH spread the bar is: area units, not mass units
+        assert "replicate area SD" in geo["legend"], \
+            "有重复棒时图例没有说明棒是面积 SD：%r" % (geo["legend"],)
+        assert "replicate SD" not in geo["legend"].replace("replicate area SD", ""), \
+            "图例里残留了旧的 `replicate SD` 说法：%r" % (geo["legend"],)
 
-            # the bar runs from just outside the rim out to the sd, on the named axis
-            for sign in (-1, +1):
-                if axis == "y":
-                    span = (x - 2, min(y + sign * (radius + 2), y + sign * (own - 1)),
-                            x + 2, max(y + sign * (radius + 2), y + sign * (own - 1)))
-                else:
-                    span = (min(x + sign * (radius + 2), x + sign * (own - 1)), y - 2,
-                            max(x + sign * (radius + 2), x + sign * (own - 1)), y + 2)
-                assert _has(pic, colours["err"], span, tol=8), \
-                    "ERROR_BAR_AXIS=%s，但 %s 方向半径外到 sd（%.1f px）之间没有棒色" % (
-                        axis, "上下" if axis == "y" else "左右", own)
+        # clipping: an sd that reaches past the frame must be clipped to the main axes
+        wide = _linear_curve()
+        wide["points"][2]["sd"] = 40.0
+        wpng, _ww, _wh, wgeo = _api_render(td, wide, name="clipped.png")
+        wpic = _Pic(wpng)
+        box = wgeo["main_box"]
+        point = wide["points"][2]
+        x, y = _x(wgeo, point["volume"]), _y(wgeo, point["mass"])
+        half = _bar_half(wgeo, point["sd"])
+        left, right = _bar_span(wgeo, x, half)
+        assert x - half < box[0] and x + half > box[2], \
+            "fixture 该让棒伸出轴框（half=%.1f, 轴 %.1f~%.1f）" % (half, box[0], box[2])
+        assert abs(left - (box[0] + 2.0)) < 0.5 and abs(right - (box[2] - 2.0)) < 0.5, \
+            "被裁的棒没有夹到轴框的裁剪线（%.1f / %.1f vs %.1f / %.1f）" % (
+                left, right, box[0] + 2.0, box[2] - 2.0)
+        for side, end, sign in (("左", left, -1), ("右", right, +1)):
+            run, at = _longest_run(wpic, colours["err"],
+                                   (min(x + sign * 10.0, end + sign * 3.0), y - 1.0,
+                                    max(x + sign * 10.0, end + sign * 3.0), y + 1.0), tol=8)
+            assert run >= abs(end - x) - 30.0, \
+                "被裁的棒在%s侧没有一直画到轴框（最长连续 %d px）" % (side, run)
+            rows = _rows_with(wpic, colours["err"], (end - 2.0, y - 9.0, end + 2.0, y + 9.0))
+            assert rows >= 7, "被裁的棒在%s端的裁剪处没有端帽（只有 %d 行）" % (side, rows)
+        # and it stops at the frame: no bar stroke outside the axes box
+        for label, margin in (("左", (min(box[0] - 40.0, 0.0), box[1], box[0] - 3.0, box[3])),
+                              ("右", (box[2] + 3.0, box[1], min(box[2] + 40.0, wpic.w - 1.0),
+                                      box[3]))):
+            run, at = _longest_run(wpic, colours["err"], margin, tol=8)
+            assert run < _BAR_STEM_MIN, \
+                "棒色画到了主轴%s侧的画布留白里（最长连续 %d px，行 %r）" % (label, run, at)
+        assert _no_vertical_bar(wpic, colours["err"], x, y), \
+            "被裁的重复点仍有竖直棒色"
+    return True
 
-            # the cap: a stroke wider than the stem, sitting exactly on the sd
-            for sign in (-1, +1):
-                if axis == "y":
-                    cap = (x - 9, y + sign * own - 1, x + 9, y + sign * own + 1)
-                else:
-                    cap = (x + sign * own - 1, y - 9, x + sign * own + 1, y + 9)
-                assert _span(pic, colours["err"], cap) >= 7, \
-                    "误差棒的端帽不压在 sd 上（%s=%.1f 处横跨只有 %d px）" % (
-                        "y" if axis == "y" else "x", own, _span(pic, colours["err"], cap))
 
-            # and NOTHING at the other axis' reading of the same sd: drawing both readings at
-            # once is the one thing this check must refuse
-            for probe in _probe(x, y, abs(other), other_axis):
-                assert not _has(pic, colours["err"], probe, tol=8), \
-                    "ERROR_BAR_AXIS=%s，但另一根轴读数 %.1f px 处也有棒色（两种读法混画）" % (
-                        axis, other)
+def _no_replicate_pair():
+    """The same linear curve twice: with no replicate at all, and with sd = 0 on every point
+    (n = 2, so a renderer takes its bar code path and must draw nothing)."""
+    flat = _linear_curve()
+    for point in flat["points"]:
+        point["n"] = 1
+        point["sd"] = None
+        point["cv_pct"] = None
+    zero = _linear_curve()
+    for point in zero["points"]:
+        point["n"] = 2
+        point["sd"] = 0.0
+        point["cv_pct"] = 0.0
+    return flat, zero
+
+
+def _bar_expectations(geo, point):
+    """(x, y, half, left, right) of a replicate point's bar, recomputed from the published frame."""
+    box = geo["main_box"]
+    x, y = _x(geo, point["volume"]), _y(geo, point["mass"])
+    half = _bar_half(geo, abs(float(point["sd"])))
+    return x, y, half, max(x - half, box[0] + 2.0), min(x + half, box[2] - 2.0)
+
+
+def _bar_free(pic, colours, geo, point, label):
+    """Assert that `point`'s place in the picture carries no bar stroke at all.
+
+    Anti-aliasing safety: the assertion is a CONTIGUOUS-RUN test, not per-pixel presence, so the
+    fitted line's diagonal edge (one bar-coloured pixel per row where it crosses the marker's
+    band) cannot trip it, while a drawn stem or cap (a rule >= `_BAR_STEM_MIN` px long) does.
+    """
+    x, y = _x(geo, point["volume"]), _y(geo, point["mass"])
+    assert _no_horizontal_bar(pic, colours["err"], x, y), \
+        "%s %g 在左/右方向画出了横向棒色（没有重复就没棒）" % (label, point["mass"])
+    assert _no_vertical_bar(pic, colours["err"], x, y), \
+        "%s %g 在上/下方向画出了竖直棒色（没有重复就没棒）" % (label, point["mass"])
+
+
+def check_bar_free_without_replicates():
+    """Points that carry no bar really carry none: n = 1 points and dropped points show no bar
+    stroke, a curve whose `sd` is 0 renders byte-identically to the same curve with no replicate
+    (taking the bar code path draws nothing), and an n = 1 point that still carries a non-zero
+    `sd` in the JSON draws no bar either (the bar is gated on the replicate count, not on `sd`).
+
+    The negative assertion is a contiguous-run test: a real stem/cap is a solid rule >= 8 px long,
+    while anti-aliasing of the fitted line contributes isolated 1 px hits (see `_longest_run`).
+    The same helpers are proven to FIRE on a real bar in `check_error_bars` and in the positive
+    control at the end of this check, so this check cannot pass a renderer that draws bars.
+    """
+    colours = _colours()
+    flat, zero = _no_replicate_pair()
+    singles = [p for p in flat["points"] if p["used"]] + \
+              [p for p in flat["points"] if not p["used"]]
+    dropped = [p for p in flat["points"] if not p["used"]]
+    assert singles and dropped, "fixture 该同时有 n=1 的标准点和弃用点"
+    with tempfile.TemporaryDirectory() as td:
+        png, _w, _h, geo = _api_render(td, flat, name="flat.png")
+        pic = _Pic(png)
+        for point in singles:
+            label = "弃用点" if not point["used"] else "n=1 的点"
+            _bar_free(pic, colours, geo, point, label)
+        assert "replicate area SD" not in geo["legend"], \
+            "没有重复棒的标曲，图例却写上了面积误差棒（%r）" % (geo["legend"],)
+
+        zero_png, zw, zh, zgeo = _api_render(td, zero, name="zero-sd.png")
+        assert _bytes(png) == _bytes(zero_png), \
+            "sd=0（走误差棒代码路径）与没有重复点的同一标曲渲染出的 PNG 不一致——" \
+            "零离散度也画了东西"
+        assert (zw, zh) == (_w, _h) and zgeo["x_range"] == geo["x_range"], \
+            "sd=0 的坐标轴范围与无重复点的不一致：%r vs %r" % (
+                zgeo["x_range"], geo["x_range"])
+        assert zgeo["legend"] == geo["legend"], \
+            "sd=0 的图例与无重复点的不一致：%r vs %r" % (zgeo["legend"], geo["legend"])
+        zpic = _Pic(zero_png)
+        for point in zero["points"]:
+            if not point["used"]:
+                continue
+            _bar_free(zpic, colours, zgeo, point, "sd=0 的点")
+
+        # an n = 1 point whose JSON still carries an sd (a hand-edited or third-party curve) must
+        # not grow a bar: `n` decides, not the mere presence of `sd`
+        odd, _x0 = _no_replicate_pair()
+        odd["points"][1]["sd"] = 0.849
+        odd["points"][1]["cv_pct"] = 14.63
+        odd_png, _ow, _oh, ogeo = _api_render(td, odd, name="sd-without-n.png")
+        opic = _Pic(odd_png)
+        _bar_free(opic, colours, ogeo, odd["points"][1], "n=1 却带 sd 的点")
+        assert "replicate area SD" not in ogeo["legend"], \
+            "n=1 的点被当成重复点，图例写上了面积误差棒（%r）" % (ogeo["legend"],)
+        assert _bytes(odd_png) == _bytes(png), \
+            "n=1 的点被写了个 sd，渲染结果却与完全没有 sd 时不同——sd 绕过了 n 的门槛"
+
+        # a DROPPED point can carry a replicate pair in the JSON as well (its lanes were
+        # replicates, it was then dropped from the fit): it still must show no bar, and the
+        # picture must be identical to the same curve whose dropped point has no replicate
+        dropped_reps, _d = _no_replicate_pair()
+        dropped_reps["points"][0]["n"] = 2
+        dropped_reps["points"][0]["sd"] = 0.849
+        dropped_reps["points"][0]["cv_pct"] = 14.63
+        d_png, _dw, _dh, dgeo = _api_render(td, dropped_reps, name="dropped-reps.png")
+        dpic = _Pic(d_png)
+        _bar_free(dpic, colours, dgeo, dropped_reps["points"][0], "带重复的弃用点")
+        assert "replicate area SD" not in dgeo["legend"], \
+            "只有弃用点带重复时图例写上了面积误差棒（%r）" % (dgeo["legend"],)
+        assert _bytes(d_png) == _bytes(png), \
+            "弃用点带了个重复对，渲染结果却与没有重复时不同——弃用点画了棒"
+
+        # positive control: the SAME helpers must find the bar on the bar-bearing fixture, so a
+        # renderer that drew nothing anywhere could not sneak past the negative assertions
+        reps = _linear_curve()
+        rep = [p for p in reps["points"] if p["used"] and p["n"] and p["n"] > 1][0]
+        rpng, _rw, _rh, rgeo = _api_render(td, reps, name="control.png")
+        rpic = _Pic(rpng)
+        rx, ry, rhalf, rleft, rright = _bar_expectations(rgeo, rep)
+        assert max(rx - rleft, rright - rx) > 40.0, "对照组该有一根读得出的横向棒"
+        for sign in (-1, +1):
+            stem = rx + sign * (6.0 + 3.0), rx + sign * (max(rx - rleft, rright - rx) - 2.0)
+            assert not _no_horizontal_bar(rpic, colours["err"], rx, ry) and \
+                _longest_run(rpic, colours["err"],
+                             (min(stem), ry - 1.0, max(stem), ry + 1.0), tol=8)[0] >= 20, \
+                "对照组：重复点的横向棒没有被同一套断言认出来（负向断言可能被削太弱）"
     return True
 
 
@@ -1608,7 +1797,7 @@ CHECKS = [
     check_fit_line_wide_frame,
     check_points_and_dropped,
     check_error_bars,
-    check_error_bar_axis_conflict,
+    check_bar_free_without_replicates,
     check_residuals,
     check_annotation,
     check_geometry_and_frames,
@@ -1631,10 +1820,6 @@ def run():
     for check in CHECKS:
         check()
     print("selftest_plot_curve_acceptance %d/%d 通过" % (len(CHECKS), len(CHECKS)))
-    name, template = ERROR_BAR_CONFLICT
-    axis = str(getattr(dens_plot, "ERROR_BAR_AXIS", "?"))
-    reading = "质量（mass）" if axis == "y" else "面积（area）"
-    print("注意：已知契约冲突 %s —— %s" % (name, template % (axis, reading)))
     return len(CHECKS)
 
 

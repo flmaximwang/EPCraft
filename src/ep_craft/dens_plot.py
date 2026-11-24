@@ -14,7 +14,7 @@ the dens dict (`densitometry.measure` owns the arithmetic).  The picture is draw
 ImageMagick only (MVG script → `magick -draw @file`), so `plot-*` stays offline.
 
 `plot_curve(curve, out, quant=None, width=1600)` draws curve.json (spec §4.5) on log-free
-linear axes — standard points with their replicate bars, dropped points hollow, the fitted
+linear axes — standard points with their replicate area bars, dropped points hollow, the fitted
 model over the calibrated span plus its ±10 % dashed extension, and a residual strip under the
 main axes that shares the volume axis.  With a quant dict the sample bands appear as squares,
 so one picture shows what the curve predicts against what the samples actually measured.
@@ -1022,7 +1022,7 @@ def plot_bands(dens, out, baseline="both", lanes=None, cols=3, width=2400):
 # ---------------------------------------------------------------- plot-curve (ticket ep-bqv.4)
 #
 # `plot_curve(curve, out, quant=None, width=1600)` draws curve.json (spec §4.5) on log-free
-# linear axes: the standard points as filled circles with their replicate bars, dropped points
+# linear axes: the standard points as filled circles with their replicate area bars, dropped
 # hollow, the fitted model across the calibrated range and its ±10 % extension, and a residual
 # strip under the main axes that shares the volume axis.  A curve that looks fine but has one
 # point 12 % off is exactly what a terminal table hides, so the picture — not the r² — is what
@@ -1049,7 +1049,7 @@ SAMPLE_STROKE_RGB = (7, 82, 44)
 OOR_RGB = (148, 58, 168)           # out-of-range sample: hollow square on the x axis
 ZERO_RGB = (60, 60, 60)            # residual strip zero line
 GUIDE_RGB = (150, 150, 150)        # residual strip ±10 % guides (dashed)
-ERR_RGB = (105, 105, 105)          # replicate bars / residual stems
+ERR_RGB = (105, 105, 105)          # replicate area bars / residual stems
 CURVE_FRAME_RGB = GRID_RGB
 
 CURVE_TITLE_FONT = 24
@@ -1062,6 +1062,8 @@ MARK_FONT = 15
 POINT_R = 6.0                      # standard point radius
 SAMPLE_HALF = 5.0                  # sample square half side
 RESID_R = 4.0                      # residual marker radius
+ERR_BAR_MIN_PX = 1.0               # a replicate bar shorter than this is not drawn (so it must
+                                   # not be announced in the legend either)
 
 ANN_STEP = 20
 TOP_PAD = 16
@@ -1072,15 +1074,13 @@ GUIDE_LABEL_MIN = 15.0             # px between the ±10 % guides and the zero l
                                    # labels; closer than that and one band note is used instead
 ANN_GAP = 20
 
-# SPEC CONFLICT (units), flagged to the lead: `curve.points[].sd` is the sample SD of the
-# replicate AREAS (`volume`, gray*cm) — `build_curve` collapses replicates by mass and computes
-# the SD over `volume`.  §4.7 and this ticket ask for VERTICAL y-error bars, i.e. the same
-# number drawn as a mass uncertainty; the units do not match, and the vertical form must not be
-# read as a mass uncertainty.  The literal vertical drawing is the default because the plotting
-# contract asks for it; the axis treatment is isolated here on purpose so review can flip it:
-#   "y" -> vertical bars on the mass axis (literal §4.7 / ticket wording; current behaviour)
-#   "x" -> horizontal bars on the volume axis, the unit `sd` actually has
-ERROR_BAR_AXIS = "y"
+# `curve.points[].sd` is the sample SD of the replicate AREAS (`volume`, gray*cm) — `build_curve`
+# collapses replicates by mass and computes the SD over `volume` — so a replicate bar is drawn on
+# the AREA axis only, horizontally.  Settled by the user on 2026-11-24 (ticket ep-bqv.7): the
+# earlier literal §4.7 reading (a vertical bar on the mass axis) drew an area spread as a mass
+# uncertainty, which is not the same quantity.  Kept as a named constant so the axis stays
+# explicit at the call site; `_error_bar` still supports both orientations.
+ERROR_BAR_AXIS = "x"
 
 
 # ---------------------------------------------------------------- plot-curve: validation
@@ -1400,31 +1400,62 @@ def _boxes_touch(a, b, pad=3.0):
             and a[3] + pad > b[1] and b[3] + pad > a[1])
 
 
-def _error_bar(sh, cx, cy, half_px, box, horizontal=False):
-    """Replicate bar through a standard point, with small caps (see ERROR_BAR_AXIS).
+def _bar_extent(center, half_px, box, horizontal):
+    """The pixel span a replicate bar would cover, or None when it is too short to draw.
 
-    The bar is clipped to the axes `box`: a bar longer than the axis must not run out of the
-    plot and across the header (with a single low-mass standard point, `sd` can cover the whole
-    y range).
+    This is the ONE place that decides whether a bar is visible: `_error_bar` draws only what
+    this returns a span for, and `curve_layout` asks the same question through
+    `_has_error_bar`, so the legend can never announce bars the renderer skips (ticket
+    ep-bqv.7: a point with `n=2, sd=0` carries replicates but draws nothing).  The span is
+    clipped to the axes `box`: a bar longer than the axis must not run out of the plot and
+    across the header (with a single low-mass standard point, `sd` can cover the whole range).
     """
-    if half_px <= 1.0:
+    if half_px <= ERR_BAR_MIN_PX:
+        return None
+    lo_box, hi_box = ((box[0] + 2.0, box[2] - 2.0) if horizontal
+                      else (box[1] + 2.0, box[3] - 2.0))
+    lo, hi = max(center - half_px, lo_box), min(center + half_px, hi_box)
+    if hi - lo <= 1.0:
+        return None
+    return lo, hi
+
+
+def _error_bar(sh, cx, cy, half_px, box, horizontal=False):
+    """Replicate AREA bar through a standard point, with small caps (see ERROR_BAR_AXIS).
+
+    The bar is clipped to the axes `box` (see `_bar_extent`); a bar too short to read is not
+    drawn at all.
+    """
+    span = _bar_extent(cx if horizontal else cy, half_px, box, horizontal)
+    if span is None:
         return
+    lo, hi = span
     cap = 5.0
-    bx0, by0, bx1, by1 = box
     if horizontal:
-        x0, x1 = max(cx - half_px, bx0 + 2.0), min(cx + half_px, bx1 - 2.0)
-        if x1 - x0 <= 1.0:
-            return
-        _hrule(sh, x0, x1, cy, ERR_RGB, width=2)
-        _vrule(sh, x0, cy - cap, cy + cap, ERR_RGB, width=2)
-        _vrule(sh, x1, cy - cap, cy + cap, ERR_RGB, width=2)
+        _hrule(sh, lo, hi, cy, ERR_RGB, width=2)
+        _vrule(sh, lo, cy - cap, cy + cap, ERR_RGB, width=2)
+        _vrule(sh, hi, cy - cap, cy + cap, ERR_RGB, width=2)
     else:
-        y0, y1 = max(cy - half_px, by0 + 2.0), min(cy + half_px, by1 - 2.0)
-        if y1 - y0 <= 1.0:
-            return
-        _vrule(sh, cx, y0, y1, ERR_RGB, width=2)
-        _hrule(sh, cx - cap, cx + cap, y0, ERR_RGB, width=2)
-        _hrule(sh, cx - cap, cx + cap, y1, ERR_RGB, width=2)
+        _vrule(sh, cx, lo, hi, ERR_RGB, width=2)
+        _hrule(sh, cx - cap, cx + cap, lo, ERR_RGB, width=2)
+        _hrule(sh, cx - cap, cx + cap, hi, ERR_RGB, width=2)
+
+
+def _bar_half(axes, sd):
+    """Pixel half-length of a replicate bar for `sd`, on the axis ERROR_BAR_AXIS names."""
+    sd = abs(float(sd))
+    if ERROR_BAR_AXIS == "x":                          # sd is an AREA spread
+        return abs(axes.x(sd) - axes.x(0.0))
+    return abs(axes.y(sd) - axes.y(0.0))
+
+
+def _has_error_bar(axes, point, box):
+    """True when `_error_bar` would actually draw something for this laid-out point."""
+    if not point["used"] or point.get("n") in (None, 1) or point.get("sd") is None:
+        return False
+    horizontal = ERROR_BAR_AXIS == "x"
+    half = _bar_half(axes, point["sd"])
+    return _bar_extent(point["x"] if horizontal else point["y"], half, box, horizontal) is not None
 
 
 def curve_layout(curve, quant=None, width=1600):
@@ -1601,7 +1632,14 @@ def curve_layout(curve, quant=None, width=1600):
     title = "ep-craft densitometry plot-curve"
     if report:
         title += "  -  " + _ascii(os.path.basename(report), 80)
-    legend = "filled circle = standard (bar = replicate SD)  |  hollow circle = dropped"
+    # the bar clause only appears when a bar is actually drawn, so a curve whose replicate points
+    # have no visible spread (n=2, sd=0 draws nothing at all) renders exactly as one without
+    # replicates, and a curve without replicate points renders exactly as it did before this
+    # ticket (ticket ep-bqv.7, requirement 4)
+    bars = any(_has_error_bar(axes, p, main_box) for p in out_points)
+    legend = ("filled circle = standard (bar = replicate area SD)" if bars else
+              "filled circle = standard (bar = replicate SD)")
+    legend += "  |  hollow circle = dropped"
     if samples:
         legend += "  |  square = sample  |  hollow square = out of range"
     return {"width": w, "height": height, "axes": axes, "main_box": main_box,
@@ -1653,7 +1691,7 @@ def _draw_curve_header(sh, geo):
 
 
 def _draw_curve_main(sh, geo):
-    """Main axes: frame, ticks, the fitted line, replicate bars, points and their labels."""
+    """Main axes: frame, ticks, the fitted line, replicate area bars, points and their labels."""
     ax = geo["axes"]
     font = geo["font"]
     x0, y0, x1, y1 = geo["main_box"]
@@ -1697,16 +1735,11 @@ def _draw_curve_main(sh, geo):
         ly = min(max(ax.y(geo["eval"](v)), y0 + 1.0), y1 - 1.0)
         line_boxes.append((lx - 2.5, ly - 2.5, lx + 2.5, ly + 2.5))
 
-    # replicate bars first, so the point's own circle sits on top of its bar
+    # replicate area bars first, so the point's own circle sits on top of its bar
     for p in geo["points"]:
-        sd = p.get("sd")
-        if not p["used"] or p.get("n") in (None, 1) or sd is None:
+        if not _has_error_bar(ax, p, geo["main_box"]):
             continue
-        if ERROR_BAR_AXIS == "y":                      # literal §4.7 vertical form
-            half = abs(ax.y(abs(sd)) - ax.y(0.0))
-        else:                                          # the axis sd really belongs to
-            half = abs(ax.x(abs(sd)) - ax.x(0.0))
-        _error_bar(sh, p["x"], p["y"], half, geo["main_box"],
+        _error_bar(sh, p["x"], p["y"], _bar_half(ax, p["sd"]), geo["main_box"],
                    horizontal=(ERROR_BAR_AXIS == "x"))
 
     for p in geo["points"]:
