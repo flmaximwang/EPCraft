@@ -40,8 +40,12 @@ def test_import_direction():
     返回违规列表，每条写明「哪个模块 import 了哪个」。
     """
     package = package_root()
-    local = {os.path.splitext(name)[0] for name in os.listdir(package)
-             if name.endswith(".py") and not name.startswith("__")}
+    sources = {}
+    for path in sorted(package.rglob("*.py")):
+        parts = path.relative_to(package).with_suffix("").parts
+        name = ".".join(parts[:-1] if path.name == "__init__.py" else parts)
+        sources[name] = path
+    local = {name.split(".")[0] for name in sources}
     # 管线：stage 1（gel_area）→ 泳道种子（well_grid）→ 剖面/条带（profiles）→ 模型（workbench）
     #       → 会话与域状态（gel_session）→ 文档与 sync 计划（figure）→ 控制口执行（sync_exec）
     #       → CLI 胶水层（workbench_io / workflow_start / workflow_stages / workflow_cli / canvas_cli）
@@ -54,40 +58,39 @@ def test_import_direction():
     rules = {"gel_area": set(later), "gel_detect": set(later)}
     for i, mod in enumerate(later):
         rules[mod] = set(later[i + 1:])
-    exports = {node.name for node in ast.parse((package / "__init__.py").read_text(encoding="utf-8")).body
-               if isinstance(node, (ast.FunctionDef, ast.ClassDef))}
+    trees = {name: ast.parse(path.read_text(encoding="utf-8"), str(path))
+             for name, path in sources.items()}
+    exports = {node.name for node in trees[""].body if isinstance(node, (ast.FunctionDef, ast.ClassDef))}
     bad = []
-    for mod in sorted(local):
-        path = os.path.join(package, mod + ".py")
-        with open(path, encoding="utf-8") as f:
-            tree = ast.parse(f.read(), path)
-        imported = []   # [(module, lineno)]
+    for mod, tree in trees.items():
+        owner = mod if sources[mod].name == "__init__.py" else mod.rpartition(".")[0]
+        context = ("epcraft" + ("." + owner if owner else "")).split(".")
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
-                for alias in node.names:
-                    top = alias.name.split(".")[0]
-                    if top in local:
-                        bad.append("%s 用绝对 import 导入了包内模块 %s（第 %d 行；要写 from . import %s）"
-                                   % (mod, top, node.lineno, top))
-                        imported.append((top, node.lineno))
+                absolute = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and not node.level:
+                absolute = [node.module]
             elif isinstance(node, ast.ImportFrom):
-                if node.level == 0:
-                    top = (node.module or "").split(".")[0]
-                    if top in local:
-                        bad.append("%s 用绝对 import 导入了包内模块 %s（第 %d 行；要写 from .%s import …）"
-                                   % (mod, top, node.lineno, top))
-                        imported.append((top, node.lineno))
-                elif node.level == 1:
-                    if node.module:
-                        imported.append((node.module.split(".")[0], node.lineno))
-                    else:                                   # from . import a, b
-                        imported.extend((a.name, node.lineno) for a in node.names)
-                # level > 1 在当前扁平包内不应该出现；留给下面的未知名检查兜底
-        for name, lineno in imported:
-            if name not in local and name not in exports:
-                bad.append("%s 导入了不存在的包内模块 %r（第 %d 行）" % (mod, name, lineno))
-            if name in rules.get(mod, set()):
-                bad.append("%s import 了 %s（第 %d 行）" % (mod, name, lineno))
+                absolute = []
+                if node.level > len(context):
+                    bad.append(f"{mod}:{node.lineno} imports outside epcraft")
+                    continue
+                parts = context[1:len(context) - node.level + 1]
+                parent = ".".join(parts + ([node.module] if node.module else []))
+                names = [".".join(filter(None, (parent, alias.name))) for alias in node.names]
+                targets = names if node.module is None else [parent, *(name for name in names if name in sources)]
+                for name in targets:
+                    if name not in sources and name not in exports:
+                        bad.append(f"{mod}:{node.lineno} imports unknown local name {name!r}")
+                    top = name.split(".")[0]
+                    if top in rules.get(mod.split(".")[0], set()):
+                        bad.append(f"{mod}:{node.lineno} imports later module {name}")
+            else:
+                continue
+            for name in absolute:
+                top = name.split(".")[0]
+                if top == "epcraft" or top in local:
+                    bad.append(f"{mod}:{node.lineno} uses absolute local import {name}")
     return bad
 
 
