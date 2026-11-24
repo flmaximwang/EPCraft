@@ -121,21 +121,13 @@ def shifted(names, k):
 
 def _origin(document):
     """Workbench 胶面图左上角（pt）：cm → pt 的原点（与 workbench.from_document 同一口径）。"""
-    lay = vc_file.layer_by_name(document, "gel")
-    img = next(c for c in vc_file.lay_children(lay) if c["kind"].get("type") == "image" and c.get("name") == "gel")
-    return img["kind"]["xf"][4], img["kind"]["xf"][5]
+    return vc_file.doc_origin(document)
 
 
 def _meta(document):
-    """(ep-meta 文字对象, 它的 JSON) 或 None。"""
-    lay = vc_file.layer_by_name(document, "ep-meta")
-    node = next((c for c in (vc_file.lay_children(lay) if lay else []) if c.get("name") == "ep-meta"), None)
-    if node is None:
-        return None
-    try:
-        return node, json.loads(vc_file.text_info(node)["text"])
-    except ValueError:
-        return None
+    """(ep-meta 文字对象, 它的 JSON) 或 None（读不成 JSON 也算没有）。"""
+    node, meta = vc_file.doc_meta(document)
+    return None if node is None or not meta else (node, meta)
 
 
 def _labels(document, model):

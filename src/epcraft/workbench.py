@@ -320,12 +320,7 @@ def from_document(document):
     读不通 → WorkbenchError，消息列出全部要改的地方（一次说完，不让用户改一处跑一次）。
     """
     errs, notes = [], []
-    gel_img = None
-    lay = vc_file.layer_by_name(document, "gel")
-    if lay:
-        imgs = [n for n in vc_file.lay_children(lay) if n["kind"].get("type") == "image" and n.get("name") == "gel"]
-        if len(imgs) == 1:
-            gel_img = imgs[0]
+    gel_img = vc_file.gel_node(document)
     if gel_img is None:
         raise WorkbenchError("找不到 Workbench 的胶面图（gel 图层里名叫 gel 的图片，应恰好一张）—— "
                              "这不是本 skill 写的文档，或 gel 图层被改过；请重新 render")
@@ -366,15 +361,13 @@ def from_document(document):
             top, bottom = max(0.0, top), min(H, bottom)
 
     meta = {}
-    ml = vc_file.layer_by_name(document, "ep-meta")
-    mt = [n for n in (vc_file.lay_children(ml) if ml else []) if n.get("name") == "ep-meta"]
-    if mt:
-        try:
-            meta = json.loads(vc_file.text_info(mt[0])["text"])
-        except ValueError:
-            notes.append("ep-meta 文字不是 JSON（被改过？）—— 泳道名匹配退回按顺序")
-    else:
+    node, parsed = vc_file.doc_meta(document)
+    if node is None:
         notes.append("没有 ep-meta 文字对象 —— 泳道名匹配退回按顺序")
+    elif parsed:
+        meta = parsed
+    else:
+        notes.append("ep-meta 文字不是 JSON（被改过？）—— 泳道名匹配退回按顺序")
 
     # 旧文档的草稿标定（meta.draft）就是旧版的低置信标记：换成新键，不静默丢掉置信信息。
     # 旧格式有两种：`draft = true`（布尔）和 `draft = {"picked","need","gate"}`（字典，main 上的实际形状）。
@@ -479,12 +472,10 @@ def sample_ticks(document):
     坐标与 from_document 同一口径：从 gel 图的 xf 把文档 pt 换成胶面 cm。图层不在 → []；
     组里的线也读；不是单条直线的对象跳过（组、文字都不是刻度）。"""
     lay = vc_file.layer_by_name(document, "sample bands")
-    gl = vc_file.layer_by_name(document, "gel")
-    imgs = [n for n in (vc_file.lay_children(gl) if gl else [])
-            if n["kind"].get("type") == "image" and n.get("name") == "gel"]
-    if not lay or len(imgs) != 1:
+    gel = vc_file.gel_node(document)
+    if not lay or gel is None:
         return []
-    gx, gy = imgs[0]["kind"]["xf"][4], imgs[0]["kind"]["xf"][5]
+    gx, gy = gel["kind"]["xf"][4], gel["kind"]["xf"][5]
     out = []
     for _top, n in vc_file.walk({"layers": [lay]}):
         k = n.get("kind", {})

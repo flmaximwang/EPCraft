@@ -10,14 +10,15 @@ probe / render / sync / edit 叶子命令，再调用这里的 `add_commands(sub
     epcraft workbench export DOC [--out PATH] [--port PORT]
     epcraft workbench import DOC --input PATH [--no-sync] [--dpi DPI] [--port PORT]
 
-Workbench 数据交换的实现由 workbench_io.py 负责（延迟 import：两个文件分开演进，也避免循环依赖）。
-本模块只做参数、路径保护与错误边界；业务错误统一抛 RuntimeError / OSError / ValueError，
-由 gel_photo.main 打一行 `[!] …` 并返回 2。
+Workbench 数据交换的实现由 workbench_io.py 负责（延迟 import：两个文件分开演进，也避免循环依赖）；
+活文档、stage 1 与 peak override 的工具函数在 gel_session.py。本模块只做参数、路径保护与错误边界；
+业务错误统一抛 RuntimeError / OSError / ValueError，由 gel_photo.main 打一行 `[!] …` 并返回 2。
 """
 import argparse
 import os
 import sys
 
+from . import gel_session
 from . import vc_control
 
 FIGURE_ARTBOARD = "Figure"
@@ -34,16 +35,8 @@ def _abs_doc(doc):
 
 
 def _ensure_open(client, path):
-    """让 VectorCraft 打开并激活 path；返回文档下标。"""
-    from .gel_photo import _doc_state
-    idx, _dirty = _doc_state(client, path)
-    if idx is None:
-        client.open(path)
-        idx, _dirty = _doc_state(client, path)
-    if idx is None:
-        raise RuntimeError("VectorCraft 没能打开 %s" % path)
-    client.execute("document.activate", {"index": idx})
-    return idx
+    """让 VectorCraft 打开并激活 path；返回文档下标（自检替换这个名字，实现见 gel_session.ensure_open）。"""
+    return gel_session.ensure_open(client, path)
 
 
 def _resolve_artboard(artboards, name):
@@ -115,10 +108,14 @@ def cmd_workbench_import(args):
 
 # ---------------------------------------------------------------- 注册
 
-def add_commands(sub, groups):
-    """在公开 CLI 骨架上补 workflow / launch / export / import。"""
+def add_commands(sub, groups, sync=None):
+    """在公开 CLI 骨架上补 workflow / launch / export / import。
+
+    sync = 本层的 sync 处理函数（gel_photo.cmd_sync），注入给 workbench import 做「导入后跟着 sync」，
+    这样 workbench_io 不必反过来 import gel_photo（CLI 胶水层的单向依赖）。
+    """
     from .workflow_cli import add_commands as add_workflow
-    add_workflow(sub)
+    add_workflow(sub, figure_export=cmd_figure_export)
     from .densitometry_cli import add_commands as add_densitometry
     add_densitometry(sub)
     lp = sub.add_parser("launch", help="启动或连接 VectorCraft 控制口；可选打开一份文档")
@@ -154,4 +151,4 @@ def add_commands(sub, groups):
         wi.add_argument("--dpi", type=int, default=300, help="ep-meta 里没记 dpi 时用它")
         wi.add_argument("--port", type=int, default=vc_control.DEFAULT_PORT,
                         help="VectorCraft 控制口（默认 %d）" % vc_control.DEFAULT_PORT)
-        wi.set_defaults(func=cmd_workbench_import)
+        wi.set_defaults(func=cmd_workbench_import, sync=sync)   # workbench_io 用 args.sync 接 sync 处理函数

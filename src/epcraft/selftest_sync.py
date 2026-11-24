@@ -544,6 +544,7 @@ def _crop_read():
     from . import crop
     from . import figure
     from . import gel_photo
+    from . import gel_session
     from . import vc_file
     from . import workbench
     from .magick_io import MAGICK, _run
@@ -555,10 +556,10 @@ def _crop_read():
         _run([MAGICK, "-size", "480x360", "xc:gray(235)", "-fill", "gray(90)",
               "-draw", "rotate 1.5 rectangle 120,70 380,252", "-fill", "gray(30)",
               "-draw", "rectangle 170,120 180,200", "-depth", "8", photo])
-        args = gel_photo._default_detect_args()
+        args = gel_session.default_detect_args()
         preset = {"name": "t", "width_cm": width_cm, "height_cm": hpx * 2.54 / dpi, "lane_pitch_cm": 0.0}
         with contextlib.redirect_stdout(io.StringIO()):
-            embedded, _ga, st = gel_photo.gel_face(photo, preset, args, dpi)
+            embedded, _ga, st = gel_session.gel_face(photo, preset, args, dpi)
         assert vc_file.png_size(embedded) == (wpx, hpx)
         frame_px = crop.frame_from_stage1(st["gel_box"], st["angle"], st["size0"], st["size1"])
         jpeg, psize, _k = crop.preview(photo)

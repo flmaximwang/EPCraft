@@ -479,7 +479,7 @@ def wb_frame(document):
     """从文档读 Workbench 画板与胶面位置（与 workbench.frame 同形）。"""
     ab = next(a for a in document["artboards"] if a["name"] == "Workbench")
     r = ab["rect"]
-    img = next(n for n in vc_file.lay_children(vc_file.layer_by_name(document, "gel")) if n.get("name") == "gel")
+    img = vc_file.gel_node(document)
     return {"artboard": (r["x0"], r["y0"], r["x1"] - r["x0"], r["y1"] - r["y0"]),
             "gel_x": img["kind"]["xf"][4], "gel_y": img["kind"]["xf"][5]}
 
@@ -512,7 +512,7 @@ def plan_sync(document, model, report, layout=None, measure_fn=None, tol=0.01):
     """
     ops = []
     L = {l["name"]: l for l in document["layers"]}
-    gel_img = next(n for n in vc_file.lay_children(L["gel"]) if n.get("name") == "gel")
+    gel_img = vc_file.gel_node(document)
     key = gel_img["kind"]["key"]
     px = (gel_img["kind"]["width"], gel_img["kind"]["height"])
     wb = wb_frame(document)

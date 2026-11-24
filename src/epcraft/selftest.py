@@ -42,12 +42,14 @@ def test_import_direction():
     local = {os.path.splitext(name)[0] for name in os.listdir(package)
              if name.endswith(".py") and not name.startswith("__")}
     # 管线：stage 1（gel_area）→ 泳道种子（well_grid）→ 剖面/条带（profiles）→ 模型（workbench）
-    #       → 文档与 sync 计划（figure）→ 控制口执行（sync_exec）→ CLI（gel_photo）。只许依赖前面的。
+    #       → 会话与域状态（gel_session）→ 文档与 sync 计划（figure）→ 控制口执行（sync_exec）
+    #       → CLI 胶水层（workbench_io / workflow_start / workflow_stages / workflow_cli / canvas_cli）
+    #       → 入口（gel_photo）。只许依赖前面的；sync 与各阶段流程的共同工具都从 gel_session 取。
     # densitometry 是离线定量链的第一段（报告 v2 → dens.json），只吃 profiles 的报告、不碰画板；
     # 链的其余模块（dens_plot 渲染、densitometry_cli 参数）排在管线末尾：数学不许依赖它们。
-    # canvas_cli / workbench_io 是 CLI 胶水层，双方都有延迟 import，不参与线性方向规则。
-    later = ["well_grid", "profiles", "densitometry", "workbench", "figure", "doc_edit", "sync_exec",
-             "gel_photo", "dens_plot", "densitometry_cli"]
+    later = ["well_grid", "profiles", "densitometry", "workbench", "gel_session", "figure", "doc_edit",
+             "sync_exec", "dens_plot", "densitometry_cli", "workbench_io", "workflow_start",
+             "workflow_stages", "workflow_cli", "canvas_cli", "gel_photo"]
     rules = {"gel_area": set(later), "gel_detect": set(later)}
     for i, mod in enumerate(later):
         rules[mod] = set(later[i + 1:])
@@ -1344,7 +1346,8 @@ def selftest():
 
     # 74) 去掉的输出与参数（V6）：--keep-lanes / --svg / --no-editor / --debug / --record 与 export 子命令
     #     都报「已经去掉了：用什么代替」并非 0 退出（不静默忽略）；孔距核对只在偏差 > 10% 时警告。
-    from .gel_photo import main as gp_main, _check_pitch
+    from .gel_photo import main as gp_main
+    from . import gel_session
     for extra in (["--keep-lanes", "1-3"], ["--svg"], ["--no-editor"], ["--debug", "d.png"], ["--record", "r.json"]):
         buf = io.StringIO()
         with contextlib.redirect_stderr(buf):
@@ -1358,7 +1361,7 @@ def selftest():
     for pitch, warn in ((0.515, False), (0.40, True)):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            _check_pitch({"source": "wells", "pitch_cm": pitch}, {"lane_pitch_cm": 0.52})
+            gel_session.check_pitch({"source": "wells", "pitch_cm": pitch}, {"lane_pitch_cm": 0.52})
         assert ("[!] scale" in buf.getvalue()) == warn, (pitch, buf.getvalue())
     ok += 1
 
@@ -1522,14 +1525,14 @@ def selftest():
         assert figure.plan_sync(d_u, m_u2, profiles.analyze(m_u2, png_c, [None] * 15))[0] == [], "第二次 sync 不幂等"
 
         # (d) 配置入口：lanes.json 每项 {text, angle}；markers.json 每项 angle
-        from . import gel_photo
+        from . import gel_session
         p_lanes = os.path.join(td, "lanes.json")
         with open(p_lanes, "w", encoding="utf-8") as f:
             json.dump({"labels": ["M", {"text": "A", "angle": 90}, ""], "marker_lanes": [1, 2]}, f)
         p_mk = os.path.join(td, "mk.json")
         with open(p_mk, "w", encoding="utf-8") as f:
             json.dump({"labels": [{"text": "100 kD", "angle": -90}, "10 kD"]}, f)
-        assert gel_photo._lanes_and_markers(types.SimpleNamespace(markers=p_mk, preset=None, lanes=p_lanes), 15)[:2] == \
+        assert gel_session.lanes_and_markers(types.SimpleNamespace(markers=p_mk, preset=None, lanes=p_lanes), 15)[:2] == \
             (["M", "A", ""] + [""] * 12, [None, 90.0, None] + [None] * 12)
         m_cfg, _sd = workbench.from_image(png_c, 8.6, 6.25, 15, 0.52, ["M", "A"] + [""] * 13,
                                           [{"text": "100 kD", "angle": -90}, "10 kD", "5 kD"], 1,
@@ -1590,13 +1593,13 @@ def selftest():
         assert any("后面 1 行没有 MW" in n for n in mcr["notes"]), mcr["notes"]
     # 低置信标记：marker_confidence.ok = false → fig.mw.json 的 calibration.low_confidence = true，
     # 报告首注换成「低置信，可人工核对」；ok 的报告不带这个键（旧文档 sync 后逐字节不变）
-    from . import gel_photo as _gp
-    rep_low = _gp._mark_low_confidence({"meta": {"marker_confidence": {"ok": False, "gate": "断崖不够"}}},
+    from . import gel_session as _gs
+    rep_low = _gs.mark_low_confidence({"meta": {"marker_confidence": {"ok": False, "gate": "断崖不够"}}},
                                       {"calibration": {"method": "interp", "marker_lane": 1, "points": []},
                                        "notes": ["别的提示"]})
     assert rep_low["calibration"]["low_confidence"] is True
     assert "置信度低" in rep_low["notes"][0] and "别的提示" in rep_low["notes"], rep_low["notes"]
-    rep_ok = _gp._mark_low_confidence({"meta": {"marker_confidence": {"ok": True}}},
+    rep_ok = _gs.mark_low_confidence({"meta": {"marker_confidence": {"ok": True}}},
                                      {"calibration": {"method": "interp", "marker_lane": 1, "points": []},
                                       "notes": []})
     assert "low_confidence" not in rep_ok["calibration"] and not rep_ok["notes"], rep_ok
@@ -1719,18 +1722,18 @@ def selftest():
     # 123) ep-meta 的 peak_auto（spec §4.6）：render 与 sync 写刻度时都记「这一轮检测器叫出的样品带」
     #      （id 键是泳道号字符串、自上而下、四位小数；marker 道与空道不列）；其它 ep-meta 键原样；
     #      render 写出的文档第一次 sync 仍是 0 个操作，peak_auto 原样留着。
-    from . import gel_photo
+    from . import gel_session
     raw5 = {}
     profiles.analyze(m5, png5, names5, overrides={}, raw=raw5)    # 与 cmd_render 同一句（无 override）
-    pa5 = gel_photo._peak_auto(raw5, m5["marker_lane"])
+    pa5 = gel_session.peak_auto(raw5, m5["marker_lane"])
     want_pa = {str(ln["lane"]): [b["y_cm"] for b in ln["bands"]]
                for ln in rep5["lanes"] if not ln["marker"] and ln["bands"]}
     assert pa5 == want_pa, (pa5, want_pa)
     assert str(m5["marker_lane"]) not in pa5
-    assert gel_photo._peak_auto({1: [0.5], 2: [1.234567, 0.23454], 3: []}, 1) == \
+    assert gel_session.peak_auto({1: [0.5], 2: [1.234567, 0.23454], 3: []}, 1) == \
         {"2": [0.2345, 1.2346]}, "cm 要四位小数、marker/空道不列"
     m5r = copy.deepcopy(m5)
-    m5r["meta"].update(gel_photo._meta_state(m5r, raw5))          # 与 cmd_render 同一句
+    m5r["meta"].update(gel_session.meta_state(m5r, raw5))         # 与 cmd_render 同一句
     assert m5r["meta"]["peak_auto"] == pa5
     assert {k: v for k, v in m5r["meta"].items() if k not in ("bands", "peak_auto")} == m5["meta"], "其它键被动了"
     top_r, _b = vc_file.loads(vc_file.dumps(figure.build_document(m5r, rep5, png5, "t")))
@@ -1741,7 +1744,7 @@ def selftest():
     back_r, _n = workbench.from_document(d_r)                     # sync 的口径：模型从文档读回
     raw_r = {}
     rep_r = profiles.analyze(back_r, png5, [None] * 15, raw=raw_r)
-    back_r["meta"].update(gel_photo._meta_state(back_r, raw_r))    # 与 cmd_sync 同一句
+    back_r["meta"].update(gel_session.meta_state(back_r, raw_r))   # 与 cmd_sync 同一句
     ops_r, meta_r2 = figure.plan_sync(d_r, back_r, rep_r)
     assert ops_r == [], ops_r[:5]
     assert meta_r2["peak_auto"] == pa5 and meta_r2["bands"] == meta_r["bands"], meta_r2
@@ -1750,7 +1753,7 @@ def selftest():
     # 124) 旧文档（刻度还在 analysis 层、名字 peak <lane>，ep-meta 没有 peak_auto）：sync 时先建 sample bands
     #      层、删掉 analysis 里的旧刻度、在同一个撤销组里按 peak n.k 重建；peak_auto 记上、其它键原样；
     #      再 sync 一次 0 个操作。
-    from . import gel_photo as _gp
+    from . import gel_session as _gs
     d_old = json.loads(json.dumps(d5))
     L_old = {l["name"]: l for l in d_old["layers"]}
     old_ids = []
@@ -1767,7 +1770,7 @@ def selftest():
     m_old, _n = workbench.from_document(d_old)
     raw_old = {}
     rep_old = profiles.analyze(m_old, png5, [None] * 15, raw=raw_old)
-    m_old["meta"].update(_gp._meta_state(m_old, raw_old))
+    m_old["meta"].update(_gs.meta_state(m_old, raw_old))
     top_old = {"format": "vectorcraft", "version": 4, "document": d_old, "images": top5["images"]}
     ops_old, meta_old = figure.plan_sync(d_old, m_old, rep_old)
     add_lay = [op for op in ops_old if op["op"] == "layer"]
@@ -1792,7 +1795,7 @@ def selftest():
     m_new, _n = workbench.from_document(d_old)                    # 迁移后：再 sync 一次 0 个操作
     raw_new = {}
     rep_new = profiles.analyze(m_new, png5, [None] * 15, raw=raw_new)
-    m_new["meta"].update(_gp._meta_state(m_new, raw_new))
+    m_new["meta"].update(_gs.meta_state(m_new, raw_new))
     ops_new, meta_new = figure.plan_sync(d_old, m_new, rep_new)
     assert ops_new == [], ops_new[:5]
     assert meta_new["peak_auto"] == pa5
@@ -1803,7 +1806,7 @@ def selftest():
     #      （manual=True、显著度 ≤ 0 记 0、MW 按 y 换算、参与 strongest 与排序）；无 override 时报告与
     #      改动前逐字段相同；raw / peak_auto 始终是**抑制之前**的检测器叫带，手加带不混进去；
     #      mw_report 给手加带标 ✎；Profiles 画板与 sample bands 刻度跟着报告走。
-    from . import gel_photo as _gp_ov
+    from . import gel_session as _gs_ov
     with tempfile.TemporaryDirectory() as td:
         gp_ov = os.path.join(td, "gel.png")
         rows_ov = [1.0, 2.0, 3.0, 4.0]
@@ -1886,11 +1889,11 @@ def selftest():
 
         # 128) peak_auto：抑制掉的带仍在（检测器原始叫带），手加带不在；marker 道 / 空道不列；
         #      mw_report 给手加带标 ✎，[主] 与 SNR 格式不变。
-        pa_s = _gp_ov._peak_auto(raw_s, mdl_ov["marker_lane"])
+        pa_s = _gs_ov.peak_auto(raw_s, mdl_ov["marker_lane"])
         assert pa_s == {"2": [y0, y1]}, pa_s
-        assert _gp_ov._peak_auto(raw_d, mdl_ov["marker_lane"]) == {"2": [y0, y1]}, "手加带进了 peak_auto"
+        assert _gs_ov.peak_auto(raw_d, mdl_ov["marker_lane"]) == {"2": [y0, y1]}, "手加带进了 peak_auto"
         assert "1" not in pa_s and "3" not in pa_s
-        assert _gp_ov._meta_state(mdl_ov, raw_s)["peak_auto"] == pa_s
+        assert _gs_ov.meta_state(mdl_ov, raw_s)["peak_auto"] == pa_s
         table_s = format_report_v2(rep_s)
         assert "✎" not in table_s, table_s
         table_d = format_report_v2(rep_d)
@@ -1925,7 +1928,7 @@ def selftest():
         # 旧文档还没有 peak_auto：刻度是检测器自己写的，不差分，已有 override 原样保留
         legacy = {"lanes": m0["lanes"], "marker_lane": 1,
                   "meta": {"peak_overrides": {"2": {"suppress": [1.0]}}}}
-        assert gel_photo._peak_override_state(legacy, [(1.85, 3.0, None)])[0] == {"2": {"suppress": [1.0]}}
+        assert gel_session.peak_override_state(legacy, [(1.85, 3.0, None)])[0] == {"2": {"suppress": [1.0]}}
         y0, y1 = meta0["peak_auto"]["2"]
         assert abs(y0 - 2.495) < 0.01 and set(meta0["peak_auto"]) == {"2", "3"}, meta0["peak_auto"]
         t = _peak_tick(top, 2, 0)                                # 删掉道 2 的第一条刻度
@@ -2197,6 +2200,8 @@ def selftest():
         _rows0, info0 = profiles.pick_marker(*_blank_profile(), px_per_cm=100.0, need=3)
         assert _rows0 == [] and info0["ok"] is False and "局部极小只有 0 个" in info0["reason"], info0
 
+        from . import gel_session as _gs_rt
+
         def _roundtrip(m, png, names, nb, low):
             """建文档 → 读回 → 导出/导入，断言带数不变、marker 泳道靠 ep-meta 回退。
             low = 这份文档是不是应该带低置信标记（带数 < 2 → 是）。"""
@@ -2209,7 +2214,7 @@ def selftest():
             good = workbench_io.validate_export(data, back)
             assert len(good["bands"]) == nb, good["bands"]
             low_doc = vc_file.loads(vc_file.dumps(figure.build_document(
-                m, _gp._mark_low_confidence(m, rep), png, "t")))[0]["document"]
+                m, _gs_rt.mark_low_confidence(m, rep), png, "t")))[0]["document"]
             data_low = json.loads(json.dumps(workbench_io.build_export(low_doc, workbench.from_document(low_doc)[0])))
             assert data_low["low_confidence"] is low, data_low
             assert workbench_io.plan_import(low_doc, workbench.from_document(low_doc)[0], data_low)[0] is not None
@@ -2265,7 +2270,7 @@ def selftest():
         mback, _nbk = workbench.from_document(docd_["document"])
         confd_ = mback["meta"]["marker_confidence"]
         assert confd_["ok"] is False and confd_["gate"] == "断崖不够", confd_
-        rep_low_ = _gp._mark_low_confidence(mback, profiles.analyze(mback, pngd_, namesd))
+        rep_low_ = _gs_rt.mark_low_confidence(mback, profiles.analyze(mback, pngd_, namesd))
         assert rep_low_["calibration"]["low_confidence"] is True
         assert "置信度低" in rep_low_["notes"][0]
         assert any("多 1 条" in n for n in rep_low_["notes"]), rep_low_["notes"]   # 具体提示也进报告
@@ -2329,7 +2334,7 @@ def selftest():
             blank_png = f.read()
         zero, _ = workbench.from_image(blank_png, 8.6, 6.25, 15, 0.52, names_g, ["100", "50"], 1)
         assert zero["bands"] == [], zero["bands"]
-        zero_rep = _gp._mark_low_confidence(zero, profiles.analyze(zero, blank_png, names_g))
+        zero_rep = _gs_rt.mark_low_confidence(zero, profiles.analyze(zero, blank_png, names_g))
         zero_doc = vc_file.loads(vc_file.dumps(figure.build_document(zero, zero_rep, blank_png, "t")))[0]["document"]
         assert workbench.from_document(zero_doc)[0]["marker_lane"] == 1
 
@@ -2343,7 +2348,7 @@ def selftest():
         for remaining, expected in (([100, 50], ["100/50 kD"]), ([50], ["50 kD"]), ([], [])):
             current = copy.deepcopy(grouped)
             current["bands"] = [b for b in current["bands"] if b["mw"] in remaining]
-            report_g = _gp._mark_low_confidence(current, profiles.analyze(current, grouped_png, names_g))
+            report_g = _gs_rt.mark_low_confidence(current, profiles.analyze(current, grouped_png, names_g))
             assert set(current["meta"]["marker_confidence"]["notes"]) <= set(report_g["notes"])
             doc_g = vc_file.loads(vc_file.dumps(figure.build_document(current, report_g, grouped_png, "t")))[0]["document"]
             band_labels = [n for n in vc_file.lay_children(vc_file.layer_by_name(doc_g, "labels"))
@@ -2416,7 +2421,7 @@ def _peak_gel(path, lane3_py=197):
 
 def _peak_doc(td):
     """selftest：render 出的一份 4 道样品带文档（ep-meta 有 peak_auto，刻度已按报告写好）→ (top, png)。"""
-    from . import gel_photo
+    from . import gel_session
     p = os.path.join(td, "gel.png")
     _peak_gel(p)
     png = open(p, "rb").read()
@@ -2431,7 +2436,7 @@ def _peak_doc(td):
                     "prev_centres_cm": workbench.centres({"lanes": lanes})}}
     raw = {}
     rep = profiles.analyze(mdl, png, ["M", "S1", "S2", "S3"], raw=raw)
-    mdl["meta"].update(gel_photo._meta_state(mdl, raw))
+    mdl["meta"].update(gel_session.meta_state(mdl, raw))
     top, _b = vc_file.loads(vc_file.dumps(figure.build_document(mdl, rep, png, "t", layout="stack")))
     return top, png
 
@@ -2449,12 +2454,12 @@ def _peak_sync(top, png, reset=None, apply=True):
     analyze → 记 peak_auto → plan_sync → 落 op）。reset 同 --reset-peaks：None = 没给、[] = 全部道、
     [道号…] = 指定道；apply=False = --dry-run（算出 ops 但不改文档）。
     返回 (模型, 报告, ops, ep-meta, 样品带摘要行, 警告行)。"""
-    from . import gel_photo
+    from . import gel_photo, gel_session
     d = top["document"]
     m, _notes = workbench.from_document(d)
     old = dict(m["meta"])
-    reset_lanes, reset_all, warns = gel_photo._peak_reset_lanes(m, reset)
-    overrides, more_warns = gel_photo._peak_override_state(m, workbench.sample_ticks(d), reset_lanes)
+    reset_lanes, reset_all, warns = gel_session.peak_reset_lanes(m, reset)
+    overrides, more_warns = gel_session.peak_override_state(m, workbench.sample_ticks(d), reset_lanes)
     warns += more_warns
     if overrides:
         m["meta"]["peak_overrides"] = overrides
@@ -2463,7 +2468,7 @@ def _peak_sync(top, png, reset=None, apply=True):
     raw = {}
     rep = profiles.analyze(m, png, [None] * len(m["lanes"]),
                            overrides=m["meta"].get("peak_overrides"), raw=raw)
-    m["meta"].update(gel_photo._meta_state(m, raw))
+    m["meta"].update(gel_session.meta_state(m, raw))
     ops, meta = figure.plan_sync(d, m, rep, layout=m["meta"].get("profiles_layout") or figure.PROFILE_LAYOUT)
     summary = gel_photo._peak_summary(old, m, reset_lanes, reset_all)
     names = meta["lane_names"]                                   # 与 cmd_sync 一样：报告用文档里的泳道名

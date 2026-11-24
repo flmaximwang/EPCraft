@@ -95,6 +95,39 @@ def layer_by_name(document, name):
     return hits[0] if hits else None
 
 
+def gel_node(document):
+    """Workbench 的胶面图（gel 图层里叫 gel 的图片）；没有 / 不唯一 → None。"""
+    lay = layer_by_name(document, "gel")
+    imgs = [n for n in (lay_children(lay) if lay else [])
+            if n["kind"].get("type") == "image" and n.get("name") == "gel"]
+    return imgs[0] if len(imgs) == 1 else None
+
+
+def doc_origin(document):
+    """Workbench 胶面图左上角 (x, y) pt：cm → pt 的原点（没有胶面图 → RuntimeError）。"""
+    img = gel_node(document)
+    if img is None:
+        raise RuntimeError("文档里没有唯一的胶面图（gel 图层里名叫 gel 的图片）")
+    return img["kind"]["xf"][4], img["kind"]["xf"][5]
+
+
+def meta_node(document, layer="ep-meta", name="ep-meta"):
+    """ep-meta 图层里名叫 ep-meta 的那个对象（图层不在 / 找不到 → None）。"""
+    lay = layer_by_name(document, layer)
+    return next((n for n in (lay_children(lay) if lay else []) if n.get("name") == name), None)
+
+
+def doc_meta(document):
+    """→ (ep-meta 对象或 None, 它的 JSON dict 或 {})；读不出来按 {}（调用方要提示就自己看节点）。"""
+    node = meta_node(document)
+    if node is None:
+        return None, {}
+    try:
+        return node, json.loads(text_info(node)["text"])
+    except (ValueError, TypeError):
+        return node, {}
+
+
 def layer_flags(lay):
     """图层的 (visible, locked, printable)：前两个挂在节点上（缺省 True/False），printable 在 kind 里。"""
     return lay.get("visible", True), lay.get("locked", False), lay["kind"].get("printable", True)

@@ -27,7 +27,8 @@ sample 道号）—— 任何一处不对就**什么都不改**。通过后：
   这样随后的 sync 不会用旧映射覆盖导入的名字；
 - 源导出 low_confidence=true 会把低置信标记带到目标文档；导入本身永远不“证明”标定，也不会清掉已有的低置信标记；
 - sample_bands 改了且旧文档没有 peak_auto（无法保证 sync 后刻度不丢）时明确拒绝；
-- --no-sync 只落到活文档（不存盘），否则调用 cmd_sync 刷新 Figure / Profiles / fig.png / fig.mw.json。
+- --no-sync 只落到活文档（不存盘），否则调用 args.sync（由 canvas_cli.add_commands 注入的 sync 处理函数，
+  见 gel_photo.cmd_sync）刷新 Figure / Profiles / fig.png / fig.mw.json —— 本模块因此不 import gel_photo。
 """
 import argparse
 import json
@@ -37,6 +38,7 @@ import sys
 
 from . import doc_edit
 from . import figure
+from . import gel_session
 from . import vc_file
 from . import workbench
 
@@ -62,15 +64,8 @@ def _abs_doc(doc):
 def _live_document(path, port, launch=True):
     """让 VectorCraft 打开/激活 path，返回 (client, document)。与 cmd_sync / cmd_edit 同一套。"""
     from . import vc_control
-    from .gel_photo import _doc_state
     client, _launched = vc_control.connect(port, path=path, launch=launch)
-    idx, _dirty = _doc_state(client, path)
-    if idx is None:
-        client.open(path)
-        idx, _dirty = _doc_state(client, path)
-    if idx is None:
-        raise RuntimeError("VectorCraft 没能打开 %s" % path)
-    client.execute("document.activate", {"index": idx})
+    gel_session.ensure_open(client, path)
     return client, client.document_json()
 
 
@@ -349,13 +344,6 @@ def validate_export(data, target_model):
 
 # ---------------------------------------------------------------- 计划导入（纯函数）
 
-def _origin(document):
-    lay = vc_file.layer_by_name(document, "gel")
-    img = next(c for c in vc_file.lay_children(lay)
-               if c["kind"].get("type") == "image" and c.get("name") == "gel")
-    return img["kind"]["xf"][4], img["kind"]["xf"][5]
-
-
 def _line_nodes(document, layer_name):
     """图层里能当直线读的对象（与 workbench.from_document 的 lines() 同口径，含组内对象）。"""
     lay = vc_file.layer_by_name(document, layer_name)
@@ -390,18 +378,6 @@ def _reshape(node, a, b, ops):
 def _line_spec(layer, name, a, b, rgb, width):
     return {"kind": "line", "layer": layer, "name": name, "a": [a[0], a[1]], "b": [b[0], b[1]],
             "rgb": list(rgb), "width": float(width)}
-
-
-def _meta(document):
-    """(ep-meta 文字对象或 None, 它的 dict 或 {})。"""
-    lay = vc_file.layer_by_name(document, "ep-meta")
-    node = next((c for c in (vc_file.lay_children(lay) if lay else []) if c.get("name") == "ep-meta"), None)
-    if node is None:
-        return None, {}
-    try:
-        return node, json.loads(vc_file.text_info(node)["text"])
-    except (ValueError, TypeError):
-        return node, {}
 
 
 def _valid_ticks(document, model):
@@ -464,7 +440,7 @@ def _band_specs(lanes, marker_lane, bands):
 def plan_import(document, model, data):
     """(ops, 新 ep-meta, 摘要行, 警告行)。纯函数；planning 完之后才允许碰文档。"""
     ops, lines, warns = [], [], []
-    gx, gy = _origin(document)
+    gx, gy = vc_file.doc_origin(document)
     X = lambda cm: gx + cm * PT                             # noqa: E731
     Y = lambda cm: gy + cm * PT                             # noqa: E731
     W = data["gel"]["width_cm"]
@@ -563,13 +539,12 @@ def plan_import(document, model, data):
                 ops.append({"op": "create", "layer": "sample bands", "spec": _spec_pt(sp, X, Y)})
             lines.append("样品带刻度：%d 条" % len(desired))
         if _valid_peak_auto(model.get("meta") or {}):
-            from . import gel_photo
             smodel = {"gel": data["gel"], "window": {"top_cm": top, "bottom_cm": bottom},
                       "lanes": lanes, "bands": bands, "marker_lane": marker_lane,
                       "meta": dict(model.get("meta") or {})}
             ticks = [((ln["left_cm"] + ln["right_cm"]) / 2.0, float(y), None)
                      for lane, y in desired for ln in [lanes[lane - 1]]]
-            overrides, _w = gel_photo._peak_override_state(smodel, ticks, reset_lanes=())
+            overrides, _w = gel_session.peak_override_state(smodel, ticks, reset_lanes=())
             data = dict(data, _peak_overrides=overrides)
 
     # ---- 名字 / ep-meta：重定 lane_names、prev_centres_cm、bands（低置信只进不出）
@@ -595,7 +570,7 @@ def plan_import(document, model, data):
     if renamed:
         lines.append("泳道名：%s" % "，".join(renamed))
 
-    meta_node, old_meta = _meta(document)
+    meta_node, old_meta = vc_file.doc_meta(document)
     merged = dict(old_meta)
     merged["lane_names"] = names
     merged["prev_centres_cm"] = [round((ln["left_cm"] + ln["right_cm"]) / 2.0, 4) for ln in lanes]
@@ -662,13 +637,16 @@ def cmd_import(args):
     if getattr(args, "no_sync", False):
         print("[i] 未 sync（--no-sync）：改动在 VectorCraft 里还没存盘")
         return 0
-    from .gel_photo import cmd_sync
-    return cmd_sync(argparse.Namespace(doc=path, port=getattr(args, "port", None) or 7797,
-                                       dpi=getattr(args, "dpi", 300), dry_run=False, reset_peaks=None))
+    sync = getattr(args, "sync", None)          # canvas_cli.add_commands 注入；本模块不 import gel_photo
+    if sync is None:
+        raise RuntimeError("workbench import 需要 sync 处理函数（由 canvas_cli.add_commands 注入 args.sync）")
+    return sync(argparse.Namespace(doc=path, port=getattr(args, "port", None) or 7797,
+                                   dpi=getattr(args, "dpi", 300), dry_run=False, reset_peaks=None))
 
 
 # ---------------------------------------------------------------- CLI（canvas_cli 负责注册；这里给旧式/自检用）
-def add_parsers(workbench_sub):
+def add_parsers(workbench_sub, sync=None):
+    """旧式路径的注册入口（canvas_cli 不用它）；sync 同 cmd_import 的 args.sync。"""
     we = workbench_sub.add_parser("export", help="把 Workbench 的泳道/窗口/带数据导出为带版本的 JSON")
     we.add_argument("doc")
     we.add_argument("--out", help="JSON 输出路径（省略 = stdout）")
@@ -680,5 +658,5 @@ def add_parsers(workbench_sub):
     wi.add_argument("--no-sync", action="store_true")
     wi.add_argument("--dpi", type=int, default=300)
     wi.add_argument("--port", type=int, default=7797)
-    wi.set_defaults(func=cmd_import)
+    wi.set_defaults(func=cmd_import, sync=sync)
     return workbench_sub
