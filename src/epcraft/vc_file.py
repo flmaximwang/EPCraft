@@ -118,14 +118,15 @@ def meta_node(document, layer="ep-meta", name="ep-meta"):
 
 
 def doc_meta(document):
-    """→ (ep-meta 对象或 None, 它的 JSON dict 或 {})；读不出来按 {}（调用方要提示就自己看节点）。"""
+    """Return the ep-meta node and parsed JSON object, or None for either missing value."""
     node = meta_node(document)
     if node is None:
-        return None, {}
+        return None, None
     try:
-        return node, json.loads(text_info(node)["text"])
-    except (ValueError, TypeError):
-        return node, {}
+        value = json.loads(text_info(node)["text"])
+    except (KeyError, TypeError, ValueError):
+        return node, None
+    return node, value if isinstance(value, dict) else None
 
 
 def layer_flags(lay):

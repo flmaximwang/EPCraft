@@ -479,9 +479,9 @@ def wb_frame(document):
     """从文档读 Workbench 画板与胶面位置（与 workbench.frame 同形）。"""
     ab = next(a for a in document["artboards"] if a["name"] == "Workbench")
     r = ab["rect"]
-    img = vc_file.gel_node(document)
+    gx, gy = vc_file.doc_origin(document)
     return {"artboard": (r["x0"], r["y0"], r["x1"] - r["x0"], r["y1"] - r["y0"]),
-            "gel_x": img["kind"]["xf"][4], "gel_y": img["kind"]["xf"][5]}
+            "gel_x": gx, "gel_y": gy}
 
 
 def _foreign_tick_ids(document, model):
@@ -512,10 +512,10 @@ def plan_sync(document, model, report, layout=None, measure_fn=None, tol=0.01):
     """
     ops = []
     L = {l["name"]: l for l in document["layers"]}
+    wb = wb_frame(document)
     gel_img = vc_file.gel_node(document)
     key = gel_img["kind"]["key"]
     px = (gel_img["kind"]["width"], gel_img["kind"]["height"])
-    wb = wb_frame(document)
 
     # ---- 标签：旧泳道号 → 新泳道号（名字按从左往右的序号搬：第 i 格 ↔ 第 i 格，不看位置）
     old_meta = model["meta"]

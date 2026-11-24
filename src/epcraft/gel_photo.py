@@ -194,7 +194,7 @@ def cmd_sync(args):
     client.execute("document.activate", {"index": idx})
     dj = client.document_json()
     _top, blobs = vc_file.read(path)                     # 胶面图从磁盘上那份读（gel 层锁定，图不会变）
-    gel = _gel_node(dj)
+    gel = vc_file.gel_node(dj)
     if gel is not None and gel["kind"]["key"] not in blobs:
         _top, blobs = client.save(path)                  # 活文档的胶面图不在磁盘那份里（如撤销了上次的重新裁切）
     model, notes, cs = _read_all(dj, blobs, int(_doc_meta(dj).get("dpi") or args.dpi))
@@ -312,21 +312,11 @@ def cmd_edit(args):
                                        reset_peaks=None))
 
 
-def _gel_node(document):
-    """Workbench 的胶面图（gel 图层里叫 gel 的图片）；没有 / 不唯一 → None。"""
-    lay = vc_file.layer_by_name(document, "gel")
-    imgs = [n for n in (vc_file.lay_children(lay) if lay else [])
-            if n["kind"].get("type") == "image" and n.get("name") == "gel"]
-    return imgs[0] if len(imgs) == 1 else None
-
-
 def _doc_meta(document):
     """ep-meta 文字对象的 JSON（读不出 → {}；from_document 会为此另记提示）。"""
     try:
-        mt = [n for n in vc_file.lay_children(vc_file.layer_by_name(document, "ep-meta") or {"kind": {}})
-              if n.get("name") == "ep-meta"]
-        return json.loads(vc_file.text_info(mt[0])["text"]) if mt else {}
-    except (ValueError, RuntimeError, KeyError):
+        return vc_file.doc_meta(document)[1] or {}
+    except RuntimeError:
         return {}
 
 
@@ -343,7 +333,7 @@ def _read_all(dj, blobs, dpi):
     """活文档 → (模型, 提示, 裁切结果)：Workbench 与 Crop 画板一起读，错误一次全列出、什么都不动。
 
     裁切结果 = _crop_sync 的返回，另加 "png"：要分析的胶面图（重新裁过的，或文档里嵌着的那张）。"""
-    gel = _gel_node(dj)
+    gel = vc_file.gel_node(dj)
     try:
         model, notes = workbench.from_document(dj)
         errs = []

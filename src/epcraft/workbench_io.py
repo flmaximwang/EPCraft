@@ -571,7 +571,7 @@ def plan_import(document, model, data):
         lines.append("泳道名：%s" % "，".join(renamed))
 
     meta_node, old_meta = vc_file.doc_meta(document)
-    merged = dict(old_meta)
+    merged = dict(old_meta or {})
     merged["lane_names"] = names
     merged["prev_centres_cm"] = [round((ln["left_cm"] + ln["right_cm"]) / 2.0, 4) for ln in lanes]
     merged["bands"] = [[float(b["mw"]), float(b["y_cm"])] for b in bands]

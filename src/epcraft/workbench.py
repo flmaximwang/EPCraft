@@ -364,7 +364,7 @@ def from_document(document):
     node, parsed = vc_file.doc_meta(document)
     if node is None:
         notes.append("没有 ep-meta 文字对象 —— 泳道名匹配退回按顺序")
-    elif parsed:
+    elif parsed is not None:
         meta = parsed
     else:
         notes.append("ep-meta 文字不是 JSON（被改过？）—— 泳道名匹配退回按顺序")

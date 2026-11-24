@@ -127,7 +127,7 @@ def _origin(document):
 def _meta(document):
     """(ep-meta 文字对象, 它的 JSON) 或 None（读不成 JSON 也算没有）。"""
     node, meta = vc_file.doc_meta(document)
-    return None if node is None or not meta else (node, meta)
+    return None if meta is None else (node, meta)
 
 
 def _labels(document, model):
