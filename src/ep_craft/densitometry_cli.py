@@ -7,7 +7,7 @@ group, so importing the CLI skeleton never pulls in the math.  The group is offl
 report v2 (`fig.mw.json`) that render / sync already wrote and never launches VectorCraft.
 
 Every command has its own `_add_<name>(actions)` helper so sibling tickets can append curve /
-quantify / plot-bands / plot-curve without touching `add_commands`.  Handlers parse arguments,
+quantify without touching `add_commands`.  Handlers parse arguments,
 validate paths and call `densitometry`; the library does all the math.  User errors are
 RuntimeError / OSError / ValueError with a single-line Chinese message, which `gel_photo.main`
 prints as one `[!] …` line on stderr with exit code 2; normal output is `[i] …` on stdout.
@@ -238,6 +238,68 @@ def _add_plot_bands(actions):
     p.set_defaults(func=cmd_plot_bands)
 
 
+# ---------------------------------------------------------------- plot-curve (ticket ep-bqv.4)
+
+CURVE_OUT_SUFFIX = ".curve.png"    # default: fig.curve.json -> fig.curve.png (the chain stem)
+CURVE_SUFFIX = getattr(densitometry, "CURVE_SUFFIX", ".curve.json")
+
+
+def _curve_png_path(curve_path, out):
+    """plot-curve output path (lead ruling, rulings R12 / R5).
+
+    The chain suffix is swapped on the document stem, exactly as `cmd_curve` does for its
+    default: a `*.curve.json` name loses that suffix and gains `.curve.png` (`fig.curve.json`
+    → `fig.curve.png`, NOT `fig.curve.curve.png`); any other name loses its final extension
+    and gains `.curve.png` (`c.json` → `c.curve.png`, `c` → `c.curve.png`).  An explicit
+    `--out` is used as typed (made absolute).  A directory target or a missing output
+    directory is refused — the directory is never created implicitly.
+    """
+    if out is None:
+        text = str(curve_path)
+        if text.lower().endswith(CURVE_SUFFIX):
+            target = text[:-len(CURVE_SUFFIX)] + CURVE_OUT_SUFFIX
+        else:
+            target = os.path.splitext(text)[0] + CURVE_OUT_SUFFIX
+        target = os.path.abspath(target)
+    else:
+        target = os.path.abspath(out)
+    if os.path.isdir(target):
+        raise ValueError("--out 指向的是目录 %s（要写文件路径）" % target)
+    parent = os.path.dirname(target) or "."
+    if not os.path.isdir(parent):
+        raise ValueError("输出目录 %s 不存在（不自动创建，先建好它）" % parent)
+    return target
+
+
+def cmd_plot_curve(args):
+    """curve.json (and optional quant.json) → PNG with the fit and the residual strip (§4.7)."""
+    from . import dens_plot              # lazy: the plot module pulls in magick_io / text_layout
+
+    curve_path = os.path.abspath(args.curve)
+    curve = densitometry.load_json(curve_path, dens_plot.CURVE_KIND)
+    quant = None
+    quant_path = None
+    if args.quant is not None:
+        quant_path = os.path.abspath(args.quant)
+        quant = densitometry.load_json(quant_path, dens_plot.QUANT_KIND)
+    out = _curve_png_path(curve_path, args.out)
+    _refuse_overwrite(out, (curve_path, quant_path))
+    w, h = dens_plot.plot_curve(curve, out, quant=quant, width=args.width)
+    print("[i] 写出 %s（%dx%d 像素，fit %s）" % (out, w, h, curve.get("fit")))
+    return 0
+
+
+def _add_plot_curve(actions):
+    """`plot-curve` — the standard curve, its residuals and (optionally) the samples (§4.7)."""
+    p = actions.add_parser("plot-curve",
+                           help="Render a curve.json as a PNG (fit line, residuals, optional samples)")
+    p.add_argument("--curve", required=True, help="curve.json written by `curve`")
+    p.add_argument("--quant", help="quant.json written by `quantify`: adds the sample squares")
+    p.add_argument("--out", help="output PNG (default: fig.curve.json -> fig.curve.png)")
+    p.add_argument("--width", type=int, default=1600, help="image width in pixels (default %(default)s)")
+    p.set_defaults(func=cmd_plot_curve)
+
+
 # ---------------------------------------------------------------- registration
 
 def add_commands(sub):
@@ -248,3 +310,4 @@ def add_commands(sub):
     _add_measure(actions)
     _add_curve(actions)
     _add_plot_bands(actions)
+    _add_plot_curve(actions)
