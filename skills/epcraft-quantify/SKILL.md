@@ -4,7 +4,7 @@ description: >-
   Use when quantifying protein bands on an SDS-PAGE gel that already has
   loaded standards: turns the `fig.mw.json` v2 report written by the
   `epcraft-label` skill into band areas on two baselines, a standard curve and
-  per-band masses (fig.dens.json, fig.curve.json, fig.quant.json, fig.bands.png
+  per-band masses or equal-volume concentrations (fig.dens.json, fig.curve.json, fig.quant.json, fig.bands.png
   and fig.curve.png). The chain is offline and reads files only — it never
   opens VectorCraft and never edits the labeling document or its PNG/report.
   Agarose gels have no loaded standards and cannot be mass-quantified.
@@ -20,7 +20,7 @@ Take the MW report that `epcraft-label` already wrote and answer "how much prote
 
 ## Scope
 
-- In: an existing `fig.mw.json` v2 (or a `fig.vectorcraft` whose sibling report is current) from `epcraft-label`, the **standard lanes and the mass loaded in each**, optionally the mass unit, the baseline, the fit model, replicate drops, the load volume per lane, and the lane selection when the default is wrong.
+- In: an existing `fig.mw.json` v2 (or a `fig.vectorcraft` whose sibling report is current) from `epcraft-label`, the **standard lanes and their loaded masses or known concentrations with equal loading volumes**, optionally the calibration unit, the baseline, the fit model, replicate drops, the load volume per lane, and the lane selection when the default is wrong.
 - Out (five sibling files, same stem; the three labeling files are untouched):
 
 | File | Content |
@@ -59,13 +59,17 @@ Short alias: `epcraft dens`. `measure` skips marker lanes and trimmed lanes by d
 
 Run the steps in order and stop wherever an artifact looks wrong — the chain is meant to be inspected between steps, not run blind end to end.
 
-1. **Confirm the input.** The report exists and is v2; the user has named the standard lanes and the mass in each (if not, ask once — never guess which lane is which). SDS-PAGE with loaded standards; otherwise stop and explain that an agarose gel has no mass calibration.
+1. **Confirm the input.** The report exists and is v2; the user has identified the standard lanes and supplied their loaded masses or their concentrations with equal loading volumes (if missing, ask once; use the confirmed lane mapping). SDS-PAGE with loaded standards; otherwise stop and explain that an agarose gel has no mass calibration.
 2. **Measure**: `epcraft densitometry measure fig.mw.json`. It prints which lanes it measured and how many bands per lane. Check the lane selection: second ladders, blank lanes and pooled lanes are samples to `measure` unless excluded. `--lanes` **replaces** the default selection, so it must list **the standard lanes together with the sample lanes** (for example `--lanes 2-8,10-12` where 2–4 are standards and 5–8, 10–12 are samples); list only the wells that take part in the fit or the report.
-3. **Read `fig.bands.png`** (`plot-bands`, default `both`). Check the integration endpoints and compare the peaks and their tabulated areas in the Flank and Global panels. Both panels use a zero line for the selected baseline. Use explicit band numbers when the expected peak is weaker than another band in its lane.
-4. **Fit**: `epcraft densitometry curve --dens fig.dens.json --std "…"` (add `--baseline global`, `--fit power` or `--drop N` only for a stated reason). Read the printed range, point count, `r²` and `notes`.
+3. **Generate and inspect the overlays.** Use `epcraft dens plot-bands --dens fig.dens.json --baseline both` with one `--group` for the standards and another for each sample dilution series. Use explicit `LANE:BAND` for the corresponding target peak in each lane, including a separate group for each target when a series has multiple targets. Append `@` values to every member for concentration coloring when concentrations or relative dilution concentrations are known. Use ungrouped `plot-bands` for individual-lane diagnostics or when the user requests a lane overview. Deliver the CLI-generated grouped PNG for standard and dilution comparisons. Check both panels' integration endpoints and tabulated areas before fitting.
+4. **Fit**: `epcraft densitometry curve --dens fig.dens.json --std "…"` (add `--baseline global`, `--fit power` or `--drop N` only for a stated reason). Use the calibration units described below. Read the printed range, point count, `r²` and `notes`.
 5. **Read `fig.curve.png`**: points against the line, the residual strip, replicate bars, and whether `notes` flags too few points or a large CV. A bent calibration is visible here before any sample is quantified.
 6. **Quantify**: `epcraft densitometry quantify --dens fig.dens.json --curve fig.curve.json [--load "9=2,10=2"]` (`--load` affects `conc` only). Then optionally re-run `plot-curve --quant` to place the samples on the curve.
-7. **Report once**: the fit (baseline, model, `r²`, standard range and points), each lane's band masses or the explicit refusal, the lane totals and shares the user asked for, and anything unverified (which standard lanes were assumed, the unit, replicate spread). Quote numbers from the JSON, not from the terminal table's rounded percentages.
+7. **Report once**: lead with the requested quantity and its unit, then give the fit (baseline, model, `r²`, standard range and points), any explicit refusal, and anything unverified (lane mapping, units, replicate spread). Quote numbers from the JSON. Report only lane totals or shares that the user requested and that make sense for the selected targets.
+
+### Equal-volume concentration calibration
+
+When the user requests concentration and confirms identical loading volumes for every standard and sample lane, use the standards' concentrations directly. For example, `epcraft dens curve --dens fig.dens.json --std '5:1=0.125,6:3=0.25,7:3=0.5' --unit mg/mL`. Use the actual target band indices and standard concentrations. In this mode `mg/mL` is the unit of the fitted response. Run `quantify` with `--load` omitted, and read each requested band's concentration from `bands[].mass` in that unit. The existing JSON key names are unchanged. The lane-level `conc` field is for mass calibration followed by division by a supplied load volume. Report the fitted concentration of the loaded dilution first. If a known dilution factor is available and the user wants the original sample concentration, multiply by that factor and label the result separately. If load volumes differ, fit loaded masses and divide each requested band's fitted mass by its own loading volume.
 
 ## Hard rules
 
@@ -75,6 +79,7 @@ Run the steps in order and stop wherever an artifact looks wrong — the chain i
 - **Never hide a non-positive fitted mass.** An in-range band whose stored fit evaluates to ≤ 0 gets `mass: null`, `out_of_range: false`, one note, and no printed value anywhere. The fix is on the curve side (`--drop` the lowest standard or `--fit power`), not on the sample.
 - **Keep the three percentages apart.** `rel_pct` = band share of its own lane; `frac_pct_among_lanes` = lane share of the gel; `conc` = `mass_total / load_ul`. They answer different questions; never multiply or average them into one "purity" number. Report the field the user asked for.
 - **Do not touch the labeling outputs.** `fig.vectorcraft`, `fig.png` and `fig.mw.json` are read-only here; the chain writes only its own sibling files. Do not re-render or sync to "fix" a quantification result unless the report itself is stale — and then hand that step back to `epcraft-label`.
+- **Use the built-in plots for delivery.** Generate the figures with `epcraft dens plot-bands` and `epcraft dens plot-curve`. Use the existing CLI options for plot changes and use a custom plotting script only if the user asks for one.
 - **Read before you quote.** `fig.bands.png` and `fig.curve.png` are the audit trail; a mass quoted without looking at them is a number without evidence. Terminal percentages are rounded — percentages to quote come from the JSON.
 
 ## Checkpoints
@@ -94,6 +99,6 @@ Run the steps in order and stop wherever an artifact looks wrong — the chain i
 ## Done when
 
 - `fig.dens.json`, `fig.curve.json`, `fig.quant.json`, `fig.bands.png` and `fig.curve.png` exist next to `fig.mw.json`; the labeling outputs are unchanged.
-- The reply quotes the fit (baseline, model, `r²`, standard range/points, replicates and drops), each requested lane's masses or the explicit refusal with its reason, and the specific share the user asked for (`rel_pct` vs `frac_pct_among_lanes` vs `conc`).
+- The reply leads with each requested sample band's concentration or mass in the calibration unit, or the explicit refusal with its reason. Include the fit (baseline, model, `r²`, standard range/points, replicates and drops) and any requested shares. For dilution series, label loaded-dilution and original-sample concentrations explicitly.
 - Anything unverified is stated: which standard lanes were assumed and in what unit, any too-few-points / high-CV note, and any band or lane that got no number.
 - References opened only as needed: `references/densitometry.md` (full contract, JSON keys, known accuracy limits) and the shared `specs/ep-craft-densitometry.md` design record.
