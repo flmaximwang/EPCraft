@@ -9,7 +9,7 @@ description: >-
   opens VectorCraft and never edits the labeling document or its PNG/report.
   Agarose gels have no loaded standards and cannot be mass-quantified.
 compatibility: >-
-  macOS; python3 (stdlib only), ImageMagick 7 (`magick`) for the two plot PNGs.
+  Python 3.9+; the optional Matplotlib extra (`epcraft[plot]`) renders the two PNGs.
   Uses the shared `epcraft` distribution, `epcraft` import package and
   `epcraft` CLI installed once for both skills; there is no separate install.
 ---
@@ -26,7 +26,7 @@ Take the MW report that `epcraft-label` already wrote and answer "how much prote
 | File | Content |
 |---|---|
 | `fig.dens.json` | Every measured band's area on **both** baselines, the window and the flags (`kind: "ep-craft-densitometry"`). |
-| `fig.bands.png` | One panel per lane: raw gray profile, both baselines and the shaded integration windows — the picture to read **before** trusting an area. |
+| `fig.bands.png` | Local peak traces and band areas. Single-lane panels shade the integrated signal. Overlay panels mark window endpoints and can color peaks by concentration. |
 | `fig.curve.json` | The standard curve: collapsed standard points, the chosen fit model (`linear` or `power`) with its stored coefficients, `range`, residuals and notes (`kind: "ep-craft-densitometry-curve"`). |
 | `fig.quant.json` | Every sample band's area → mass through the stored fit, lane totals, concentration and shares (`kind: "ep-craft-densitometry-quant"`). |
 | `fig.curve.png` | The standard curve, its residuals, and (with `--quant`) the sample points. |
@@ -43,17 +43,17 @@ Take the MW report that `epcraft-label` already wrote and answer "how much prote
 
 ## Files and CLI
 
-`epcraft` is the shared executable; `epcraft-quantify` adds no install and no code. Install the distribution once with `uv tool install .` (or `-e .` while developing) — or run `PYTHONPATH=src python3 -m epcraft …` from the repository root — and both skills are available. Quantification never has to run the labeling skill; it only needs an existing `fig.mw.json`. Run from the directory holding the report, or pass explicit paths.
+Both skills share the `epcraft` executable. From the checkout root, use `uv tool install --force '.[plot]'` for a tool installation that can render PNGs. Use `uv tool install .` for JSON-only quantification, or run `PYTHONPATH=src python3 -m epcraft …` with a Python environment that already has the dependencies you need. Run from the directory holding the existing `fig.mw.json`, or pass explicit paths.
 
 | Command | Use |
 |---|---|
 | `epcraft densitometry measure REPORT [--out DENS] [--flank-cm 0.15] [--min-ink 0.5] [--lanes 2-15] [--include-marker] [--include-trimmed]` | Areas on both baselines from `fig.mw.json` → `fig.dens.json` (default: report stem with `.mw` dropped). |
-| `epcraft densitometry plot-bands --dens DENS [--out PNG] [--baseline flank\|global\|both] [--lanes …] [--cols 3] [--width 2400]` | The panel grid → `fig.bands.png`. |
+| `epcraft densitometry plot-bands --dens DENS [--out PNG] [--baseline flank\|global\|both] [--lanes …] [--group NAME=LANE[:BAND][@CONC],…] [--cols 2] [--width 1440]` | Local peaks, optionally overlaid by group → `fig.bands.png`. |
 | `epcraft densitometry curve --dens DENS --std "2=20,3=10,4=5" [--out CURVE] [--baseline flank\|global] [--fit linear\|power] [--unit ug] [--drop 4]` | Fit the standards → `fig.curve.json`. |
 | `epcraft densitometry plot-curve --curve CURVE [--quant QUANT] [--out PNG] [--width 1600]` | The curve and residuals, optionally the samples → `fig.curve.png`. |
 | `epcraft densitometry quantify --dens DENS --curve CURVE [--out QUANT] [--load "9=2,10=2"]` | Area → mass, lane totals, shares → `fig.quant.json`. |
 
-Short alias: `epcraft dens`. `measure` skips marker lanes and trimmed lanes by default; `--lanes` **replaces** that selection, while `--include-marker` / `--include-trimmed` extend it. `--std` grammar: `lane=mass` uses that lane's strongest band, `lane:2=mass` the second band from the top, `lane:*=mass` the lane total; masses are in `--unit` (default `ug`). Exit `0` = success, `2` = expected user/environment error. The two PNGs need ImageMagick 7; everything else is stdlib.
+Short alias: `epcraft dens`. `measure` skips marker lanes and trimmed lanes by default; `--lanes` **replaces** that selection, while `--include-marker` / `--include-trimmed` extend it. `--std` grammar: `lane=mass` uses that lane's strongest band, `lane:2=mass` the second band from the top, `lane:*=mass` the lane total; masses are in `--unit` (default `ug`). Exit `0` = success, `2` = expected user/environment error. For the peak plot, repeat `--group` to overlay the standards and each sample dilution series in separate panels. Append `@concentration` to every member of a group to use a continuous concentration scale. For example, `--group 'Standards (mg/mL)=2@0.25,3@0.5,4@1' --group 'Sample A (relative)=5:1@1,6:2@0.5,7:1@0.25'`. `--group` takes the place of `--lanes` for that plot. Each peak is drawn at its true migration position, with its own baseline subtracted and its signal amplitude retained.
 
 ## Workflow
 
@@ -61,7 +61,7 @@ Run the steps in order and stop wherever an artifact looks wrong — the chain i
 
 1. **Confirm the input.** The report exists and is v2; the user has named the standard lanes and the mass in each (if not, ask once — never guess which lane is which). SDS-PAGE with loaded standards; otherwise stop and explain that an agarose gel has no mass calibration.
 2. **Measure**: `epcraft densitometry measure fig.mw.json`. It prints which lanes it measured and how many bands per lane. Check the lane selection: second ladders, blank lanes and pooled lanes are samples to `measure` unless excluded. `--lanes` **replaces** the default selection, so it must list **the standard lanes together with the sample lanes** (for example `--lanes 2-8,10-12` where 2–4 are standards and 5–8, 10–12 are samples); list only the wells that take part in the fit or the report.
-3. **Read `fig.bands.png`** (`plot-bands`, default `both`): windows first (does the shading creep into a neighbour, stop halfway across a band, run off the profile), baselines second (do the dashed lines hug the background, does the orange flank ramp follow a slope), numbers last. A wrong window makes every later number wrong.
+3. **Read `fig.bands.png`** (`plot-bands`, default `both`). Check the integration endpoints and compare the peaks and their tabulated areas in the Flank and Global panels. Both panels use a zero line for the selected baseline. Use explicit band numbers when the expected peak is weaker than another band in its lane.
 4. **Fit**: `epcraft densitometry curve --dens fig.dens.json --std "…"` (add `--baseline global`, `--fit power` or `--drop N` only for a stated reason). Read the printed range, point count, `r²` and `notes`.
 5. **Read `fig.curve.png`**: points against the line, the residual strip, replicate bars, and whether `notes` flags too few points or a large CV. A bent calibration is visible here before any sample is quantified.
 6. **Quantify**: `epcraft densitometry quantify --dens fig.dens.json --curve fig.curve.json [--load "9=2,10=2"]` (`--load` affects `conc` only). Then optionally re-run `plot-curve --quant` to place the samples on the curve.

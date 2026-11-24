@@ -12,7 +12,9 @@ validate paths and call `densitometry`; the library does all the math.  User err
 RuntimeError / OSError / ValueError with a single-line Chinese message, which `gel_photo.main`
 prints as one `[!] …` line on stderr with exit code 2; normal output is `[i] …` on stdout.
 """
+import math
 import os
+import re
 
 from . import densitometry
 
@@ -200,9 +202,39 @@ def _add_curve(actions):
     p.set_defaults(func=cmd_curve)
 
 
+def _parse_plot_group(text):
+    """Parse a named group of lane[:band][@concentration] entries."""
+    title, separator, raw_members = text.partition("=")
+    title = title.strip()
+    if not separator or not title or not title.isascii() or not title.isprintable():
+        raise ValueError("--group expects an English name and lane list, e.g. Standards=2,3,4")
+    members = []
+    for token in raw_members.split(","):
+        peak, at, value = token.strip().partition("@")
+        match = re.fullmatch(r"([1-9][0-9]*)(?::([1-9][0-9]*))?", peak.strip())
+        if not match:
+            raise ValueError("--group %r expects lane[:band][@concentration] entries, got %r"
+                             % (title, token))
+        lane, band = match.groups()
+        member = (int(lane), int(band) if band else None)
+        if at:
+            try:
+                concentration = float(value)
+            except ValueError:
+                concentration = math.nan
+            if not math.isfinite(concentration) or concentration < 0:
+                raise ValueError("--group %r expects a finite, nonnegative concentration, got %r"
+                                 % (title, value))
+            member += (concentration,)
+        members.append(member)
+    if any(len(member) != len(members[0]) for member in members):
+        raise ValueError("--group %r requires a concentration for every member or none" % title)
+    return title, members
+
+
 def cmd_plot_bands(args):
-    """dens.json → PNG grid of per-lane panels (spec §4.7)."""
-    from . import dens_plot              # lazy: the plot module pulls in magick_io / text_layout
+    """dens.json → PNG grid of local peaks by lane or named group."""
+    from . import dens_plot
 
     dens_path = os.path.abspath(args.dens)
     dens = densitometry.load_json(dens_path, densitometry.KIND)
@@ -217,24 +249,32 @@ def cmd_plot_bands(args):
         if not lanes:
             raise RuntimeError("--lanes 选了 %s，但这份 dens 里只有泳道 %s"
                                % (args.lanes, ", ".join(str(v) for v in available) or "（空）"))
+    groups = [_parse_plot_group(text) for text in args.group] if args.group else None
     w, h = dens_plot.plot_bands(dens, out, baseline=args.baseline, lanes=lanes,
-                                cols=args.cols, width=args.width)
-    print("[i] dens %s：%d 条泳道 → %s（%dx%d 像素，baseline %s）"
-          % (dens_path, len(lanes) if lanes is not None else len(dens.get("lanes") or []),
-             out, w, h, args.baseline))
+                                cols=args.cols, width=args.width, groups=groups)
+    if groups is not None:
+        selection = "%d groups" % len(groups)
+    else:
+        selection = "%d 条泳道" % (len(lanes) if lanes is not None else len(dens.get("lanes") or []))
+    print("[i] dens %s：%s → %s（%dx%d 像素，baseline %s）"
+          % (dens_path, selection, out, w, h, args.baseline))
     return 0
 
 
 def _add_plot_bands(actions):
-    """`plot-bands` — one panel per lane, both baselines, shaded windows (spec §4.7)."""
-    p = actions.add_parser("plot-bands", help="Render a dens.json as a PNG grid of lane panels")
+    """`plot-bands` — local peak traces aligned to a shared zero baseline."""
+    p = actions.add_parser("plot-bands", help="Render local band peaks from a dens.json to PNG")
     p.add_argument("--dens", required=True, help="dens.json written by measure")
     p.add_argument("--out", help="output PNG (default: <dens stem>.bands.png)")
-    p.add_argument("--lanes", help="lane numbers to plot, e.g. 1,2,8-10 (default: all in the dens)")
+    selection = p.add_mutually_exclusive_group()
+    selection.add_argument("--lanes", help="lane numbers to plot, e.g. 1,2,8-10 (default: all in the dens)")
+    selection.add_argument("--group", action="append", metavar="NAME=LANE[:BAND][@CONC],…",
+                           help="overlay named peaks (repeatable); omit :band to select by area; "
+                           "supply @concentration for every peak in a group to color by concentration")
     p.add_argument("--baseline", choices=["flank", "global", "both"], default="both",
-                   help="which baseline is shaded and totalled (default %(default)s)")
-    p.add_argument("--cols", type=int, default=3, help="columns in the grid (default %(default)s)")
-    p.add_argument("--width", type=int, default=2400, help="image width in pixels (default %(default)s)")
+                   help="baseline correction to display (default %(default)s)")
+    p.add_argument("--cols", type=int, default=2, help="columns in the grid (default %(default)s)")
+    p.add_argument("--width", type=int, default=1440, help="image width in pixels (default %(default)s)")
     p.set_defaults(func=cmd_plot_bands)
 
 
@@ -273,7 +313,7 @@ def _curve_png_path(curve_path, out):
 
 def cmd_plot_curve(args):
     """curve.json (and optional quant.json) → PNG with the fit and the residual strip (§4.7)."""
-    from . import dens_plot              # lazy: the plot module pulls in magick_io / text_layout
+    from . import dens_plot
 
     curve_path = os.path.abspath(args.curve)
     curve = densitometry.load_json(curve_path, dens_plot.CURVE_KIND)

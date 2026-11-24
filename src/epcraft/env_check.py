@@ -49,5 +49,11 @@ def cmd_doctor(args):
     for rel in ("data/markers.json", "data/gel_size.json"):
         p = os.path.join(skill, rel)
         print("数据   : %s %s" % (rel, "存在" if os.path.isfile(p) else "缺 —— render 要用 --markers / --gel-size 显式指路径"))
+    try:
+        import matplotlib
+    except ImportError:
+        print("matplotlib: unavailable (optional) — install 'epcraft[plot]' for densitometry PNGs")
+    else:
+        print("matplotlib: %s (densitometry plots)" % matplotlib.__version__)
     print("selftest: 跑 `python3 -m epcraft selftest`（仓库里先设 PYTHONPATH=src；安装后直接跑）验算法（不读用户文件、不开 app）")
     return 1 if bad else 0

@@ -47,7 +47,7 @@ The public entry point is the single executable `epcraft`, shared by both skills
 | `epcraft densitometry measure REPORT [--out DENS] ...` | Measure every band's area on two baselines from `fig.mw.json`; writes `fig.dens.json` next to it. |
 | `epcraft densitometry curve --dens DENS --std ...` | Fit the standard curve from the standard lanes; writes `fig.curve.json`. |
 | `epcraft densitometry quantify --dens DENS --curve CURVE ...` | Map each sample band's area to mass; writes `fig.quant.json`. |
-| `epcraft densitometry plot-bands --dens DENS ...` | Render the lane profiles, both baselines and the shaded integration windows; writes `fig.bands.png`. |
+| `epcraft densitometry plot-bands --dens DENS ...` | Plot local peaks on a shared zero baseline. Single-lane panels shade the integration windows. Repeat `--group 'Standards (mg/mL)=2@0.25,3:1@0.5'` to overlay peaks with window endpoints and `coolwarm` concentration colors. Writes `fig.bands.png`. |
 | `epcraft densitometry plot-curve --curve CURVE ...` | Render the standard curve, residuals and (with `--quant`) the sample points; writes `fig.curve.png`. |
 | `epcraft doctor` / `epcraft selftest` | Environment check / offline self-test (legacy, CLI, Workbench IO and the densitometry suites). |
 
@@ -74,7 +74,7 @@ epcraft workflow export fig.vectorcraft --out fig.png --dpi 300
 
 ## Install
 
-Requirements: macOS and `python3` (stdlib only) for both skills. **Labeling** additionally needs [ImageMagick 7](https://imagemagick.org) (`brew install imagemagick`) and [VectorCraft](https://github.com/storytold/vectorcraft) 0.14.x (the skill launches it with `--control`). **Quantification** needs ImageMagick 7 only for its two plot PNGs — `measure`, `curve` and `quantify` are pure stdlib.
+Both skills require Python 3.9+. **Labeling** also needs [ImageMagick 7](https://imagemagick.org) (`brew install imagemagick`) and [VectorCraft](https://github.com/storytold/vectorcraft) 0.14.x. **Quantification** uses the standard library for `measure`, `curve` and `quantify`. Its two PNG commands use headless Matplotlib, installed through the optional `[plot]` extra.
 
 Clone the repository and symlink **both** skills into your agent's skills directory — they share one CLI, so install once and pick the skill per task:
 
@@ -91,6 +91,12 @@ Install the CLI as a [uv tool](https://docs.astral.sh/uv/) from a checkout that 
 ```bash
 uv tool install /path/to/EPCraft   # the checkout root, at that revision
 epcraft doctor
+```
+
+For densitometry PNGs, install the extra from the same checkout. Use `--force` to add it to an existing uv tool installation.
+
+```bash
+uv tool install --force '/path/to/EPCraft[plot]'
 ```
 
 **Upgrading from the combined skill.** The old install used one `ep-craft` skill and one `ep-craft` tool; neither is updated in place. If you installed it, remove the old tool and old skill link, then install the new build and symlink both skills as above:
@@ -115,7 +121,7 @@ To run without installing, use the package from the repo root:
 PYTHONPATH=src python3 -m epcraft doctor
 ```
 
-`uv tool install` puts one executable on your PATH (usually `~/.local/bin`; run `uv tool update-shell` if it is missing). The package is stdlib-only; Python 3.9+ is required. ImageMagick 7 (and, for labeling, VectorCraft) remain external system dependencies. Runtime modules live in the `epcraft` package; presets and templates ship as package data, so locate them with `$(uv tool dir)/epcraft/bin/python -c "import epcraft; print(epcraft.data_dir())"` (a checkout's `src/epcraft/data/` remains the simplest source). Remove the tool with `uv tool uninstall epcraft`.
+`uv tool install` puts one executable on your PATH (usually `~/.local/bin`; run `uv tool update-shell` if it is missing). The base package uses the standard library. `epcraft doctor` reports whether Matplotlib is available, and `epcraft selftest` skips the densitometry drawing checks in a base installation. Runtime modules live in the `epcraft` package; presets and templates ship as package data, so locate them with `$(uv tool dir)/epcraft/bin/python -c "import epcraft; print(epcraft.data_dir())"` (a checkout's `src/epcraft/data/` remains the simplest source). Remove the tool with `uv tool uninstall epcraft`.
 
 ## Repository layout
 
