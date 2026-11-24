@@ -1420,18 +1420,14 @@ def selftest():
     from . import selftest_densitometry
     ok += selftest_densitometry.run()
 
-    # 77++) Band plot acceptance uses ImageMagick to verify PNG dimensions and window
-    #      fills for both baselines. It also checks grid options, input overwrite
-    #      protection, and temporary file cleanup.
-    from . import selftest_dens_plot
-    ok += selftest_dens_plot.run()
-
-    # 77+++) Curve plot acceptance (plot-curve): ImageMagick renders of a synthetic curve with and
-    #      without quant samples. It checks the fitted line, points, dropped points, replicate bars,
-    #      the residual strip, the annotation block, sample markers, CLI errors, overwrite protection
-    #      and temporary file cleanup. Written independently from the spec and the ticket.
-    from . import selftest_plot_curve_acceptance
-    ok += selftest_plot_curve_acceptance.run()
+    # 77++) Check the headless band and curve renderers when the plotting extra is installed.
+    from importlib.util import find_spec
+    if find_spec("matplotlib") is None:
+        print("Densitometry plot selftests skipped — install 'epcraft[plot]' to run them")
+    else:
+        from . import selftest_dens_plot, selftest_plot_curve_acceptance
+        ok += selftest_dens_plot.run()
+        ok += selftest_plot_curve_acceptance.run()
 
     # 77++++) Quantify acceptance: areas to masses with the stored fit, the out-of-range and
     #      non-positive-mass refusals, --load, lane shares, the terminal block and the CLI. Written
