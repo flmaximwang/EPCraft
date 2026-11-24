@@ -96,6 +96,13 @@ SAMPLE_HALF = 4.5
 RESID_R = 3.5
 ERR_BAR_MIN_PX = 1.0
 
+# Out-of-range status strip (ep-c1i).  The strip is built only when a sample cannot be
+# placed on the mass axis, so a curve without one keeps the old two-axes geometry exactly.
+STATUS_ROW_H = 36                  # vertical pitch of one marker/tag row inside the strip
+STATUS_PAD = 6                     # top/bottom padding of the strip
+STATUS_GAP = 20                    # room between the main axes and the strip
+STATUS_MARK_Y = 27                 # marker centre inside a row, measured from the row top
+
 ANN_STEP = 30
 TOP_PAD = 20
 LEFT_PAD = 110
@@ -429,12 +436,17 @@ class TraceAxes:
 
 
 class CurveAxes:
-    """plot-curve's value → pixel mapping: `.x(volume)`, `.y(mass)`, `.yr(rel_pct)`."""
-    def __init__(self, main_box, resid_box, x_range, y_range, rel_range):
+    """plot-curve's value → pixel mapping: `.x(volume)`, `.y(mass)`, `.yr(rel_pct)`.
+
+    ``status_box`` is the optional out-of-range strip between the main axes and the
+    residual strip; it is None when no sample left the mass axis.
+    """
+    def __init__(self, main_box, resid_box, x_range, y_range, rel_range, status_box=None):
         self.main = Mapping(main_box, x_range, y_range, y_down=False)
         self.resid = Mapping(resid_box, x_range, rel_range, y_down=False)
         self.box = main_box
         self.resid_box = resid_box
+        self.status_box = None if status_box is None else tuple(float(v) for v in status_box)
         self.x_range = tuple(float(v) for v in x_range)
         self.y_range = tuple(float(v) for v in y_range)
         self.rel_range = tuple(float(v) for v in rel_range)
@@ -1346,6 +1358,9 @@ def plot_bands(dens, out, baseline="both", lanes=None, cols=2, width=1440, *, gr
 CURVE_KIND = getattr(densitometry, "CURVE_KIND", "ep-craft-densitometry-curve")
 QUANT_KIND = getattr(densitometry, "QUANT_KIND", "ep-craft-densitometry-quant")
 CURVE_SUFFIX = getattr(densitometry, "CURVE_SUFFIX", ".curve.json")
+# Same tolerance the quantifier uses to decide below/above, so the picture cannot disagree
+# with the numbers in quant.json.
+FUZZ = getattr(densitometry, "FUZZ", 1e-9)
 
 
 def _trim_num(text):
@@ -1463,9 +1478,14 @@ def _quant_lanes(quant):
                 except (TypeError, ValueError):
                     raise RuntimeError("quant 的泳道 %d 有一条带的 mass 不是数字（收到 %r）"
                                        % (no, mass))
-            out_band = bool(band.get("out_of_range")) or mass is None
+            # `mass_sd` is the OLS prediction SD from quantify (ep-c1i).  It is read here as a
+            # raw value: absence is normal (older quant.json has no uncertainty) and the one
+            # predicate `_drawable_sd` decides whether a drawable bar can come from it.
+            mass_sd = band.get("mass_sd")
+            oor = bool(band.get("out_of_range"))
+            out_band = oor or mass is None
             bands.append({"index": band.get("index"), "area": area, "mass": mass,
-                          "out": out_band})
+                          "mass_sd": mass_sd, "oor": oor, "out": out_band})
         out.append((lane, bands))
     return out
 
@@ -1587,6 +1607,124 @@ def _has_error_bar(axes, point, box):
     return _bar_extent(point["x"] if horizontal else point["y"], half, box, horizontal) is not None
 
 
+def _drawable_sd(value):
+    """The sample uncertainty a bar can be drawn from, or None.
+
+    THE one predicate for sample y error bars: the renderer, the native legend entry and the
+    layout bookkeeping all call it, so a legend entry can never advertise a bar that is not
+    on the picture.  A raw ``mass_sd`` may be absent (older quant.json), null (no mass, no
+    residual scatter) or zero; none of those is an error, and none of them yields a bar.
+    """
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        sd = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(sd) or sd <= 0.0:
+        return None
+    return sd
+
+
+def _sample_bar(axes, sample, box):
+    """(centre mass, sd) of a drawable ±SD y bar for one sample; None when none is drawn.
+
+    THE shared predicate for sample uncertainty bars: the renderer and the native legend
+    entry both call it, so a key line can never advertise a bar that is not on the picture.
+    The centre is the marker's own (already clamped) row, so a bar stays centred on its
+    square even when the marker was nudged off the axis edge.  The bar is clipped by the
+    axes, never drawn below the zero line.
+    """
+    if sample.get("out") or sample.get("y") is None:
+        return None
+    sd = _drawable_sd(sample.get("mass_sd"))
+    if sd is None:
+        return None
+    centre_px = float(sample["y"])
+    centre_mass = axes.y_value(centre_px)
+    # A linear mass axis maps a ±sd bar to ±|y(sd) - y(0)| pixels around the marker.
+    half = abs(axes.y(centre_mass + sd) - centre_px)
+    if _bar_extent(centre_px, half, box, horizontal=False) is None:
+        return None
+    return centre_mass, sd
+
+
+def _status_tag(sample):
+    """The English strip tag for one out-of-range sample: ``L<lane>.<band>`` + direction."""
+    no = sample["lane"]
+    idx = sample.get("band")
+    name = "L%d.%s" % (no, idx) if idx is not None else "L%d" % no
+    if sample.get("below"):
+        direction = "below range"
+    elif sample.get("above"):
+        direction = "above range"
+    else:
+        # In range but the stored fit yields no positive mass: it still has no y position.
+        direction = "no mass"
+    return "%s %s" % (name, direction)
+
+
+def _status_plan(samples, font, x0, x1):
+    """Place out-of-range samples in the status strip; returns the number of rows used.
+
+    Each sample gets a marker row and a tag slot planned with the same ``_place_label`` /
+    ``_boxes_touch`` machinery as the main plot: a tag goes to the right (then left) of its
+    marker, and when both sides are taken the sample drops to the next row, so markers with
+    nearly the same area are staggered vertically instead of colliding.  The positions
+    written are relative to the strip's top edge, so the canvas height can grow by exactly the
+    number of rows used; ``curve_layout`` moves them onto the canvas afterwards.  Mutates each
+    sample with ``row``, ``y``, ``tag``, ``tag_x``, ``tag_y``, ``tag_ha`` and ``tag_box``.
+    """
+    if not samples:
+        return 0
+    order = sorted(samples, key=lambda s: (s["x"], s["lane"],
+                                           -1 if s.get("band") is None else s["band"]))
+    boxes = []
+    rows = 0
+    for sample in order:
+        text = _status_tag(sample)
+        mx = sample["x"]
+        placed = None
+        for row in range(rows + 1):
+            row_top = STATUS_PAD + row * STATUS_ROW_H
+            ay = row_top + STATUS_MARK_Y
+            own = (mx - SAMPLE_HALF - 1.0, ay - SAMPLE_HALF - 1.0,
+                   mx + SAMPLE_HALF + 1.0, ay + SAMPLE_HALF + 1.0)
+            if any(_boxes_touch(own, box) for box in boxes):
+                continue
+            row_box = (x0, row_top, x1, row_top + STATUS_ROW_H)
+            tx, ty, align, box = _place_label(text, MARK_FONT, mx, ay, boxes, font,
+                                              row_box, order=(0, 1, 2, 3, 4, 5), skip=own)
+            if any(_boxes_touch(box, other) for other in boxes):
+                continue                     # both sides taken in this row: try the next one
+            placed = (row, ay, tx, ty, align, box, own)
+            rows = max(rows, row + 1)
+            boxes.extend([own, box])
+            break
+        if placed is None:
+            # Defensive: a row where nothing fitted is still a row (the strip grows).
+            row = rows
+            rows += 1
+            row_top = STATUS_PAD + row * STATUS_ROW_H
+            ay = row_top + STATUS_MARK_Y
+            tx, ty, align, box = _place_label(text, MARK_FONT, mx, ay, boxes, font,
+                                              (x0, row_top, x1, row_top + STATUS_ROW_H),
+                                              skip=None)
+            own = (mx - SAMPLE_HALF - 1.0, ay - SAMPLE_HALF - 1.0,
+                   mx + SAMPLE_HALF + 1.0, ay + SAMPLE_HALF + 1.0)
+            boxes.extend([own, box])
+            placed = (row, ay, tx, ty, align, box, own)
+        row, ay, tx, ty, align, box, _own = placed
+        sample["row"] = row
+        sample["y"] = float(ay)                       # index into the strip's own mapping
+        sample["tag"] = text
+        sample["tag_x"] = float(tx)
+        sample["tag_y"] = float(ty)
+        sample["tag_ha"] = align
+        sample["tag_box"] = tuple(float(v) for v in box)
+    return rows
+
+
 def curve_layout(curve, quant=None, width=1020):
     """Geometry of the plot-curve canvas — shared by `plot_curve` and its selftests."""
     fit, fn, eqn, r2 = _check_curve(curve)
@@ -1675,6 +1813,8 @@ def curve_layout(curve, quant=None, width=1020):
             row = detail
     lines.append(row)
 
+    # Base geometry.  Every number here is the pre-ep-c1i value, so a curve whose samples all
+    # sit inside the standard range keeps exactly the same canvas and the same two axes.
     top_h = TOP_PAD + CURVE_TITLE_FONT + 22
     footer_y = height - 22 - ANN_STEP * len(lines)
     bottom_h = height - footer_y + 76
@@ -1685,10 +1825,58 @@ def curve_layout(curve, quant=None, width=1020):
         raise ValueError("width %d 太小，画不下主体坐标系（试 ≥ 800）" % w)
 
     main_box = (float(LEFT_PAD), float(top_h), float(w - CURVE_RIGHT_PAD), float(top_h + main_h))
-    resid_box = (float(LEFT_PAD), float(top_h + main_h + gap),
-                 float(w - CURVE_RIGHT_PAD), float(top_h + main_h + gap + resid_h))
-    axes = CurveAxes(main_box, resid_box, (0.0, float(x_max)), (0.0, float(y_max)),
-                     (-float(rel_hi), float(rel_hi)))
+    x_range = (0.0, float(x_max))
+    y_range = (0.0, float(y_max))
+    rel_range = (-float(rel_hi), float(rel_hi))
+    # The area→pixel mapping does not depend on the strip, so samples can be placed before the
+    # strip height is known; only the residual strip has to move down when one exists.
+    base_axes = CurveAxes(main_box, main_box, x_range, y_range, rel_range)
+
+    mx0, my0, mx1, my1 = main_box
+    samples = []
+    for lane, bands in quants:
+        no = int(lane["lane"])
+        many = len(bands) > 1
+        for band in bands:
+            area = band["area"]
+            x = min(max(base_axes.x(area), mx0 + SAMPLE_HALF + 4.0), mx1 - SAMPLE_HALF - 4.0)
+            idx = band["index"]
+            # Direction: only an area outside the standard range has one; a band inside the
+            # range whose fitted mass is not positive is neither below nor above (it has no y).
+            below = bool(band["out"] and area < vmin - FUZZ)
+            above = bool(band["out"] and area > vmax + FUZZ)
+            if band["out"]:
+                y = None                       # placed in the status strip, never on the mass axis
+                label = ""
+            else:
+                y = min(max(base_axes.y(band["mass"]), my0 + SAMPLE_HALF + 4.0),
+                        my1 - SAMPLE_HALF - 4.0)
+                label = ("L%d.%s" % (no, idx) if many and idx is not None else "L%d" % no)
+            samples.append({"lane": no, "band": idx, "area": area,
+                            "mass": band["mass"], "mass_sd": band["mass_sd"],
+                            "out": band["out"], "below": below, "above": above,
+                            "label": label, "x": x, "y": y})
+
+    # Status strip: only out-of-range samples widen the canvas, and they widen it by exactly
+    # the space the strip needs.  Nothing here touches the no-out-of-range geometry.
+    out_samples = [s for s in samples if s["out"]]
+    rows = _status_plan(out_samples, font, mx0, mx1)
+    strip_h = (2.0 * STATUS_PAD + rows * STATUS_ROW_H) if rows else 0.0
+    extra = (strip_h + STATUS_GAP) if rows else 0.0
+    height += extra
+    footer_y += extra
+    status_box = None
+    if rows:
+        status_box = (mx0, my1 + STATUS_GAP, mx1, my1 + STATUS_GAP + strip_h)
+        for sample in out_samples:
+            top = status_box[1]
+            sample["y"] = top + sample["y"]
+            sample["tag_y"] = top + sample["tag_y"]
+            box = sample["tag_box"]
+            sample["tag_box"] = (box[0], box[1] + top, box[2], box[3] + top)
+    resid_box = (float(LEFT_PAD), float(top_h + main_h + gap + extra),
+                 float(w - CURVE_RIGHT_PAD), float(top_h + main_h + gap + extra + resid_h))
+    axes = CurveAxes(main_box, resid_box, x_range, y_range, rel_range, status_box=status_box)
 
     out_points = [dict(p, x=axes.x(p["volume"]), y=axes.y(p["mass"])) for p in points]
     out_res = [dict(r, x=axes.x(r["volume"]), y=axes.yr(r["rel_pct"])) for r in residuals]
@@ -1699,27 +1887,10 @@ def curve_layout(curve, quant=None, width=1020):
     if guide_gap < GUIDE_LABEL_MIN:
         guide_note = "±10% guides (dashed)"
         note_x = resid_box[2] - 6.0
-        # Top-anchored in the reserved gutter, just below the main axes.
-        note_y = main_box[3] + 4.0
+        # Top-anchored in the reserved gutter, just above the residual strip: between the
+        # residual strip and the status strip when one exists, exactly as before when none.
+        note_y = resid_box[1] - gap + 4.0
         guide_note_at = (note_x, note_y, "right")
-
-    mx0, my0, mx1, my1 = main_box
-    samples = []
-    for lane, bands in quants:
-        no = int(lane["lane"])
-        many = len(bands) > 1
-        for band in bands:
-            x = min(max(axes.x(band["area"]), mx0 + SAMPLE_HALF + 4.0), mx1 - SAMPLE_HALF - 4.0)
-            idx = band["index"]
-            if band["out"]:
-                y = my1 - SAMPLE_HALF - 1.0
-                label = ("L%d.%s out" % (no, idx) if idx is not None else "L%d out" % no)
-            else:
-                y = min(max(axes.y(band["mass"]), my0 + SAMPLE_HALF + 4.0), my1 - SAMPLE_HALF - 4.0)
-                label = ("L%d.%s" % (no, idx) if many and idx is not None else "L%d" % no)
-            samples.append({"lane": no, "band": idx, "area": band["area"],
-                            "mass": band["mass"], "out": band["out"], "label": label,
-                            "x": x, "y": y})
 
     title = "Standard curve"
     bars = any(_has_error_bar(axes, p, main_box) for p in out_points)
@@ -1736,7 +1907,8 @@ def curve_layout(curve, quant=None, width=1020):
         legend_parts.append("replicate area SD")
     legend = " · ".join(legend_parts)
     return {"width": w, "height": height, "axes": axes, "main_box": main_box,
-            "resid_box": resid_box, "x_range": (0.0, float(x_max)),
+            "resid_box": resid_box, "status_box": status_box,
+            "x_range": (0.0, float(x_max)),
             "y_range": (0.0, float(y_max)), "rel_range": (-float(rel_hi), float(rel_hi)),
             "fitted": {"volume_min": vmin, "volume_max": vmax,
                        "extension_min": ext_lo, "extension_max": ext_hi,
@@ -1776,6 +1948,21 @@ def _box_overlap(a, b):
     w = min(a[2], b[2]) - max(a[0], b[0])
     h = min(a[3], b[3]) - max(a[1], b[1])
     return w * h if w > 0.0 and h > 0.0 else 0.0
+
+
+def _oor_handle():
+    """A legend proxy for the out-of-range markers drawn in the status strip."""
+    from matplotlib.lines import Line2D
+    return Line2D([], [], marker="s", markersize=SAMPLE_HALF * 2 * 72 / DPI, linestyle="none",
+                  markerfacecolor="white", markeredgecolor=_mcolor(OOR_RGB),
+                  markeredgewidth=1.8)
+
+
+def _bar_handle():
+    """A legend proxy for the replicate SD bars: a short horizontal grey bar glyph."""
+    from matplotlib.lines import Line2D
+    return Line2D([], [], color=_mcolor(ERR_RGB), marker="_", linestyle="none",
+                  markersize=12.0, markeredgewidth=1.7)
 
 
 def _add_curve_legend(fig, ax, geo, handles, labels, boxes):
@@ -1937,6 +2124,24 @@ def _draw_curve_main(fig, geo):
                     capthick=1.4, zorder=2)
         has_bars = True
 
+    # Sample uncertainty: a vertical ±mass_sd bar per in-range sample, with caps and clipped
+    # to the main axes.  _sample_bar is THE shared predicate — the native key entry below is
+    # appended only when this loop kept one real bar artist, so the key cannot claim a bar
+    # that is not drawn.
+    sd_handle = None
+    for s in geo["samples"]:
+        bar = _sample_bar(geo["axes"], s, geo["main_box"])
+        if bar is None:
+            continue
+        centre_mass, sd = bar
+        try:
+            container = ax.errorbar([geo["axes"].x_value(s["x"])], [centre_mass], yerr=[[sd]],
+                                    fmt="none", ecolor=_mcolor(ERR_RGB), elinewidth=1.4,
+                                    capsize=3.6, capthick=1.4, zorder=4)
+        except (TypeError, ValueError):
+            continue
+        sd_handle = sd_handle or container
+
     # Keep one real artist per marker category for the native legend.  The points are drawn
     # marker-only (no connecting line), so their legend handles match the picture exactly.
     used_handle = None
@@ -1957,30 +2162,22 @@ def _draw_curve_main(fig, geo):
             dropped_handle = dropped_handle or handle
 
     sample_handle = None
-    oor_handle = None
     for s in geo["samples"]:
-        sx = geo["axes"].x_value(s["x"])
-        sy = geo["axes"].y_value(s["y"])
         if s["out"]:
-            handle, = ax.plot([sx], [sy], marker="s",
-                              markersize=SAMPLE_HALF * 2 * 72 / DPI, linestyle="none",
-                              markerfacecolor="white", markeredgecolor=_mcolor(OOR_RGB),
-                              markeredgewidth=1.8, zorder=5)
-            oor_handle = oor_handle or handle
-        else:
-            handle, = ax.plot([sx], [sy], marker="s",
-                              markersize=SAMPLE_HALF * 2 * 72 / DPI, linestyle="none",
-                              color=_mcolor(SAMPLE_RGB),
-                              markeredgecolor=_mcolor(SAMPLE_STROKE_RGB),
-                              markeredgewidth=0.8, zorder=5)
-            sample_handle = sample_handle or handle
+            continue                 # out-of-range samples are only in the status strip
+        handle, = ax.plot([geo["axes"].x_value(s["x"])], [geo["axes"].y_value(s["y"])],
+                          marker="s", markersize=SAMPLE_HALF * 2 * 72 / DPI, linestyle="none",
+                          color=_mcolor(SAMPLE_RGB),
+                          markeredgecolor=_mcolor(SAMPLE_STROKE_RGB),
+                          markeredgewidth=0.8, zorder=5)
+        sample_handle = sample_handle or handle
 
     # label placement stays in pixel space, exactly as the layout computed it
     point_boxes = [(p["x"] - POINT_R - 1.0, p["y"] - POINT_R - 1.0,
                     p["x"] + POINT_R + 1.0, p["y"] + POINT_R + 1.0) for p in geo["points"]]
     sample_boxes = [(s["x"] - SAMPLE_HALF - 1.0, s["y"] - SAMPLE_HALF - 1.0,
                      s["x"] + SAMPLE_HALF + 1.0, s["y"] + SAMPLE_HALF + 1.0)
-                    for s in geo["samples"]]
+                    for s in geo["samples"] if not s["out"]]
     line_boxes = []
     span_min, span_max = geo["fitted"]["drawn_min"], geo["fitted"]["drawn_max"]
     for k in range(61):
@@ -2002,38 +2199,69 @@ def _draw_curve_main(fig, geo):
                                           font, geo["main_box"], skip=own)
         _fig_text(fig, tx, ty, "dropped", MARK_FONT, DROP_RGB, ha=align, font=font)
         boxes.append(box)
-    for s, own in zip(geo["samples"], sample_boxes):
-        colour = OOR_RGB if s["out"] else SAMPLE_RGB
-        order = (3, 2, 0, 1, 5, 4) if s["out"] else (0, 1, 2, 3, 4, 5)
-        plot_box = geo["main_box"]
-        if s["out"]:
-            _x0, _y0, _x1, y1 = geo["main_box"]
-            plot_box = (geo["main_box"][0], geo["main_box"][1], geo["main_box"][2],
-                        y1 + geo["gap"])
+    for s, own in zip([s for s in geo["samples"] if not s["out"]], sample_boxes):
         tx, ty, align, box = _place_label(s["label"], MARK_FONT, s["x"], s["y"], boxes,
-                                          font, plot_box, order=order, skip=own)
-        _fig_text(fig, tx, ty, s["label"], MARK_FONT, colour, ha=align, font=font)
+                                          font, geo["main_box"], skip=own)
+        _fig_text(fig, tx, ty, s["label"], MARK_FONT, SAMPLE_RGB, ha=align, font=font)
         boxes.append(box)
 
-    # Native graphical key: real marker artists (or a horizontal bar glyph for SD bars),
-    # placed after every label so collision checking sees the finished plot.
+    # Native graphical key: real marker artists (or a bar glyph for the SD bars), placed
+    # after every label so collision checking sees the finished plot.  Every entry is
+    # appended only when the real artist it stands for was actually drawn.
     handles, labels = [], []
     for handle, label in ((used_handle, "standard"), (dropped_handle, "dropped"),
-                          (sample_handle, "sample"), (oor_handle, "out of range")):
+                          (sample_handle, "sample")):
         if handle is not None:
             handles.append(handle)
             labels.append(label)
+    if geo["status_box"] is not None:
+        handles.append(_oor_handle())
+        labels.append("out of range")
     if has_bars:
-        from matplotlib.lines import Line2D
-        handles.append(Line2D([], [], color=_mcolor(ERR_RGB), marker="_", linestyle="none",
-                              markersize=12.0, markeredgewidth=1.7))
+        handles.append(_bar_handle())
         labels.append("replicate area SD")
+    if sd_handle is not None:
+        handles.append(sd_handle)
+        labels.append("±1 SD fit")
     if handles:
         _add_curve_legend(fig, ax, geo, handles, labels, boxes)
 
     # Fix the shared area axis after every artist: set_xticks()/autoscale can otherwise
     # expand one view beyond geo["x_range"], leaving the main plot and the residual strip
     # with visibly different spans (acceptance: 0..11.88 vs 0..12).
+    ax.set_xlim(geo["x_range"])
+    return ax
+
+
+def _draw_curve_status(fig, geo, main_ax):
+    """Out-of-range status strip: one marker and one English tag per off-axis sample.
+
+    The strip shares the area axis with the main plot, so a sample sits exactly under the
+    area where it was measured even though it has no position on the mass axis.  Positions
+    come from ``curve_layout``'s label placement, so no tag can land on another one; the
+    mass strip above is left untouched (the main y axis still starts at 0).
+    """
+    width, height = geo["width"], geo["height"]
+    font = geo["font"]
+    ax = fig.add_axes(_fig_rect(geo["status_box"], width, height), sharex=main_ax)
+    ax.set_xlim(geo["x_range"])
+    _style_curve_axes(ax, font)
+    _x0, y0, _x1, y1 = geo["status_box"]
+    # The plan's rows are top-left pixel offsets, so the strip's y axis runs downward.
+    ax.set_ylim(float(y1 - y0), 0.0)
+    ax.set_autoscale_on(False)
+    # The shared axis is labelled once, on the residual strip; this band is a status row.
+    ax.tick_params(axis="x", bottom=False, labelbottom=False)
+    ax.set_yticks([])
+    for sample in geo["samples"]:
+        if not sample["out"]:
+            continue
+        ax.plot([geo["axes"].x_value(sample["x"])], [sample["y"] - y0], marker="s",
+                markersize=SAMPLE_HALF * 2 * 72 / DPI, linestyle="none",
+                markerfacecolor="white", markeredgecolor=_mcolor(OOR_RGB),
+                markeredgewidth=1.8, zorder=5)
+        _fig_text(fig, sample["tag_x"], sample["tag_y"], sample["tag"], MARK_FONT, OOR_RGB,
+                  ha=sample["tag_ha"], font=font)
     ax.set_xlim(geo["x_range"])
     return ax
 
@@ -2105,6 +2333,8 @@ def plot_curve(curve, out, quant=None, width=1020):
     fig.patch.set_facecolor("white")
     _draw_curve_text(fig, geo)
     main_ax = _draw_curve_main(fig, geo)
+    if geo["status_box"] is not None:
+        _draw_curve_status(fig, geo, main_ax)
     _draw_curve_resid(fig, geo, main_ax)
     # Both axes share the same left edge, so their vertical labels share a column too.
     label_x = (30 - LEFT_PAD) / (geo["width"] - LEFT_PAD - CURVE_RIGHT_PAD)
