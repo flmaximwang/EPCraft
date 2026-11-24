@@ -86,7 +86,7 @@ ln -s "$PWD/EPCraft/skills/epcraft-quantify" ~/.claude/skills/epcraft-quantify
 
 The skill directories hold documentation only. The CLI lives in the repository-root package `src/epcraft/` and is always run from an installed tool or through the repo's `src/`.
 
-Install the CLI as a [uv tool](https://docs.astral.sh/uv/) from a checkout of the revision that contains the split (the package is not on PyPI; the branch is `refactor/epcraft-skills`, or use the merge commit/tag once it lands):
+Install the CLI as a [uv tool](https://docs.astral.sh/uv/) from a checkout that contains both skills, such as `main` after the split or a later release tag. Install from the checkout root because the package is not on PyPI.
 
 ```bash
 uv tool install /path/to/EPCraft   # the checkout root, at that revision
