@@ -1,12 +1,14 @@
 # EPCraft
 
-An agent skill for **electrophoresis gel figures** (SDS-PAGE, agarose): turn a phone photo of a gel into a labeled, true-size figure, built on [VectorCraft](https://github.com/storytold/vectorcraft).
+Two agent skills for **electrophoresis gel figures** (SDS-PAGE, agarose), built on [VectorCraft](https://github.com/storytold/vectorcraft): `epcraft-label` turns a phone photo of a gel into a labeled, true-size figure; `epcraft-quantify` turns the report from a gel with loaded protein standards into band areas, a standard curve and per-band masses.
 
 > **EP** = electrophoresis, **Craft** = [VectorCraft](https://github.com/storytold/vectorcraft). EPCraft is not part of VectorCraft and is not endorsed by its authors.
 
 ## What it does
 
-The skill is `ep-craft`. Detection makes a first guess; each detected ladder band becomes a `band <MW>` line with its molecular weight already attached, so there is no pairing step. Correcting it by dragging lines in VectorCraft is optional, and the agent re-reads your lines and updates everything in place.
+The skills are `epcraft-label` and `epcraft-quantify`. They share one distribution, one `epcraft` executable and one `fig.mw.json` v2 handoff: labeling writes the report, quantification reads it. Neither skill replaces the other, and quantification never opens VectorCraft.
+
+Labeling: detection makes a first guess; each detected ladder band becomes a `band <MW>` line with its molecular weight already attached, so there is no pairing step. Correcting it by dragging lines in VectorCraft is optional, and the agent re-reads your lines and updates everything in place.
 
 1. **Render**: crop, straighten and rescale the gel photo to its real physical size. Seed lanes from the wells and hang the marker's MWs on the ladder bands it detects (in order, at the detected positions). If the ladder lane does not look like a ladder, the figure and MWs are still produced, marked **low confidence** (`marker_confidence` in the document, `low_confidence` in `fig.mw.json`). Write an editable VectorCraft document.
 2. **Edit by hand** on the *Workbench* artboard: drag lane separators, band lines and the top/bottom window. Rename or restyle labels on the *Figure*.
@@ -16,82 +18,92 @@ Output (three files, same stem):
 
 | File | Content |
 |---|---|
-| `fig.vectorcraft` | Editable document: artboards `Figure` (exported), `Workbench` (edit here), `Profiles` (curves) |
+| `fig.vectorcraft` | Editable document: artboards `Figure` (exported), `Workbench` (edit here), `Profiles` (curves), `Crop` (photo + crop frame) |
 | `fig.png` | The Figure artboard, exported by VectorCraft at the chosen dpi |
 | `fig.mw.json` | Calibration points, raw per-lane intensity profiles, called bands with MW (two-point interpolation between neighbouring marker bands) |
 
-Built-in data: three epizyme (雅酶) pre-stained marker presets (WJ101, WJ103 in Tris-Glycine and Tris-Tricine) and a `mini-gel` size preset. See [`skills/ep-craft/SKILL.md`](skills/ep-craft/SKILL.md) for the full workflow, checkpoints and flags.
+Built-in data: three epizyme (雅酶) pre-stained marker presets (WJ101, WJ103 in Tris-Glycine and Tris-Tricine) and a `mini-gel` size preset. See [`skills/epcraft-label/SKILL.md`](skills/epcraft-label/SKILL.md) for the full workflow, checkpoints and flags.
 
-Optional beyond the three files: **band densitometry** for SDS-PAGE gels with loaded protein standards turns that report into band areas, a standard curve and per-band masses. It is a separate offline chain, opt-in per gel — see the `densitometry` commands below.
+**Quantification is a second skill, not a mode of the first.** For SDS-PAGE gels with loaded protein standards, `epcraft-quantify` reads the `fig.mw.json` v2 report and writes five sibling files — `fig.dens.json`, `fig.curve.json`, `fig.quant.json`, `fig.bands.png`, `fig.curve.png`. The chain is offline, opt-in per gel, and leaves the three labeling outputs read-only. See [`skills/epcraft-quantify/SKILL.md`](skills/epcraft-quantify/SKILL.md) and the `densitometry` commands below.
 
 ## Commands
 
-The public entry point is the executable `ep-craft`. Commands are grouped by the VectorCraft canvas they work on; every sync refreshes the document and all dependent canvases in one undo step.
+The public entry point is the single executable `epcraft`, shared by both skills. Commands are grouped by the VectorCraft canvas they work on; every sync refreshes the document and all dependent canvases in one undo step.
 
 | Command | Does |
 |---|---|
-| `ep-craft launch [DOC] [--port 7797]` | Attach to (or launch) VectorCraft with `--control`; optionally open `DOC`. |
-| `ep-craft figure render IMAGE --out DOC ...` | Detect the gel, seed lanes and marker bands, write `DOC`, export the Figure PNG, write the MW report. |
-| `ep-craft figure edit DOC ...` | Apply lane inclusion, lane names or marker-lane changes; then sync (alias of `workbench edit`). |
-| `ep-craft figure sync DOC ...` | Re-read the live document and refresh the document, PNG and MW report. |
-| `ep-craft figure export DOC [--out PATH] [--dpi N] [--background C] [--port 7797]` | Export the `Figure` artboard to PNG (default `<DOC stem>.png`; `--out` must end in `.png`; refuses to overwrite the document; checks run before VectorCraft is contacted). |
-| `ep-craft crop probe IMAGE ...` | Probe the photo without writing files or launching the app. |
-| `ep-craft crop sync DOC ...` | Re-crop the gel face from a moved Crop frame, then refresh everything. |
-| `ep-craft workbench edit DOC ...` | Same as `figure edit`. |
-| `ep-craft workbench sync DOC ...` | Same as `figure sync`. |
-| `ep-craft workbench export DOC [--out PATH]` | Dump lane geometry, window, marker bands, trim and lane names as JSON (stdout when `--out` is omitted). |
-| `ep-craft workbench import DOC --input PATH [--no-sync]` | Validate and apply an exported lane-data JSON to the live document; sync unless `--no-sync`. |
-| `ep-craft profile sync DOC ...` | Recompute the Profiles canvas (shared sync handler). |
-| `ep-craft densitometry measure REPORT [--out DENS] ...` | Measure every band's area on two baselines from `fig.mw.json`; writes `fig.dens.json` next to it. |
-| `ep-craft densitometry curve --dens DENS --std ...` | Fit the standard curve from the standard lanes; writes `fig.curve.json`. |
-| `ep-craft densitometry quantify --dens DENS --curve CURVE ...` | Map each sample band's area to mass; writes `fig.quant.json`. |
-| `ep-craft densitometry plot-bands --dens DENS ...` | Render the lane profiles, both baselines and the shaded integration windows; writes `fig.bands.png`. |
-| `ep-craft densitometry plot-curve --curve CURVE ...` | Render the standard curve, residuals and (with `--quant`) the sample points; writes `fig.curve.png`. |
-| `ep-craft doctor` / `ep-craft selftest` | Environment check / offline self-test (legacy, CLI, Workbench IO and the densitometry suites). |
+| `epcraft launch [DOC] [--port 7797]` | Attach to (or launch) VectorCraft with `--control`; optionally open `DOC`. |
+| `epcraft figure render IMAGE --out DOC ...` | Detect the gel, seed lanes and marker bands, write `DOC`, export the Figure PNG, write the MW report. |
+| `epcraft figure edit DOC ...` | Apply lane inclusion, lane names or marker-lane changes; then sync (alias of `workbench edit`). |
+| `epcraft figure sync DOC ...` | Re-read the live document and refresh the document, PNG and MW report. |
+| `epcraft figure export DOC [--out PATH] [--dpi N] [--background C] [--port 7797]` | Export the `Figure` artboard to PNG (default `<DOC stem>.png`; `--out` must end in `.png`; refuses to overwrite the document; checks run before VectorCraft is contacted). |
+| `epcraft crop probe IMAGE ...` | Probe the photo without writing files or launching the app. |
+| `epcraft crop sync DOC ...` | Re-crop the gel face from a moved Crop frame, then refresh everything. |
+| `epcraft workbench edit DOC ...` | Same as `figure edit`. |
+| `epcraft workbench sync DOC ...` | Same as `figure sync`. |
+| `epcraft workbench export DOC [--out PATH]` | Dump lane geometry, window, marker bands, trim and lane names as JSON (stdout when `--out` is omitted). |
+| `epcraft workbench import DOC --input PATH [--no-sync]` | Validate and apply an exported lane-data JSON to the live document; sync unless `--no-sync`. |
+| `epcraft profile sync DOC ...` | Recompute the Profiles canvas (shared sync handler). |
+| `epcraft densitometry measure REPORT [--out DENS] ...` | Measure every band's area on two baselines from `fig.mw.json`; writes `fig.dens.json` next to it. |
+| `epcraft densitometry curve --dens DENS --std ...` | Fit the standard curve from the standard lanes; writes `fig.curve.json`. |
+| `epcraft densitometry quantify --dens DENS --curve CURVE ...` | Map each sample band's area to mass; writes `fig.quant.json`. |
+| `epcraft densitometry plot-bands --dens DENS ...` | Render the lane profiles, both baselines and the shaded integration windows; writes `fig.bands.png`. |
+| `epcraft densitometry plot-curve --curve CURVE ...` | Render the standard curve, residuals and (with `--quant`) the sample points; writes `fig.curve.png`. |
+| `epcraft doctor` / `epcraft selftest` | Environment check / offline self-test (legacy, CLI, Workbench IO and the densitometry suites). |
 
-`sync` accepts `--port 7797`, `--dpi 300`, `--dry-run` and `--reset-peaks [N ...]`; `render` keeps all its detection and layout flags (see `SKILL.md`). Exit code `0` = success, `2` = expected user/environment error (message on stderr, no traceback).
+`sync` accepts `--port 7797`, `--dpi 300`, `--dry-run` and `--reset-peaks [N ...]`; `render` keeps all its detection and layout flags (see the [label manual](skills/epcraft-label/SKILL.md)). Exit code `0` = success, `2` = expected user/environment error (message on stderr, no traceback).
 
-**Densitometry is opt-in and touches no other file.** The five `ep-craft densitometry` commands (short alias `ep-craft dens`: `measure`, `curve`, `quantify`, `plot-bands`, `plot-curve`) read the `fig.mw.json` that `render` / `sync` already wrote and write **sibling** JSON/PNG files next to it — `fig.dens.json`, `fig.curve.json`, `fig.quant.json`, `fig.bands.png`, `fig.curve.png`. They never launch VectorCraft, never modify `fig.vectorcraft`, and never rewrite `fig.png` or `fig.mw.json`: the three-file render output is exactly what it was. The chain is meant to be inspected between the steps, so each command reads the previous file and a bad window or a bent fit is caught before the next one runs. `--std` names the standard lanes (`2=20` = that lane's strongest band, `3:2=10` = the second band from the top, `4:*=5` = the lane total). A band whose area falls outside the standard range gets no mass (`mass: null`, `out_of_range: true`) — below the range that means loading more or concentrating, above it loading less — and the chain never extrapolates the curve.
+**Densitometry is the whole tool surface of `epcraft-quantify` and touches no other file.** Its five `epcraft densitometry` commands (short alias `epcraft dens`: `measure`, `curve`, `quantify`, `plot-bands`, `plot-curve`) read the `fig.mw.json` that `render` / `sync` already wrote and write **sibling** JSON/PNG files next to it — `fig.dens.json`, `fig.curve.json`, `fig.quant.json`, `fig.bands.png`, `fig.curve.png`. They never launch VectorCraft, never modify `fig.vectorcraft`, and never rewrite `fig.png` or `fig.mw.json`: the three-file render output is exactly what it was. The chain is meant to be inspected between the steps, so each command reads the previous file and a bad window or a bent fit is caught before the next one runs. `--std` names the standard lanes (`2=20` = that lane's strongest band, `3:2=10` = the second band from the top, `4:*=5` = the lane total). A band whose area falls outside the standard range gets no mass (`mass: null`, `out_of_range: true`) — below the range that means loading more or concentrating, above it loading less — and the chain never extrapolates the curve.
 
 ### Staged workflow
 
-`ep-craft workflow` exposes each canvas transition separately. Start a document, import the photo, adjust its Crop frame in VectorCraft, then seed Workbench. After editing lanes or bands, refresh Profiles and Figure independently and export the Figure canvas as PNG:
+`epcraft workflow` exposes each canvas transition separately. Start a document, import the photo, adjust its Crop frame in VectorCraft, then seed Workbench. After editing lanes or bands, refresh Profiles and Figure independently and export the Figure canvas as PNG:
 
 ```bash
-ep-craft workflow init-canvas fig.vectorcraft
-ep-craft workflow img-to-crop photo.jpg --doc fig.vectorcraft \
-    --gel-size src/ep_craft/data/gel_size.json
-ep-craft workflow crop-to-workbench fig.vectorcraft \
-    --markers src/ep_craft/data/markers.json --preset 1 --lanes lanes.json
-ep-craft workflow workbench-to-profile fig.vectorcraft
-ep-craft workflow workbench-to-figure fig.vectorcraft
-ep-craft workflow export fig.vectorcraft --out fig.png --dpi 300
+epcraft workflow init-canvas fig.vectorcraft
+epcraft workflow img-to-crop photo.jpg --doc fig.vectorcraft \
+    --gel-size src/epcraft/data/gel_size.json
+epcraft workflow crop-to-workbench fig.vectorcraft \
+    --markers src/epcraft/data/markers.json --preset 1 --lanes lanes.json
+epcraft workflow workbench-to-profile fig.vectorcraft
+epcraft workflow workbench-to-figure fig.vectorcraft
+epcraft workflow export fig.vectorcraft --out fig.png --dpi 300
 ```
 
 `init-canvas` creates empty `Figure`, `Workbench`, `Profiles` and `Crop` canvases. `img-to-crop` takes the same detection flags as `crop probe`, including the required `--gel-size`. `crop-to-workbench` takes marker and lane configuration, `--trim-lanes`, label angles and `--profiles stack|strips`. It seeds the Workbench from the edited crop; running it again reseeds that canvas. Each derived-canvas command reads the current Workbench and updates its target. PNG export runs only with `workflow export`, which uses the same Figure selection and output protection as `figure export`. All stages accept `--port`; the derived-canvas commands also accept `--dry-run` and `--reset-peaks [N ...]`.
 
 ## Install
 
-Requirements: macOS, `python3` (stdlib only), [ImageMagick 7](https://imagemagick.org) (`brew install imagemagick`), and [VectorCraft](https://github.com/storytold/vectorcraft) 0.14.x (the skill launches it with `--control`).
+Requirements: macOS and `python3` (stdlib only) for both skills. **Labeling** additionally needs [ImageMagick 7](https://imagemagick.org) (`brew install imagemagick`) and [VectorCraft](https://github.com/storytold/vectorcraft) 0.14.x (the skill launches it with `--control`). **Quantification** needs ImageMagick 7 only for its two plot PNGs — `measure`, `curve` and `quantify` are pure stdlib.
 
-Clone the repository and symlink the skill into your agent's skills directory:
+Clone the repository and symlink **both** skills into your agent's skills directory — they share one CLI, so install once and pick the skill per task:
 
 ```bash
 git clone git@github.com:flmaximwang/EPCraft.git
-ln -s "$PWD/EPCraft/skills/ep-craft" ~/.claude/skills/ep-craft
+ln -s "$PWD/EPCraft/skills/epcraft-label" ~/.claude/skills/epcraft-label
+ln -s "$PWD/EPCraft/skills/epcraft-quantify" ~/.claude/skills/epcraft-quantify
 ```
 
-The skill directory now holds documentation only. The CLI lives in the repository-root package `src/ep_craft/` and is always run from an installed tool or through the repo's `src/`.
+The skill directories hold documentation only. The CLI lives in the repository-root package `src/epcraft/` and is always run from an installed tool or through the repo's `src/`.
 
-Install the CLI as a [uv tool](https://docs.astral.sh/uv/) (the package is not on PyPI yet, so install from the checkout or the git URL):
+Install the CLI as a [uv tool](https://docs.astral.sh/uv/) from a checkout of the revision that contains the split (the package is not on PyPI; the branch is `refactor/epcraft-skills`, or use the merge commit/tag once it lands):
 
 ```bash
-uv tool install "git+https://github.com/flmaximwang/EPCraft.git"  # add @main or a release tag to pin
-uv tool install /path/to/EPCraft                                  # or from the local checkout root
-ep-craft doctor
+uv tool install /path/to/EPCraft   # the checkout root, at that revision
+epcraft doctor
 ```
 
-For development, install the checkout editable so edits under `src/ep_craft/` take effect without reinstalling:
+**Upgrading from the combined skill.** The old install used one `ep-craft` skill and one `ep-craft` tool; neither is updated in place. If you installed it, remove the old tool and old skill link, then install the new build and symlink both skills as above:
+
+```bash
+uv tool uninstall ep-craft        # if the old tool is still installed
+rm ~/.claude/skills/ep-craft      # the old skill symlink (or directory)
+uv tool install /path/to/EPCraft
+ln -s "$PWD/EPCraft/skills/epcraft-label" ~/.claude/skills/epcraft-label
+ln -s "$PWD/EPCraft/skills/epcraft-quantify" ~/.claude/skills/epcraft-quantify
+```
+
+For development, install the checkout editable so edits under `src/epcraft/` take effect without reinstalling:
 
 ```bash
 uv tool install -e /path/to/EPCraft
@@ -100,26 +112,27 @@ uv tool install -e /path/to/EPCraft
 To run without installing, use the package from the repo root:
 
 ```bash
-PYTHONPATH=src python3 -m ep_craft doctor
+PYTHONPATH=src python3 -m epcraft doctor
 ```
 
-`uv tool install` puts one executable on your PATH (usually `~/.local/bin`; run `uv tool update-shell` if it is missing). The package is stdlib-only; Python 3.9+ is required, and ImageMagick 7 and VectorCraft remain external system dependencies. Runtime modules live in the `ep_craft` package; presets and templates ship as package data, so locate them with `$(uv tool dir)/ep-craft/bin/python -c "import ep_craft; print(ep_craft.data_dir())"` (a checkout's `src/ep_craft/data/` remains the simplest source). Remove the tool with `uv tool uninstall ep-craft`.
+`uv tool install` puts one executable on your PATH (usually `~/.local/bin`; run `uv tool update-shell` if it is missing). The package is stdlib-only; Python 3.9+ is required. ImageMagick 7 (and, for labeling, VectorCraft) remain external system dependencies. Runtime modules live in the `epcraft` package; presets and templates ship as package data, so locate them with `$(uv tool dir)/epcraft/bin/python -c "import epcraft; print(epcraft.data_dir())"` (a checkout's `src/epcraft/data/` remains the simplest source). Remove the tool with `uv tool uninstall epcraft`.
 
 ## Repository layout
 
 | Path | Content |
 |---|---|
-| [`skills/ep-craft/`](skills/ep-craft/) | The skill documentation: `SKILL.md`, `references/` (no runnable scripts — the CLI is installed from `src/`) |
-| [`src/ep_craft/`](src/ep_craft/) | Installable package: runtime modules plus bundled `data/`, `templates/`, `fixtures/` |
-| [`pyproject.toml`](pyproject.toml) | Packaging: console script `ep-craft`, package data, setuptools build |
-| [`specs/`](specs/) | Design specs (VectorCraft output, editable output, gel prior) |
+| [`skills/epcraft-label/`](skills/epcraft-label/) | Labeling skill: `SKILL.md`, `references/` (conventions, pitfalls, VectorCraft) — no runnable scripts |
+| [`skills/epcraft-quantify/`](skills/epcraft-quantify/) | Quantification skill: `SKILL.md`, `references/densitometry.md` — consumes the labeling report |
+| `src/epcraft/` | Installable package shared by both skills: runtime modules plus bundled `data/`, `templates/`, `fixtures/` (renamed by `ep-yl2.1`; before that, `src/ep_craft/`) |
+| [`pyproject.toml`](pyproject.toml) | Packaging: console script `epcraft`, package data, setuptools build |
+| [`specs/`](specs/) | Design specs (VectorCraft output, editable output, gel prior, skill split) |
 | [`tickets/`](tickets/) | Work breakdown for the VectorCraft output |
 
 ## Acknowledgements and citing
 
 EPCraft would not exist without **VectorCraft**. It provides the document format, the editing GUI, the rendering and the control port that this skill drives.
 
-- **VectorCraft**, the VectorCraft authors, <https://github.com/storytold/vectorcraft>. Dual-licensed MIT OR Apache-2.0. EPCraft does not bundle VectorCraft; it launches the installed app and talks to it through its `--control` TCP port. The port protocol is documented upstream in [`docs/control-protocol.md`](https://github.com/storytold/vectorcraft/blob/main/docs/control-protocol.md), and the file format and commands this skill relies on are summarized in [`references/vectorcraft.md`](skills/ep-craft/references/vectorcraft.md).
+- **VectorCraft**, the VectorCraft authors, <https://github.com/storytold/vectorcraft>. Dual-licensed MIT OR Apache-2.0. EPCraft does not bundle VectorCraft; it launches the installed app and talks to it through its `--control` TCP port. The port protocol is documented upstream in [`docs/control-protocol.md`](https://github.com/storytold/vectorcraft/blob/main/docs/control-protocol.md), and the file format and commands this skill relies on are summarized in [`references/vectorcraft.md`](skills/epcraft-label/references/vectorcraft.md).
 
 If you use EPCraft for a figure in a publication, please state that the figure was prepared with VectorCraft, and cite EPCraft:
 
