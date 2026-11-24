@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 """dens_plot — public facade for the densitometry plotting subpackage (spec §4.7).
 
-This module used to hold both renderers and all of their shared machinery.  It is now the
-stable import point for callers (``epcraft.densitometry_cli``, the acceptance suites) while
-the implementation lives in three modules with one job each:
+The CLI and existing callers import the plotting functions here.
+
+The implementation lives in three modules:
 
     epcraft.plotting.render   palette / type sizes, lazy matplotlib loading, text measurement,
                               PNG output plumbing, value → pixel mappings, number + tick helpers
@@ -21,12 +21,9 @@ no ImageMagick/MVG):
     migration distance from the dens.json profile (``y_cm``), the y axis is the active
     baseline minus the raw gray value (a signed ink trace).  All traces in the figure share a
     zero line and one y scale, so a standard peak and a sample peak can be compared directly.
-    The stored integration window is shaded where the trace is positive; a short context
-    around the window is drawn but not shaded.  With ``groups`` a tile overlays the selected
-    ``(lane, band)`` members (``band=None`` picks the strongest band for the active baseline);
-    a member may carry a concentration as a third tuple item, and the group is then coloured
-    by a per-group sequential scale.  Without groups each lane gets its own tile and every
-    band in that lane is shown in the stable lane palette.
+    Single-lane tiles show all bands in the lane palette and shade each signed integration
+    window. Group tiles overlay the selected ``(lane, band)`` traces and mark the window
+    endpoints. A third tuple item supplies a concentration for the group's coolwarm scale.
 
 ``plot_curve(curve, out, quant=None, width=1020)``
     The standard curve (and optional sample markers) with a residual strip that shares the

@@ -6,12 +6,9 @@ bands — plot-bands: local band-peak traces of a dens.json (spec §4.7).
     migration distance from the dens.json profile (``y_cm``), the y axis is the active
     baseline minus the raw gray value (a signed ink trace).  All traces in the figure share a
     zero line and one y scale, so a standard peak and a sample peak can be compared directly.
-    The stored integration window is shaded where the trace is positive; a short context
-    around the window is drawn but not shaded.  With ``groups`` a tile overlays the selected
-    ``(lane, band)`` members (``band=None`` picks the strongest band for the active baseline);
-    a member may carry a concentration as a third tuple item, and the group is then coloured
-    by a per-group sequential scale.  Without groups each lane gets its own tile and every
-    band in that lane is shown in the stable lane palette.
+    Single-lane tiles show all bands in the lane palette and shade each signed integration
+    window. Group tiles overlay the selected ``(lane, band)`` traces and mark the window
+    endpoints. A third tuple item supplies a concentration for the group's coolwarm scale.
 
 The renderer is importable without matplotlib: the Figure classes are loaded lazily by
 ``plot_bands`` itself, and ``band_layout`` only computes geometry.  Output validation (a
