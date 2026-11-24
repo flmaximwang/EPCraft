@@ -76,7 +76,7 @@ When the user requests concentration and confirms identical loading volumes for 
 Every mass now carries the calibration's own scatter, not just a point estimate. `quantify` evaluates the **OLS prediction** standard deviation of the response at the band's area — the fit residual (`residual_sd`) plus the uncertainty of slope and intercept at that x — and stores it next to the value:
 
 - `bands[].mass_sd` — the band's `±`, in the calibration unit, 3 decimals;
-- `lanes[].mass_total_sd` — `sqrt(Σ mass_sd²)` over the lane's bands with a mass (the band errors are independent, so the variances add), `null` whenever `mass_total` is `null`;
+- `lanes[].mass_total_sd` — `sqrt(Σ mass_sd²)` over the lane's quantified bands, an approximation that omits covariance between bands sharing the same fit. It is `null` whenever `mass_total` is `null`.
 - `lanes[].conc_sd` — `mass_total_sd / load_ul`, `null` unless both are known;
 - top-level `"uncertainty": {"basis": "ols_prediction", "k": 1, "unit": "<curve unit>"}`.
 

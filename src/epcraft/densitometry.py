@@ -1677,7 +1677,7 @@ def quantify(dens, curve, load=None, *, dens_path="", curve_path="", load_text="
                 if mass is not None:
                     band["rel_pct"] = _num(mass / total * 100.0, 2)
 
-        # lane uncertainty: the band errors are independent, so their variances add (ep-c1i §4).
+        # Quadrature approximates lane uncertainty without the shared-fit covariance (ep-c1i §4).
         # `mass_total_sd` exists only where `mass_total` does — a lane whose total is withheld has
         # no error to propagate either — and `conc_sd` divides it by the very load `conc` used.
         # When any contributing band has no SD (the fit carries no residual scatter) the sum is
