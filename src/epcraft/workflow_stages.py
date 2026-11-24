@@ -102,7 +102,7 @@ def _read_live(args, path, dry_run):
 def cmd_crop_to_workbench(args):
     path = os.path.abspath(args.doc)
     if not os.path.isfile(path):
-        raise RuntimeError("文档不存在：%s —— 先跑 `ep-craft workflow init-canvas %s`" % (path, path))
+        raise RuntimeError("文档不存在：%s —— 先跑 `epcraft workflow init-canvas %s`" % (path, path))
     dpi = _dpi(args)
     if not getattr(args, "markers", None):
         raise RuntimeError("要 --markers <json>（单个配置，或预设库 + --preset）")
@@ -131,7 +131,7 @@ def cmd_crop_to_workbench(args):
     if errs:
         raise RuntimeError("Crop 画板有 %d 处要改（什么都没动）：\n- %s" % (len(errs), "\n- ".join(errs)))
     if frame is None:
-        raise RuntimeError("读不到 Crop 裁切框 —— 先跑 `ep-craft workflow img-to-crop`")
+        raise RuntimeError("读不到 Crop 裁切框 —— 先跑 `epcraft workflow img-to-crop`")
 
     size0 = (meta.get("crop") or {}).get("photo_size") or []
     if len(size0) != 2:
@@ -192,7 +192,7 @@ def cmd_crop_to_workbench(args):
         print("[!] VectorCraft 打开时提示：%s" % r["warnings"])
     print("Workbench 已按 Crop 框重建：%d 条泳道（%s），%d 条 band 线，%d 个样品带刻度" % (
         len(model["lanes"]), mk_note, len(model["bands"]), len(peaks)))
-    print("下一步：ep-craft workflow workbench-to-profile %s" % path)
+    print("下一步：epcraft workflow workbench-to-profile %s" % path)
     return 0
 
 
@@ -275,7 +275,7 @@ def _common_model(args, path, dry_run):
     workflow_start.require_init(document)
     gel = _gel_node(document)
     if gel is None:
-        raise RuntimeError("Workbench 还没有胶面图 —— 先跑 `ep-craft workflow crop-to-workbench`")
+        raise RuntimeError("Workbench 还没有胶面图 —— 先跑 `epcraft workflow crop-to-workbench`")
     key = gel["kind"]["key"]
     if key not in blobs:
         raise RuntimeError("磁盘上的文档里没有胶面图字节 —— 让 VectorCraft 存盘后再跑")
@@ -430,7 +430,7 @@ def _run_stage(args, stage, title):
         return 0
     if ops:
         done = sync_exec.apply_ops_live(client, ops, document)
-        print("[i] %s：%s（一个撤销步「ep-craft sync」，⌘Z 可撤回）" % (title, sync_exec.describe(done)))
+        print("[i] %s：%s（一个撤销步「epcraft sync」，⌘Z 可撤回）" % (title, sync_exec.describe(done)))
     else:
         print("[i] %s 已经是最新的（0 个改动）" % title)
     client.save(path)

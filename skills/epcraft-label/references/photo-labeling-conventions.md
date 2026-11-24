@@ -1,15 +1,17 @@
 # 照片标注：配置、文档结构、分析、sync
 
+本文只覆盖**标注**（出图 + `fig.mw.json`）。蛋白质质量定量是姊妹 skill `epcraft-quantify`，它的输入合同就是本文 §7 的 report v2；本文不再包含 densitometry 章节。
+
 权威设计在 `specs/ep-craft-vectorcraft.md`；VectorCraft 文件格式与控制口命令（实测）在 `references/vectorcraft.md`。
 本文写的是**现在代码实际怎么做**，数字来自 `tickets/ep-craft-vectorcraft.md` 各张票的收尾记录。
 
 ## 1. 两个 JSON —— 字段表
 
-`src/ep_craft/templates/` 里有整套示例。下面没列的键（`size` / `color` / `gap` / `font` / `align`、`y_px` / `snap` / `y_frac` /
+`src/epcraft/templates/` 里有整套示例。下面没列的键（`size` / `color` / `gap` / `font` / `align`、`y_px` / `snap` / `y_frac` /
 `x_frac` / `marker_lane_x` / `lane_width` / `lane_edge`）**已不再读取**：字号、字体、颜色在 VectorCraft 里改；
 条带与泳道位置在 Workbench 上拖线改（§5、§9）。
 
-### markers.json（或 `src/ep_craft/data/markers.json` 预设库 + `--preset`）
+### markers.json（或 `src/epcraft/data/markers.json` 预设库 + `--preset`）
 
 | 键 | 含义 |
 |---|---|
@@ -34,7 +36,7 @@ render 在梯子道的剖面上取显著度**前 N 名**的局部极小（梯子
 
 ## 2. 胶体预设与成品尺寸
 
-`src/ep_craft/data/gel_size.json` **必给**、**没有默认**。没有 `--gel-size` 时 `probe` / `render` 一律以
+`src/epcraft/data/gel_size.json` **必给**、**没有默认**。没有 `--gel-size` 时 `probe` / `render` 一律以
 `gel preset required (--gel-size FILE)` 退出。
 
 | 键 | 必给 | 作用 |
@@ -321,7 +323,7 @@ marker 标签表、**上一次的泳道中心**（给标签匹配用）、上一
 ## 9. `sync`
 
 ```bash
-ep-craft figure sync fig.vectorcraft [--port 7797] [--dry-run] [--dpi 300] [--reset-peaks [N ...]]
+epcraft figure sync fig.vectorcraft [--port 7797] [--dry-run] [--dpi 300] [--reset-peaks [N ...]]
 ```
 
 ### 9a. 做什么
@@ -334,7 +336,7 @@ ep-craft figure sync fig.vectorcraft [--port 7797] [--dry-run] [--dpi 300] [--re
 4. 在胶面图上重算剖面、条带、标定（§7）→ `plan_sync` 算出最少的操作。重裁过就在最前面加一个 `relink` 操作
    （Workbench 的 `gel` 图 + 每个 Figure `gel seg k` 里的图）：写临时 PNG → `links.relink {ids, path, preserve:"transforms"}`
    → `links.embed {ids}`，临时文件在撤销组结束后删掉；`ep-meta.crop.frame_px` 改成新框。
-5. 全部操作在**一个**撤销组 `ep-craft sync` 里执行（⌘Z 一次撤回整个 sync，含重裁；中途出错整组回滚）。
+5. 全部操作在**一个**撤销组 `epcraft sync` 里执行（⌘Z 一次撤回整个 sync，含重裁；中途出错整组回滚）。
 6. 存盘（轮询到文件比请求新且能解析），按 `ep-meta` 里的 dpi 重新导出 `fig.png`，重写 `fig.mw.json`（泳道名取当前标签文字）。
 7. 打印改动摘要，例如 `泳道移动：3 +0.15 cm`、`trimmed（不进 Figure）：[14]`、`marker 线：band 35 删除`、
    `裁切框：转 +0.40°，移 +0.05/−0.10 cm，宽 ×1.020（重新裁了胶面图）`（cm = 旧比例下的胶面 cm；框没动就没有这行），
@@ -376,7 +378,7 @@ ep-craft figure sync fig.vectorcraft [--port 7797] [--dry-run] [--dpi 300] [--re
 ```bash
 PYTHONPATH=src python3 - fig.vectorcraft "label lane 2" "WT" <<'EOF'
 import os, sys
-from ep_craft import vc_control, vc_file
+from epcraft import vc_control, vc_file
 doc, name, text = os.path.abspath(sys.argv[1]), sys.argv[2], sys.argv[3]
 c, _ = vc_control.connect(7797, launch=False)
 docs = c.call("ui.inspect").get("documents") or []
@@ -391,7 +393,7 @@ else:   # 空白道（lanes.json 里是 ""）没有标签对象：在 labels 层
     r = c.execute("text.create", {"x": 0, "y": 0, "text": text, "size": 8, "font": "Arial", "justify": "center"})
     c.execute("object.setProps", {"id": r["id"], "name": name})
 EOF
-ep-craft figure sync fig.vectorcraft
+epcraft figure sync fig.vectorcraft
 ```
 
 `text.setText` 保留第一段文字的样式（字体、字号、颜色不变）。要改样式也请用户在 app 里改，sync 不会覆盖。
@@ -402,7 +404,7 @@ ep-craft figure sync fig.vectorcraft
 ```bash
 PYTHONPATH=src python3 - fig.vectorcraft "label lane 3" 90 <<'EOF'
 import os, sys
-from ep_craft import vc_control, vc_file
+from epcraft import vc_control, vc_file
 c, _ = vc_control.connect(7797, launch=False)
 docs = c.call("ui.inspect").get("documents") or []
 c.execute("document.activate", {"index": next(i for i, d in enumerate(docs)
@@ -412,7 +414,7 @@ n = next(x for x in vc_file.lay_children(vc_file.layer_by_name(c.document_json()
 c.execute("object.rotate", {"ids": [n["id"]], "angle": float(sys.argv[3]),
                             "origin": [n["kind"]["xf"][4], n["kind"]["xf"][5]]})
 EOF
-ep-craft figure sync fig.vectorcraft
+epcraft figure sync fig.vectorcraft
 ```
 
 别用 `absolute:true` 去「设成 0°」：0.14 实测 `object.rotate {angle: 0, absolute: true}` 对已经是 90° 的文字是空操作；
@@ -420,10 +422,10 @@ ep-craft figure sync fig.vectorcraft
 
 ### 9d. `edit`：agent 替用户改（然后自动 sync）
 
-`ep-craft workbench edit fig.vectorcraft [--keep 2-7 | --trim 1,8-15] [--marker-lane N] [--shift-labels K] [--labels a,b,…] [--label N=TEXT …] [--no-sync]`（`figure edit` 是同一条命令的别名）
+`epcraft workbench edit fig.vectorcraft [--keep 2-7 | --trim 1,8-15] [--marker-lane N] [--shift-labels K] [--labels a,b,…] [--label N=TEXT …] [--no-sync]`（`figure edit` 是同一条命令的别名）
 
 `doc_edit.plan_edit` 读活文档（`workbench.from_document`，泳道号 = Workbench 上现在的泳道），生成与 `plan_sync` 同一套 op，
-`sync_exec.apply_ops_live(label="ep-craft edit")` 一个撤销步落下，然后照常 `sync`（第二个撤销步）。
+`sync_exec.apply_ops_live(label="epcraft edit")` 一个撤销步落下，然后照常 `sync`（第二个撤销步）。
 
 | 选项 | 做的事 |
 |---|---|
@@ -437,33 +439,34 @@ ep-craft figure sync fig.vectorcraft
 
 ## 10. 命令
 
-公开入口是安装好的 `ep-craft` 控制台命令；不安装时从 repo 根用 `PYTHONPATH=src python3 -m ep_craft …`。没有 `scripts/` 目录，`skills/ep-craft/` 里只有文档。下面命令里的 `src/ep_craft/data/...` 相对 **repository 根**（在 repo 根目录执行）。
+公开入口是安装好的 `epcraft` 控制台命令；不安装时从 repo 根用 `PYTHONPATH=src python3 -m epcraft …`。没有 `scripts/` 目录，`skills/epcraft-label/` 里只有文档。下面命令里的 `src/epcraft/data/...` 相对 **repository 根**（在 repo 根目录执行）。
 
 ```bash
-ep-craft doctor                             # python / magick / 字体 / VectorCraft 版本与控制口 / 数据文件
-ep-craft selftest                           # 不读用户文件、不开 app；全绿即可（项数以当次输出为准）
+epcraft doctor                             # python / magick / 字体 / VectorCraft 版本与控制口 / 数据文件
+epcraft selftest                           # 不读用户文件、不开 app；全绿即可（项数以当次输出为准）
 
 # 只探测（不写文件、不开 app）：胶面、孔距/首道/孔深、每道叫出的带 y；给了 --markers 还打 marker 候选道的前 N 名与闸门
-ep-craft crop probe photo.jpeg --gel-size src/ep_craft/data/gel_size.json [--gel-lanes N] [--rect x0,y0,x1,y1] \
-        [--markers src/ep_craft/data/markers.json --preset 3 --lanes lanes.json]
+epcraft crop probe photo.jpeg --gel-size src/epcraft/data/gel_size.json [--gel-lanes N] [--rect x0,y0,x1,y1] \
+        [--markers src/epcraft/data/markers.json --preset 3 --lanes lanes.json]
 
 # 出文档 + fig.png + fig.mw.json
-ep-craft figure render photo.jpeg --out fig.vectorcraft \
-        --markers src/ep_craft/data/markers.json --preset 3 --lanes lanes.json \
-        --gel-size src/ep_craft/data/gel_size.json [--trim-lanes 1,2,14-15] [--dpi 300] [--profiles stack|strips] \
+epcraft figure render photo.jpeg --out fig.vectorcraft \
+        --markers src/epcraft/data/markers.json --preset 3 --lanes lanes.json \
+        --gel-size src/epcraft/data/gel_size.json [--trim-lanes 1,2,14-15] [--dpi 300] [--profiles stack|strips] \
         [--label-angle 90] [--marker-label-angle 0] [--port 7797] [--no-mw]
 
 # 用户在 VectorCraft 里改完之后
-ep-craft figure sync fig.vectorcraft [--dry-run]
+epcraft figure sync fig.vectorcraft [--dry-run]
 
 # agent 替用户改 trim / marker 泳道 / 泳道名（§9d），然后自动 sync
-ep-craft workbench edit fig.vectorcraft [--keep 2-7] [--marker-lane 2] [--shift-labels 1] [--label 9=M]
+epcraft workbench edit fig.vectorcraft [--keep 2-7] [--marker-lane 2] [--shift-labels 1] [--label 9=M]
 
 # 控制口 / 只导出 Figure 画板 / Workbench 数据交换（§13）
-ep-craft launch [fig.vectorcraft] [--port 7797]
-ep-craft figure export fig.vectorcraft [--out fig.png] [--dpi 300] [--background white] [--port 7797]
-ep-craft workbench export fig.vectorcraft [--out workbench.json]      # 省略 --out = stdout
-ep-craft workbench import fig.vectorcraft --input workbench.json [--no-sync] [--dpi 300]
+epcraft launch [fig.vectorcraft] [--port 7797]
+epcraft figure export fig.vectorcraft [--out fig.png] [--dpi 300] [--background white] [--port 7797]
+epcraft workbench export fig.vectorcraft [--out workbench.json]      # 省略 --out = stdout
+epcraft workbench import fig.vectorcraft --input workbench.json [--no-sync] [--dpi 300]
+
 ```
 
 ## 10a. marker 检出：按序直挂 + 置信标记（取代旧的补位流程）
@@ -509,7 +512,7 @@ render 的其它开关（全是 stage 1；出图后也可以在 Crop 画板上�
 
 | 已移除 | 代替 |
 |---|---|
-| 老扁平 `export` 子命令、`fig.html` 编辑器、`fig.scene.json`、`fig.gel.png` | VectorCraft 里改；`ep-craft figure sync` 重新导出 `fig.png`。要单独导出 Figure 用 `ep-craft figure export DOC`（只出 PNG） |
+| 老扁平 `export` 子命令、`fig.html` 编辑器、`fig.scene.json`、`fig.gel.png` | VectorCraft 里改；`epcraft figure sync` 重新导出 `fig.png`。要单独导出 Figure 用 `epcraft figure export DOC`（只出 PNG） |
 | `--svg` | `fig.vectorcraft` 本身是矢量文档；要 SVG 在 VectorCraft 里 File → Export |
 | `--no-editor` | 不再写 HTML 编辑器 |
 | `--debug` 覆盖图 | Workbench 画板（`lanes` / `window` / `marker bands` / `analysis` 图层） |
@@ -523,42 +526,42 @@ render 的其它开关（全是 stage 1；出图后也可以在 Crop 画板上�
 
 ## 12. 脚本模块
 
-运行时代码全在 repo 根的 `src/ep_craft/` 里（模块内用相对 import）；`skills/ep-craft/` 里只有文档，没有 `scripts/`。入口是安装后的 `ep-craft` 控制台命令（`pyproject.toml` 里 `ep-craft = ep_craft.cli:main`），或 `PYTHONPATH=src python3 -m ep_craft`。纯 stdlib，不需要第三方包：
+运行时代码全在 repo 根的 `src/epcraft/` 里（模块内用相对 import）；`skills/epcraft-label/` 里只有文档，没有 `scripts/`。入口是安装后的 `epcraft` 控制台命令（`pyproject.toml` 里 `epcraft = epcraft.cli:main`），或 `PYTHONPATH=src python3 -m epcraft`。纯 stdlib，不需要第三方包：
 
 | 模块 | 承担 |
 |---|---|
-| `src/ep_craft/magick_io.py` | magick 外呼、PPM 读取 |
-| `src/ep_craft/gel_detect.py` | 认胶面：背景平面、暗度/蓝度判据、连通域、竖边倾角 |
-| `src/ep_craft/gel_area.py` | stage 1：按预设定标定形、高度核对 |
-| `src/ep_craft/geometry.py` | 旋转几何 |
-| `src/ep_craft/crop.py` | Crop 画板：stage 1 框 ↔ 四角、预览 JPEG 与版式、读回框（`read_frame`）、`frame_delta`、按框重裁（`crop_face`） |
-| `src/ep_craft/config.py` | markers / lanes / 胶体预设的读取与校验 |
-| `src/ep_craft/lane_select.py` | `--trim-lanes` 语法、保留段与拼缝版式 |
-| `src/ep_craft/text_layout.py` | 字体、文字量宽、标签的角度与墨迹框（`box_offsets` / `anchor_for`，页边距与落位都用它） |
-| `src/ep_craft/well_grid.py` | 泳道种子：按加样孔定相的等距梳子（§6） |
-| `src/ep_craft/profiles.py` | 剖面、叫带、标定、报告 v2（§7） |
-| `src/ep_craft/mw_report.py` | MW 数学、标签 → MW 槽位展开、终端表与写盘 |
-| `src/ep_craft/workbench.py` | Workbench 模型：建（`from_image`）、画、读回（`from_document`）、校验、泳道名匹配 |
-| `src/ep_craft/figure.py` | Figure / Profiles 画板、整份文档（`build_document`）、sync 增量计划（`plan_sync`） |
-| `src/ep_craft/doc_edit.py` | `edit` 的改动计划（`plan_edit`：trim、marker 泳道、泳道名），出与 `plan_sync` 同一套 op |
-| `src/ep_craft/vc_file.py` | `.vectorcraft` 读写（内联 / blobs / gzip 三种编码；对象从 `src/ep_craft/templates/kinds.vectorcraft` 深拷贝） |
-| `src/ep_craft/vc_control.py` | 控制口客户端：连接/启动、对话框、存盘轮询、导出核对、撤销组 |
-| `src/ep_craft/sync_exec.py` | 把 `plan_sync` 的操作落到活文档上 |
-| `src/ep_craft/env_check.py` | `doctor` |
-| `src/ep_craft/canvas_cli.py` | 公开层级命令：`launch`、`figure export`、`workbench export` / `import` 的参数、路径保护与错误边界 |
-| `src/ep_craft/workbench_io.py` | Workbench JSON 的导出 / 导入与整份校验（§13） |
-| `src/ep_craft/selftest.py`、`selftest_sync.py`、`selftest_crop.py`、`selftest_cli.py`、`selftest_workbench_io.py` | `selftest` 的各套件（`selftest_sync` 用假控制口测 sync 执行器；`selftest_crop` 测裁切框几何与读回；`selftest_cli` 测命令树与分发；`selftest_workbench_io` 测 JSON 往返与校验） |
+| `src/epcraft/magick_io.py` | magick 外呼、PPM 读取 |
+| `src/epcraft/gel_detect.py` | 认胶面：背景平面、暗度/蓝度判据、连通域、竖边倾角 |
+| `src/epcraft/gel_area.py` | stage 1：按预设定标定形、高度核对 |
+| `src/epcraft/geometry.py` | 旋转几何 |
+| `src/epcraft/crop.py` | Crop 画板：stage 1 框 ↔ 四角、预览 JPEG 与版式、读回框（`read_frame`）、`frame_delta`、按框重裁（`crop_face`） |
+| `src/epcraft/config.py` | markers / lanes / 胶体预设的读取与校验 |
+| `src/epcraft/lane_select.py` | `--trim-lanes` 语法、保留段与拼缝版式 |
+| `src/epcraft/text_layout.py` | 字体、文字量宽、标签的角度与墨迹框（`box_offsets` / `anchor_for`，页边距与落位都用它） |
+| `src/epcraft/well_grid.py` | 泳道种子：按加样孔定相的等距梳子（§6） |
+| `src/epcraft/profiles.py` | 剖面、叫带、标定、报告 v2（§7） |
+| `src/epcraft/mw_report.py` | MW 数学、标签 → MW 槽位展开、终端表与写盘 |
+| `src/epcraft/workbench.py` | Workbench 模型：建（`from_image`）、画、读回（`from_document`）、校验、泳道名匹配 |
+| `src/epcraft/figure.py` | Figure / Profiles 画板、整份文档（`build_document`）、sync 增量计划（`plan_sync`） |
+| `src/epcraft/doc_edit.py` | `edit` 的改动计划（`plan_edit`：trim、marker 泳道、泳道名），出与 `plan_sync` 同一套 op |
+| `src/epcraft/vc_file.py` | `.vectorcraft` 读写（内联 / blobs / gzip 三种编码；对象从 `src/epcraft/templates/kinds.vectorcraft` 深拷贝） |
+| `src/epcraft/vc_control.py` | 控制口客户端：连接/启动、对话框、存盘轮询、导出核对、撤销组 |
+| `src/epcraft/sync_exec.py` | 把 `plan_sync` 的操作落到活文档上 |
+| `src/epcraft/env_check.py` | `doctor` |
+| `src/epcraft/canvas_cli.py` | 公开层级命令：`launch`、`figure export`、`workbench export` / `import` 的参数、路径保护与错误边界 |
+| `src/epcraft/workbench_io.py` | Workbench JSON 的导出 / 导入与整份校验（§13） |
+| `src/epcraft/selftest.py`、`selftest_sync.py`、`selftest_crop.py`、`selftest_cli.py`、`selftest_workbench_io.py` | `selftest` 的各套件（`selftest_sync` 用假控制口测 sync 执行器；`selftest_crop` 测裁切框几何与读回；`selftest_cli` 测命令树与分发；`selftest_workbench_io` 测 JSON 往返与校验）。|
 
-## 13. Workbench 数据交换（`src/ep_craft/workbench_io.py`）
+## 13. Workbench 数据交换（`src/epcraft/workbench_io.py`）
 
 两个公开命令，读写的是**泳道数据**，不是 render 的配置（`lanes.json` / `markers.json`，§1），也不是 MW 报告（`fig.mw.json`，§7）：
 
 ```bash
-ep-craft workbench export fig.vectorcraft [--out workbench.json]   # 省略 --out => JSON 写到 stdout
-ep-craft workbench import fig.vectorcraft --input workbench.json [--no-sync] [--dpi 300] [--port 7797]
+epcraft workbench export fig.vectorcraft [--out workbench.json]   # 省略 --out => JSON 写到 stdout
+epcraft workbench import fig.vectorcraft --input workbench.json [--no-sync] [--dpi 300] [--port 7797]
 ```
 
-导出连控制口读**活文档**（没开就打开），未存盘的泳道名也会带上；所有几何量都是胶面 cm（原点 = 胶面左上角，与 §4/§5 同一口径）。导入先整份校验，再改活文档，全部操作落在**一个**撤销组 `ep-craft workbench import` 里；默认随后 sync（刷新 Figure / Profiles / `fig.png` / `fig.mw.json`），`--no-sync` 则只改文档、不存盘也不刷新。
+导出连控制口读**活文档**（没开就打开），未存盘的泳道名也会带上；所有几何量都是胶面 cm（原点 = 胶面左上角，与 §4/§5 同一口径）。导入先整份校验，再改活文档，全部操作落在**一个**撤销组 `epcraft workbench import` 里；默认随后 sync（刷新 Figure / Profiles / `fig.png` / `fig.mw.json`），`--no-sync` 则只改文档、不存盘也不刷新。
 
 ### 13a. JSON 格式（`version: 1`）
 

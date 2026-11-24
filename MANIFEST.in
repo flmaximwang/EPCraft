@@ -1,9 +1,9 @@
 include README.md
 include LICENSE
 include pyproject.toml
-graft src/ep_craft/data
-graft src/ep_craft/templates
-graft src/ep_craft/fixtures
+graft src/epcraft/data
+graft src/epcraft/templates
+graft src/epcraft/fixtures
 global-exclude __pycache__
 global-exclude *.py[cod]
 global-exclude .DS_Store

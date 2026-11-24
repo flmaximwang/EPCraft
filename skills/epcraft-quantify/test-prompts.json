@@ -1,0 +1,90 @@
+{
+  "skill": "epcraft-quantify",
+  "version": "1.0.0",
+  "test_cases": [
+    {
+      "id": "should-trigger-01",
+      "type": "should_trigger",
+      "prompt": "帮我从这张胶图上数条带、算一下我这几个样品里目标带的占比：2、3、4 道是标准，分别上了 20、10、5 ug。",
+      "expected_behavior": "In scope (the optional densitometry chain, SDS-PAGE only: the standard lanes hold protein standards loaded by hand; an agarose gel has no such standards and can be labeled but not quantified by mass). First confirm that `fig.mw.json` exists (if not, run render / sync first: the report is the input of the whole chain), and confirm the `--std` lanes and masses with the user (default is that lane's strongest band; `3:2=10` names the second band, `4:*=5` the lane total; replicate lanes with the same mass collapse into one point with n>1). Then run the chain in order:\n`epcraft densitometry measure fig.mw.json`\n`epcraft densitometry plot-bands --dens fig.dens.json` (look at the plot first: the shaded rows are what was integrated and the two baselines are the dashed lines)\n`epcraft densitometry curve --dens fig.dens.json --std \"2=20,3=10,4=5\"` -> `fig.curve.json`\n`epcraft densitometry plot-curve --curve fig.curve.json` (check the fit and the residual strip)\n`epcraft densitometry quantify --dens fig.dens.json --curve fig.curve.json [--load \"9=2,10=2\"]`\n`epcraft densitometry plot-curve --curve fig.curve.json --quant fig.quant.json` (draw the sample points on the curve)\nWhen reporting numbers, keep the three fields apart and never merge them into one \"purity\": `bands[].rel_pct` is this band's share of **its own lane's** measured mass (a within-lane band share); `lanes[].frac_pct_among_lanes` is this lane's measured mass as a share of the gel's known total (a lane-to-lane share, not a band share); `conc` exists only when `--load` was given. If the user asks \"how much of this lane is the target band\", answer with `rel_pct`; if they ask \"how much of the gel is this lane\", answer with `frac_pct_among_lanes`; if they ask both, report both and say they answer different questions. Before running `measure`, ask which lanes are actually samples: the chain decides \"marker\" from the report's `marker` flag, not from the label, so a second ladder, a blank or a pooled lane has to be left out with an explicit `measure --lanes` that lists the standard lanes **and** the real sample lanes (for example `--lanes 2-8,10-12`), or it will be counted as a sample in `frac_pct_among_lanes`. A band outside the standard range is `mass: null` + `out_of_range: true` (that lane's `mass_total` is `null` too): say plainly that its area falls outside the standard range and so has no mass, and give the fix in the right direction — below the range `多加点或浓缩后再跑` (load more or concentrate), above it `稀释或少点一点再跑` (dilute or load less) — or add a standard lane that brackets it and re-run `curve`; never extrapolate. A band whose area is inside the range but whose stored fit evaluates to zero or less is also `mass: null`, with `out_of_range: false` and lane totals `null`; the note names only the lane, the band and the area, and the fitted value is never printed anywhere, so state that the low-area end of the curve is not trustworthy and fix it with `--drop` on the lowest standard or `--fit power` and a re-run of `curve` and `quantify`, not by loading differently — never reconstruct or quote a negative or zero mass. Quote the percentage fields from `quant.json` rather than from the terminal table (the JSON keeps 2 decimals, the table prints whole percent); the table prints masses and concentrations with up to 3 decimals, trailing zeros dropped. If `curve` refuses with `标准点不单调`, go back to `fig.bands.png` and check windows, standard-lane order and flags, then either fix the `--std` mapping or `--drop` a lane — do not force a positive number, and do not assert that saturation is the cause. Every new file is a sibling of `fig.mw.json`; do not re-run render and do not touch `fig.vectorcraft` / `fig.png` / `fig.mw.json`.",
+      "notes": "Moved from the combined skill (split ep-yl2.2). Quantification used to be an optional chain inside the labeling skill; it is now this skill. `rel_pct` and `frac_pct_among_lanes` are not the same quantity and must not be presented together as one \"purity\"."
+    },
+    {
+      "id": "should-trigger-02",
+      "type": "should_trigger",
+      "prompt": "这条标曲看着有点弯，r² 只有 0.97，帮我看看残差，要不要换 power fit？",
+      "expected_behavior": "走本 skill。先读已有的 `fig.curve.json` / `fig.curve.png`：哪个点偏离、残差条上是否单点高/低、`notes` 是否报了 ≥3 点不足或复孔 CV；再看 `fig.bands.png` 的窗口与基线是否先把面积量错。`--fit power` 是允许的模型选择（在 log10 空间拟合，r² 也是 log 空间的），但要说清它换的是模型不是测量；不能为了把 r² 抬上去而丢点或造点。若 `--drop` 某条标准，理由必须来自图/JSON 的观察（窗口贴邻带、基线落在梯度上、标注错误），并重跑 `curve` 与 `quantify`。",
+      "notes": "诱饵：把 power fit 当成提高 r² 的按钮。正确做法是先审计测量，再决定模型。"
+    },
+    {
+      "id": "should-trigger-03",
+      "type": "should_trigger",
+      "prompt": "第 5 道那条 45 kD 的带，占我这道总蛋白多少？另外第 5 道整体占全胶多少？",
+      "expected_behavior": "走本 skill。两个问题对应两个不同字段：带占本道 = `bands[].rel_pct`；道占全胶 = `lanes[].frac_pct_among_lanes`。分别从 `fig.quant.json` 取值并说明口径（分母分别是本道已知质量和全胶已知质量之和），不要合成一个「纯度」数。若某带 `mass: null`（超出标曲范围或拟合质量非正），相应道合计与占比也是 `null`，如实说明而不是拿别的道凑数。",
+      "notes": "诱饵：把 rel_pct 与 frac_pct_among_lanes 当成同一个百分比。"
+    },
+    {
+      "id": "should-trigger-04",
+      "type": "should_trigger",
+      "prompt": "Quantify the 25 kDa band in lanes 5-8. Lanes 2, 3 and 4 are my standards: 20, 10 and 5 ug loaded.",
+      "expected_behavior": "走本 skill，用同一套 `epcraft`。确认 `fig.mw.json` 存在且是 v2、未比文档旧；SDS-PAGE 与标准道质量都齐了，不用再问。按顺序 `epcraft densitometry measure fig.mw.json` → `plot-bands`（先看窗口/基线）→ `curve --std \"2=20,3=10,4=5\"`（默认取各道最强带）→ `plot-curve` → `quantify`。若 5–8 之外还有非样品道（第二条梯子、空道、pooled 道），用 `measure --lanes 5-8` 把它们排除，否则会进 `frac_pct_among_lanes` 的分母。报告 fit（baseline / model / r² / 标准范围）、每条带的 mass 或拒绝原因，以及假设（单位 ug、标准道取值）。",
+      "notes": "English routing probe: the words are quantification-only; no labeling or VectorCraft work."
+    },
+    {
+      "id": "edge-case-05",
+      "type": "edge_case",
+      "prompt": "第 7 道那条带的面积比最低标准还小，quantify 说超出标曲范围、mass 是 null。能不能外推一个大概的数？",
+      "expected_behavior": "不能外推：`out_of_range: true` / `mass: null` 是链条的硬规则，和 MW 超出 marker 范围一样。说明这条带的面积落在标曲 `range.volume_min … volume_max` 之外，所以没有质量；该道 `mass_total` / `conc` 也随之为 `null`。给方向性修复：低于范围→多加点或浓缩后再跑；高于范围→稀释或少点一点再跑；或补一条能包住它的标准道后重跑 `curve`。先看 `fig.bands.png`：如果面积本身量错了（窗口贴邻带、基线落在梯度上），修窗口/基线比加样更根本。绝不给外推数字，也不造一个标曲点。",
+      "notes": "诱饵：用户直接要求外推。拒绝并解释方向，是本 skill 的核心行为。"
+    },
+    {
+      "id": "should-not-trigger-06",
+      "type": "should_not_trigger",
+      "prompt": "我手机拍了一张胶的照片，还没出图：帮我把 marker 的分子量标上、泳道名写好，出一张能放汇报里的 PNG。",
+      "expected_behavior": "越界：这是**标注**，交给 `epcraft-label`（同一套 `epcraft` 安装）。本 skill 不 render、不裁图、不开 VectorCraft，也没有 `fig.mw.json` 可读；先让标注 skill 产出 `fig.vectorcraft` + `fig.png` + `fig.mw.json`，之后才谈质量。若用户同时要定量，等报告出来后回来读它。",
+      "notes": "交叉负例：题面有胶和 marker，但没有任何标准道质量；要素是出图。"
+    },
+    {
+      "id": "should-not-trigger-07",
+      "type": "should_not_trigger",
+      "prompt": "这张胶上这些条带分别是什么蛋白？你看着判一下。",
+      "expected_behavior": "两者都不触发：本 skill 只把**已知**标准道的质量换算成条带质量，不识别蛋白种类，也不判读条带是什么。说明边界；若用户要的是分子量估计，那也属于 `epcraft-label` 的 `fig.mw.json` 报告（超出 marker 范围不外推）。",
+      "notes": "诱饵：胶图 + 条带，但要素是蛋白鉴定，两个 skill 都不做。"
+    },
+    {
+      "id": "edge-case-08",
+      "type": "edge_case",
+      "prompt": "这张琼脂糖胶跑的是 PCR 产物，2、3、4 道是标准，帮我算每条带多少 ug。",
+      "expected_behavior": "拒绝质量定量并说明原因：琼脂糖胶没有已知质量的蛋白标准品，`--std` 没有可校准的质量；本链条只适用于 SDS-PAGE。琼脂糖胶仍可由 `epcraft-label` 标 MW 和出图，但没有 mass 可算。不要拿 DNA ladder 的 bp 或上样体积硬凑质量。",
+      "notes": "诱饵：有「标准道」字样，但琼脂糖胶的质量标定不成立。"
+    },
+    {
+      "id": "edge-case-09",
+      "type": "edge_case",
+      "prompt": "我只有 fig.png，fig.mw.json 找不到了，你从这张 PNG 上量一下条带算质量吧。",
+      "expected_behavior": "不做：本链条的输入合同是报告 v2（原始 `gray` / `baseline` 剖面 + band 的 `y_cm`），PNG 没有这些，不能反推；也不要用图像脚本重建报告。让 `epcraft-label` 对现有文档跑一次 `sync`（会重写 `fig.mw.json`），或重新 render；报告回来后从 `measure` 开始。若文档也没了，只能重新标注。",
+      "notes": "诱饵：给出一个看似够用的 PNG。拒绝从像素反推，是数据合同的一部分。"
+    },
+    {
+      "id": "edge-case-10",
+      "type": "edge_case",
+      "prompt": "这胶上第 1 道是 marker，第 9 道也是 marker（标签写的 Marker），第 10 道是空道。定量时都要算进去吗？",
+      "expected_behavior": "不算。`measure` 按报告里的 `marker` 标志跳过标定道，但第 9 道若只是标签叫 Marker、报告标志不是 marker，就会被当样品；空道同样。用 `measure --lanes` 明确只留真正的样品道（例如 `--lanes 2-8`，它**替换**默认选择），再跑 `curve` / `quantify`；否则这些道会进 `overall_mass` 和 `frac_pct_among_lanes` 的分母，把真正样品的占比压小。`params.lanes` 会记录实际测了哪些道，报告时说明。",
+      "notes": "诱饵：以为标签写 Marker 就会被自动排除。判定看报告标志，不看文字。"
+    },
+    {
+      "id": "edge-case-11",
+      "type": "edge_case",
+      "prompt": "我在 VectorCraft 里改完泳道、sync 过了，但定量命令说报告比文档旧，让我先 sync。怎么办？",
+      "expected_behavior": "这是跨 skill 的交接点：`measure` 拒绝旧报告是对的（文档才是真相，旧报告不能用来定量）。把这一步交回 `epcraft-label`，对文档跑一次 `epcraft figure sync`（会重写 `fig.mw.json`），然后回到本 skill 从 `measure` 重新开始。不要手改报告时间戳、不要复制旧 JSON、也不要在本 skill 里调用 sync。",
+      "notes": "诱饵：用户把「先 sync」理解成本 skill 的命令；实际是标注 skill 的职责。"
+    },
+    {
+      "id": "edge-case-12",
+      "type": "edge_case",
+      "prompt": "2、3 道都是上了 10 ug 的标准，定量结果里它们合成一个点，还标了 n=2、sd=0.8。这个 sd 是质量的误差吗？",
+      "expected_behavior": "不是质量的误差，是**面积**的重复性：同质量的标定道合并成一个点（`n=2`），`sd` 是这几条道积分面积（gray·cm）的标准差，`cv_pct = sd / 平均面积 × 100`；`fig.curve.png` 上沿面积轴画的复孔误差棒表示的就是它，质量轴没有误差棒。若 `cv_pct > 15`，`notes` 会提示，报告时说明复孔偏松，不要把 sd 当 ±ug 引用。",
+      "notes": "诱饵：把 sd 当成质量的标准差。curve.json 的 sd 定义在面积上。"
+    }
+  ]
+}

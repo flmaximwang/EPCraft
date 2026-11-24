@@ -23,7 +23,7 @@ def _run(cmd, binary=True):
             "  macOS   brew install imagemagick\n"
             "  Windows winget install ImageMagick.ImageMagick\n"
             "  Linux   apt install imagemagick / dnf install ImageMagick\n"
-            "装完跑 `python3 -m ep_craft doctor` 自检。" % cmd[0])
+            "装完跑 `python3 -m epcraft doctor` 自检。" % cmd[0])
     if p.returncode != 0:
         raise RuntimeError("命令失败: %s\n%s" % (" ".join(cmd), p.stderr.decode()[:800]))
     return p.stdout if binary else p.stdout.decode()

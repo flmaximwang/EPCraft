@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""canvas_cli.py —— 公开 `ep-craft` 的画板分组命令里「不属于旧扁平 CLI」的那几条。
+"""canvas_cli.py —— 公开 `epcraft` 的画板分组命令里「不属于旧扁平 CLI」的那几条。
 
 `gel_photo.build_parser(canvas=True)` 先建好 figure / crop / workbench / profile 四个组以及共用的
 probe / render / sync / edit 叶子命令，再调用这里的 `add_commands(sub, groups)` 补上：
 
-    ep-craft launch [DOC] [--port PORT]
-    ep-craft figure export DOC [--artboard NAME] [--out PATH] [--dpi DPI] [--background C] [--port PORT]
-    ep-craft workbench export DOC [--out PATH] [--port PORT]
-    ep-craft workbench import DOC --input PATH [--no-sync] [--dpi DPI] [--port PORT]
+    epcraft launch [DOC] [--port PORT]
+    epcraft figure export DOC [--artboard NAME] [--out PATH] [--dpi DPI] [--background C] [--port PORT]
+    epcraft workbench export DOC [--out PATH] [--port PORT]
+    epcraft workbench import DOC --input PATH [--no-sync] [--dpi DPI] [--port PORT]
 
 Workbench 数据交换的实现由 workbench_io.py 负责（延迟 import：两个文件分开演进，也避免循环依赖）。
 本模块只做参数、路径保护与错误边界；业务错误统一抛 RuntimeError / OSError / ValueError，
@@ -119,6 +119,8 @@ def add_commands(sub, groups):
     """在公开 CLI 骨架上补 workflow / launch / export / import。"""
     from .workflow_cli import add_commands as add_workflow
     add_workflow(sub)
+    from .densitometry_cli import add_commands as add_densitometry
+    add_densitometry(sub)
     lp = sub.add_parser("launch", help="启动或连接 VectorCraft 控制口；可选打开一份文档")
     lp.add_argument("doc", nargs="?", help="要打开的 fig.vectorcraft（省略则只启动/连接）")
     lp.add_argument("--port", type=int, default=vc_control.DEFAULT_PORT,

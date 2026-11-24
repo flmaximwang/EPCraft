@@ -107,7 +107,7 @@ def require_init(doc):
     names = board_names(document)
     missing = [n for n in BOARDS if n not in names]
     if missing:
-        raise RuntimeError("文档缺 %s 画板 —— 先跑 `ep-craft workflow init-canvas <doc>`"
+        raise RuntimeError("文档缺 %s 画板 —— 先跑 `epcraft workflow init-canvas <doc>`"
                            % " / ".join(missing))
     dup = sorted({n for n in names if names.count(n) > 1})
     if dup:
@@ -115,7 +115,7 @@ def require_init(doc):
     layers = [lay.get("name") for lay in document.get("layers") or []]
     for name in ("ep-meta", "photo", "crop"):
         if name not in layers:
-            raise RuntimeError("文档缺 %s 图层 —— 先跑 `ep-craft workflow init-canvas <doc>`" % name)
+            raise RuntimeError("文档缺 %s 图层 —— 先跑 `epcraft workflow init-canvas <doc>`" % name)
 
 
 def replace_layer_objects(doc, layer_name, nodes):
@@ -261,7 +261,7 @@ def cmd_init_canvas(args):
         if r.get("warnings"):
             print("[!] VectorCraft 打开时提示：%s" % r["warnings"])
     print("建好四块空画板：%s（%s）" % (" / ".join(BOARDS), path))
-    print("下一步：ep-craft workflow img-to-crop <照片> --doc %s --gel-size <预设>" % path)
+    print("下一步：epcraft workflow img-to-crop <照片> --doc %s --gel-size <预设>" % path)
     return 0
 
 
@@ -272,7 +272,7 @@ def cmd_img_to_crop(args):
     path = os.path.abspath(args.doc)
     image = os.path.abspath(args.image)
     if not os.path.isfile(path):
-        raise RuntimeError("文档不存在：%s —— 先跑 `ep-craft workflow init-canvas %s`" % (path, path))
+        raise RuntimeError("文档不存在：%s —— 先跑 `epcraft workflow init-canvas %s`" % (path, path))
     if not os.path.isfile(image):
         raise RuntimeError("照片找不到：%s" % image)
     dpi = int(getattr(args, "dpi", 300))
@@ -318,7 +318,7 @@ def cmd_img_to_crop(args):
         print("[!] VectorCraft 打开时提示：%s" % r["warnings"])
     print("照片 %s 已放到 Crop 画板（%d dpi）：框可拖动 / 旋转 / 缩放；Workbench 等其它画板没动" % (
         os.path.basename(image), dpi))
-    print("下一步：ep-craft workflow crop-to-workbench %s --markers <配置>" % path)
+    print("下一步：epcraft workflow crop-to-workbench %s --markers <配置>" % path)
     return 0
 
 

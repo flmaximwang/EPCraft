@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
-"""ep-craft runtime package: electrophoresis gel figures on VectorCraft.
+"""epcraft runtime package: electrophoresis gel labeling and offline densitometry on VectorCraft.
 
-The package lives in the repository-root ``src/ep_craft``. Entry points are the
-installed console command ``ep-craft`` and ``python3 -m ep_craft`` with this
+The package lives in the repository-root ``src/epcraft``. Entry points are the
+installed console command ``epcraft`` and ``python3 -m epcraft`` with this
 package importable; the skill directory only carries docs (no scripts, no path
 bootstrapping). Runtime modules use package-relative imports.
 
 Bundled resources are package data (one source of truth, no copies):
 
-    ep_craft/data/        marker and gel presets
-    ep_craft/templates/   VectorCraft object templates
-    ep_craft/fixtures/    offline selftest fixtures
+    epcraft/data/        marker and gel presets
+    epcraft/templates/   VectorCraft object templates
+    epcraft/fixtures/    offline selftest fixtures
 """
 from pathlib import Path
 

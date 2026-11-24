@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Workbench 数据交换：`workbench export` / `workbench import`（公开 ep-craft 命令组）。
+"""Workbench 数据交换：`workbench export` / `workbench import`（公开 epcraft 命令组）。
 
 导出（JSON，版本化）只含**用户在 Workbench 上改得动的那组几何**，单位 cm、原点 = 胶面左上角
 （与 workbench.from_document / figure.plan_sync 同一口径）：
@@ -22,7 +22,7 @@ ep-meta 的 photo/dpi/preset/crop、peak_auto 等内部状态 —— import 只�
 导入先校验（schema/version、所有数字有限、胶面尺寸与目标文档一致、泳道连续、window、带序、
 sample 道号）—— 任何一处不对就**什么都不改**。通过后：
 - 按导入数据重建 lanes / window / marker band 线（数量变化时增删线），trim 标记、sample band 刻度；
-  全部包在一个撤销组 `ep-craft workbench import` 里（sync_exec）；
+  全部包在一个撤销组 `epcraft workbench import` 里（sync_exec）；
 - 把 ep-meta 的 lane_names / prev_centres_cm / bands 重定到导入后的泳道（现有 label lane n 直接改文字），
   这样随后的 sync 不会用旧映射覆盖导入的名字；
 - 源导出 low_confidence=true 会把低置信标记带到目标文档；导入本身永远不“证明”标定，也不会清掉已有的低置信标记；
@@ -46,7 +46,7 @@ GEL_TOL_CM = 0.01                     # 导出与目标文档的胶面尺寸容�
 CM_TOL = 0.0005                       # 几何比较容差（0.5 µm，远小于任何可画出来的移动）
 MIN_LANE_CM = 0.02                    # 与 workbench.validate 同一条：两边界几乎重合 = 不是泳道
 PT = vc_file.PT_PER_CM
-LABEL = "ep-craft workbench import"
+LABEL = "epcraft workbench import"
 _MISSING = object()
 
 
@@ -142,7 +142,7 @@ def _write_json(path, text, doc_path):
 
 
 def cmd_export(args):
-    """`ep-craft workbench export DOC [--out PATH] [--port PORT]`：活文档 → JSON（省略 --out 打 stdout）。"""
+    """`epcraft workbench export DOC [--out PATH] [--port PORT]`：活文档 → JSON（省略 --out 打 stdout）。"""
     path = _abs_doc(args.doc)
     client, document = _live_document(path, getattr(args, "port", None) or 7797, launch=True)
     model, notes = _read_model(document)
@@ -204,7 +204,7 @@ def validate_export(data, target_model):
     if not isinstance(data, dict):
         raise RuntimeError("Workbench 导出必须是一个 JSON 对象（收到 %s）" % type(data).__name__)
     if data.get("schema") != SCHEMA:
-        raise RuntimeError("不是 ep-craft Workbench 导出：schema = %r，要 %r" % (data.get("schema"), SCHEMA))
+        raise RuntimeError("不是 epcraft Workbench 导出：schema = %r，要 %r" % (data.get("schema"), SCHEMA))
     version = data.get("version")
     if isinstance(version, bool) or version != VERSION:
         raise RuntimeError("不支持的 Workbench 导出版本 %r；这个脚本只认 version %d" % (version, VERSION))
@@ -640,7 +640,7 @@ def _load_json(path):
 
 
 def cmd_import(args):
-    """`ep-craft workbench import DOC --input PATH [--no-sync] [--dpi DPI] [--port PORT]`。"""
+    """`epcraft workbench import DOC --input PATH [--no-sync] [--dpi DPI] [--port PORT]`。"""
     path = _abs_doc(args.doc)
     data = _load_json(os.path.abspath(args.input))
     client, document = _live_document(path, getattr(args, "port", None) or 7797, launch=True)

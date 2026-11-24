@@ -43,8 +43,11 @@ def test_import_direction():
              if name.endswith(".py") and not name.startswith("__")}
     # 管线：stage 1（gel_area）→ 泳道种子（well_grid）→ 剖面/条带（profiles）→ 模型（workbench）
     #       → 文档与 sync 计划（figure）→ 控制口执行（sync_exec）→ CLI（gel_photo）。只许依赖前面的。
+    # densitometry 是离线定量链的第一段（报告 v2 → dens.json），只吃 profiles 的报告、不碰画板；
+    # 链的其余模块（dens_plot 渲染、densitometry_cli 参数）排在管线末尾：数学不许依赖它们。
     # canvas_cli / workbench_io 是 CLI 胶水层，双方都有延迟 import，不参与线性方向规则。
-    later = ["well_grid", "profiles", "workbench", "figure", "doc_edit", "sync_exec", "gel_photo"]
+    later = ["well_grid", "profiles", "densitometry", "workbench", "figure", "doc_edit", "sync_exec",
+             "gel_photo", "dens_plot", "densitometry_cli"]
     rules = {"gel_area": set(later), "gel_detect": set(later)}
     for i, mod in enumerate(later):
         rules[mod] = set(later[i + 1:])
@@ -708,9 +711,9 @@ def selftest():
         c = vc_control.Client(fv.port, timeout=5)
         cmds = lambda: [(r["params"]["command"], r["params"]["params"]) for r in fv.log
                         if r["method"] == "engine.execute"]
-        with c.undo_group("ep-craft sync"):
+        with c.undo_group("epcraft sync"):
             c.execute("text.setText", {"id": 1, "text": "A"})
-        assert cmds() == [("edit.undoGroup.begin", {"label": "ep-craft sync"}),
+        assert cmds() == [("edit.undoGroup.begin", {"label": "epcraft sync"}),
                           ("text.setText", {"id": 1, "text": "A"}),
                           ("edit.undoGroup.end", {})], cmds()
         fv.log.clear()
@@ -1411,6 +1414,30 @@ def selftest():
     ok += selftest_sync.run()
     from . import selftest_crop
     ok += selftest_crop.run()
+
+    # 77+) 定量链第一段（densitometry；纯数学，假报告）：flank / global 双基线面积、窗口走墨量与
+    #     相邻带中点夹紧、flank 斜坡与 fallback、饱和/平顶标记、--lanes 语法、JSON 往返与幂等。
+    from . import selftest_densitometry
+    ok += selftest_densitometry.run()
+
+    # 77++) Band plot acceptance uses ImageMagick to verify PNG dimensions and window
+    #      fills for both baselines. It also checks grid options, input overwrite
+    #      protection, and temporary file cleanup.
+    from . import selftest_dens_plot
+    ok += selftest_dens_plot.run()
+
+    # 77+++) Curve plot acceptance (plot-curve): ImageMagick renders of a synthetic curve with and
+    #      without quant samples. It checks the fitted line, points, dropped points, replicate bars,
+    #      the residual strip, the annotation block, sample markers, CLI errors, overwrite protection
+    #      and temporary file cleanup. Written independently from the spec and the ticket.
+    from . import selftest_plot_curve_acceptance
+    ok += selftest_plot_curve_acceptance.run()
+
+    # 77++++) Quantify acceptance: areas to masses with the stored fit, the out-of-range and
+    #      non-positive-mass refusals, --load, lane shares, the terminal block and the CLI. Written
+    #      independently from the spec and the ticket.
+    from . import selftest_quantify_acceptance
+    ok += selftest_quantify_acceptance.run()
 
     # 78) 标签角度（V9）：角度是逆时针度（90 = 从下往上读），写进点文字的 xf（绕锚点）；读回同值；
     #     旋转后按**墨迹框**摆位与量页边（竖排的泳道名框底离胶顶 4 pt、框中线=泳道中心，页顶留白
