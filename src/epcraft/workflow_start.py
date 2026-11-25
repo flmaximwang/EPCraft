@@ -38,7 +38,7 @@ import os
 
 from . import crop as crop_geom
 from . import figure
-from . import gel_photo
+from . import gel_session
 from . import vc_control
 from . import vc_file
 from . import workbench
@@ -170,7 +170,7 @@ def merge_meta(doc, patch):
 def _ensure_open(client, path):
     """VectorCraft 里打开这份文件（同名文件按完整路径核对）。→ (是否本次打开, 下标)。"""
     path = os.path.abspath(path)
-    idx, _dirty = gel_photo._doc_state(client, path)
+    idx, _dirty = gel_session.doc_state(client, path)
     if idx is not None:
         client.execute("document.activate", {"index": idx})
         return False, idx
@@ -190,7 +190,7 @@ def live_document(args, path=None, save_dirty=True):
         raise RuntimeError("live_document：缺文档路径")
     port = int(getattr(args, "port", vc_control.DEFAULT_PORT))
     client, _launched = vc_control.connect(port, launch=True)
-    idx, dirty = gel_photo._doc_state(client, path)
+    idx, dirty = gel_session.doc_state(client, path)
     if idx is None:
         _ensure_open(client, path)
     elif dirty and save_dirty:
@@ -208,7 +208,7 @@ def _prepare_write(args, path):
     """把活文档里的手工改动先存盘、再关掉（若开着），返回 client。之后可以安全地改磁盘文件。"""
     port = int(getattr(args, "port", vc_control.DEFAULT_PORT))
     client, _launched = vc_control.connect(port, launch=True)
-    idx, dirty = gel_photo._doc_state(client, path)
+    idx, dirty = gel_session.doc_state(client, path)
     if idx is not None:
         if dirty:
             client.save(path)
@@ -282,9 +282,9 @@ def cmd_img_to_crop(args):
     # 先离线核对文档结构（不碰活文档），再认胶面（最贵的一步），最后才动磁盘
     require_init(load_builder(path))
 
-    preset = gel_photo._preset(args)                    # --gel-size 必须给（T1）
-    _png, ga, stage1 = gel_photo.gel_face(image, preset, args, dpi)
-    spec, crop_meta = gel_photo._crop_artboard(args, preset, stage1)
+    preset = gel_session.preset_from_args(args)         # --gel-size 必须给（T1）
+    _png, ga, stage1 = gel_session.gel_face(image, preset, args, dpi)
+    spec, crop_meta = gel_session.crop_artboard(args, preset, stage1)
     lo = figure.crop_layout(spec["frame_px"], spec["photo_size"], spec["preview_size"],
                             float(ga["width_cm"]))
 

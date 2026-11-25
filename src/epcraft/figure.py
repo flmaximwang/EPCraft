@@ -81,13 +81,15 @@ def targets(model, report, gel_key, gel_px, wb, labels=None, layout=None, measur
     specs = []
     W, H = model["gel"]["width_cm"], model["gel"]["height_cm"]
     lanes = model["lanes"]
-    cs = workbench.centres(model)
+    slanted = any(workbench.lane_is_quad(ln) for ln in lanes)
+    cs = workbench.centres(model)                       # 胶顶那一行：版式、拼缝、泳道名都按它
+    cb = workbench.centres(model, H) if slanted else None   # 梯形泳道：胶底那一行的中心
     kept = [i for i, ln in enumerate(lanes, 1) if not ln["trimmed"]]
     if not kept:
         raise workbench.WorkbenchError("所有泳道都在 trimmed 里 —— Figure 上至少要留一条")
 
-    # ---- Figure：保留段（中点切）、拼缝留白
-    segs, gel_w_cm = strips_layout(lane_strips(kept, cs, W), SPLICE_GAP_CM)
+    # ---- Figure：保留段（中点切）、拼缝留白；梯形泳道的段还带胶底那两个边界
+    segs, gel_w_cm = strips_layout(lane_strips(kept, cs, W, cb), SPLICE_GAP_CM)
 
     def fig_x_cm(lane):
         x = cs[lane - 1]
@@ -193,10 +195,16 @@ def targets(model, report, gel_key, gel_px, wb, labels=None, layout=None, measur
     s = W * PT / float(gel_px[0])
     for k, sg in enumerate(segs, 1):
         x = gx + sg["dst_x0_cm"] * PT
-        wcm = sg["src_x1_cm"] - sg["src_x0_cm"]
-        specs.append({"kind": "clip", "layer": "gel", "name": "gel seg %d" % k,
-                      "rect": (x, gy, wcm * PT, H * PT), "image": (x - sg["src_x0_cm"] * PT, gy, s), "key": gel_key,
-                      "px": tuple(gel_px)})
+        t0, t1 = sg["src_x0_cm"], sg["src_x1_cm"]
+        b0, b1 = sg.get("src_x0_bottom_cm", t0), sg.get("src_x1_bottom_cm", t1)
+        wcm = t1 - t0
+        sp = {"kind": "clip", "layer": "gel", "name": "gel seg %d" % k,
+              "rect": (x, gy, wcm * PT, H * PT), "image": (x - t0 * PT, gy, s), "key": gel_key,
+              "px": tuple(gel_px)}
+        if abs(b0 - t0) > 1e-9 or abs(b1 - t1) > 1e-9:    # 梯形：真四边形（上宽 ≠ 下宽）
+            sp["quad"] = [(x, gy), (x + (t1 - t0) * PT, gy),
+                          (x + (b1 - t0) * PT, gy + H * PT), (x + (b0 - t0) * PT, gy + H * PT)]
+        specs.append(sp)
     for it in lane_items:
         specs.append({"kind": "text", "layer": "labels", "name": it["name"], "text": it["text"],
                       "size": it["size"], "angle": it["angle"], "justify": it["justify"], "rgb": (0, 0, 0),
@@ -214,9 +222,9 @@ def targets(model, report, gel_key, gel_px, wb, labels=None, layout=None, measur
     for ln in report["lanes"]:
         if ln["marker"]:
             continue
-        c = cs[ln["lane"] - 1]
         for k, b in enumerate(sorted(ln["bands"], key=lambda x: x["y_cm"]), 1):   # k = 道内自上而下
             y = wgy + b["y_cm"] * PT
+            c = workbench.lane_centre_at(lanes[ln["lane"] - 1], b["y_cm"], H)    # 刻度在它那一行的中点
             specs.append({"kind": "line", "layer": "sample bands", "name": "peak %d.%d" % (ln["lane"], k),
                           "a": (wgx + (c - 0.08) * PT, y), "b": (wgx + (c + 0.08) * PT, y),
                           "rgb": (0.1, 0.6, 0.1), "width": 0.5})
@@ -381,6 +389,8 @@ def node(doc, spec):
     if k == "clip":
         ix, iy, s = spec["image"]
         img = vc_file.image(doc, "gel", spec["key"], spec["px"][0], spec["px"][1], ix, iy, s)
+        if spec.get("quad"):
+            return vc_file.clip_quad(doc, spec["name"], spec["quad"], img)
         return vc_file.clip(doc, spec["name"], spec["rect"], img)
     raise RuntimeError("未知规格 kind=%r" % k)
 
@@ -479,9 +489,9 @@ def wb_frame(document):
     """从文档读 Workbench 画板与胶面位置（与 workbench.frame 同形）。"""
     ab = next(a for a in document["artboards"] if a["name"] == "Workbench")
     r = ab["rect"]
-    img = next(n for n in vc_file.lay_children(vc_file.layer_by_name(document, "gel")) if n.get("name") == "gel")
+    gx, gy = vc_file.doc_origin(document)
     return {"artboard": (r["x0"], r["y0"], r["x1"] - r["x0"], r["y1"] - r["y0"]),
-            "gel_x": img["kind"]["xf"][4], "gel_y": img["kind"]["xf"][5]}
+            "gel_x": gx, "gel_y": gy}
 
 
 def _foreign_tick_ids(document, model):
@@ -493,13 +503,13 @@ def _foreign_tick_ids(document, model):
     lay = vc_file.layer_by_name(document, "sample bands")
     if not lay:
         return set()
-    tick_x = {n["id"]: x for x, _y, n in workbench.sample_ticks(document)}
+    tick_xy = {n["id"]: (x, y) for x, y, n in workbench.sample_ticks(document)}
     out = set()
     for n in vc_file.lay_children(lay):
-        if n["id"] not in tick_x:
+        if n["id"] not in tick_xy:
             out.add(n["id"])
             continue
-        lane = workbench.lane_at(model, tick_x[n["id"]])
+        lane = workbench.lane_at(model, *tick_xy[n["id"]])
         if lane is None or lane == model.get("marker_lane"):
             out.add(n["id"])
     return out
@@ -512,10 +522,10 @@ def plan_sync(document, model, report, layout=None, measure_fn=None, tol=0.01):
     """
     ops = []
     L = {l["name"]: l for l in document["layers"]}
-    gel_img = next(n for n in vc_file.lay_children(L["gel"]) if n.get("name") == "gel")
+    wb = wb_frame(document)
+    gel_img = vc_file.gel_node(document)
     key = gel_img["kind"]["key"]
     px = (gel_img["kind"]["width"], gel_img["kind"]["height"])
-    wb = wb_frame(document)
 
     # ---- 标签：旧泳道号 → 新泳道号（名字按从左往右的序号搬：第 i 格 ↔ 第 i 格，不看位置）
     old_meta = model["meta"]
@@ -591,10 +601,14 @@ def plan_sync(document, model, report, layout=None, measure_fn=None, tol=0.01):
             continue
         rect_node = next(c for c in cur["kind"]["children"] if c["kind"].get("clipping"))
         img_node = next(c for c in cur["kind"]["children"] if c["kind"]["type"] == "image")
-        x, y, w, h = sp["rect"]
-        pts = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
-        if any(abs(a[0] - b[0]) > tol or abs(a[1] - b[1]) > tol
-               for a, b in zip([tuple(p["p"]) for p in rect_node["kind"]["path"]["subpaths"][0]["anchors"]], pts)):
+        # 剪切多边形按**四个顶点**比，不比外接框：梯形泳道的上下宽不同，外接框相同也说明不了形状对
+        if sp.get("quad"):
+            pts = [tuple(p) for p in sp["quad"]]
+        else:
+            x, y, w, h = sp["rect"]
+            pts = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
+        got = [tuple(p["p"]) for p in rect_node["kind"]["path"]["subpaths"][0]["anchors"]]
+        if len(got) != len(pts) or any(abs(a[0] - b[0]) > tol or abs(a[1] - b[1]) > tol for a, b in zip(got, pts)):
             ops.append({"op": "reshape", "id": rect_node["id"], "points": [list(p) for p in pts], "closed": True})
         ix, iy, _s = sp["image"]
         dx, dy = ix - img_node["kind"]["xf"][4], iy - img_node["kind"]["xf"][5]
@@ -721,11 +735,16 @@ def apply_ops_json(top, ops):
             st["paint"] = {"type": "solid", "color": {"model": "rgb", "r": op["rgb"][0], "g": op["rgb"][1], "b": op["rgb"][2]}}
         elif o == "reshape":
             n = nodes[op["id"]]
-            n["kind"]["path"]["subpaths"] = [{"anchors": [{"p": list(p)} for p in op["points"]], "closed": op["closed"]}]
+            pts = [list(p) for p in op["points"]]
+            n["kind"]["path"]["subpaths"] = [{"anchors": [{"p": list(p)} for p in pts], "closed": op["closed"]}]
             live = n["kind"].get("live")
             if live and live.get("shape") == "rectangle":
-                (x0, y0), (x1, _), (_, y1) = op["points"][0], op["points"][1], op["points"][2]
-                live.update(w=x1 - x0, h=y1 - y0, xf=[1.0, 0.0, 0.0, 1.0, x0, y0])
+                (x0, y0), (x1, _), (_, y1) = pts[0], pts[1], pts[2]
+                if abs(abs(x1 - x0) - abs(pts[2][0] - pts[3][0])) <= 1e-6 \
+                        and abs(abs(y1 - y0) - abs(pts[2][1] - pts[1][1])) <= 1e-6:
+                    live.update(w=x1 - x0, h=y1 - y0, xf=[1.0, 0.0, 0.0, 1.0, x0, y0])
+                else:                                     # 梯形：live 矩形表达不了，只留路径几何
+                    n["kind"].pop("live", None)
         else:
             raise RuntimeError("未知 op %r" % o)
     return top

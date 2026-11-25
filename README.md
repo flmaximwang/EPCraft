@@ -49,11 +49,11 @@ The public entry point is the single executable `epcraft`, shared by both skills
 | `epcraft densitometry quantify --dens DENS --curve CURVE ...` | Map each sample band's area to mass; writes `fig.quant.json`. |
 | `epcraft densitometry plot-bands --dens DENS ...` | Plot local peaks on a shared zero baseline. Single-lane panels shade the integration windows. Repeat `--group 'Standards (mg/mL)=2@0.25,3:1@0.5'` to overlay peaks with window endpoints and `coolwarm` concentration colors. Writes `fig.bands.png`. |
 | `epcraft densitometry plot-curve --curve CURVE ...` | Render the standard curve, residuals and (with `--quant`) the sample points; writes `fig.curve.png`. |
-| `epcraft doctor` / `epcraft selftest` | Environment check / offline self-test (legacy, CLI, Workbench IO and the densitometry suites). |
+| `epcraft doctor` / `epcraft selftest` | Environment check / offline smoke check for the installed package. |
 
 `sync` accepts `--port 7797`, `--dpi 300`, `--dry-run` and `--reset-peaks [N ...]`; `render` keeps all its detection and layout flags (see the [label manual](skills/epcraft-label/SKILL.md)). Exit code `0` = success, `2` = expected user/environment error (message on stderr, no traceback).
 
-**Densitometry is the whole tool surface of `epcraft-quantify` and touches no other file.** Its five `epcraft densitometry` commands (short alias `epcraft dens`: `measure`, `curve`, `quantify`, `plot-bands`, `plot-curve`) read the `fig.mw.json` that `render` / `sync` already wrote and write **sibling** JSON/PNG files next to it — `fig.dens.json`, `fig.curve.json`, `fig.quant.json`, `fig.bands.png`, `fig.curve.png`. They never launch VectorCraft, never modify `fig.vectorcraft`, and never rewrite `fig.png` or `fig.mw.json`: the three-file render output is exactly what it was. The chain is meant to be inspected between the steps, so each command reads the previous file and a bad window or a bent fit is caught before the next one runs. `--std` names the standard lanes (`2=20` = that lane's strongest band, `3:2=10` = the second band from the top, `4:*=5` = the lane total). A band whose area falls outside the standard range gets no mass (`mass: null`, `out_of_range: true`) — below the range that means loading more or concentrating, above it loading less — and the chain never extrapolates the curve.
+**Densitometry is the whole tool surface of `epcraft-quantify` and touches no other file.** Its five `epcraft densitometry` commands (short alias `epcraft dens`: `measure`, `curve`, `quantify`, `plot-bands`, `plot-curve`) read the `fig.mw.json` that `render` / `sync` already wrote and write **sibling** JSON/PNG files next to it — `fig.dens.json`, `fig.curve.json`, `fig.quant.json`, `fig.bands.png`, `fig.curve.png`. They never launch VectorCraft, never modify `fig.vectorcraft`, and never rewrite `fig.png` or `fig.mw.json`: the three-file render output is exactly what it was. The chain is meant to be inspected between the steps, so each command reads the previous file and a bad window or a bent fit is caught before the next one runs. `--std` names the standard lanes (`2=20` = that lane's strongest band, `3:2=10` = the second band from the top, `4:*=5` = the lane total). A band whose area falls outside the standard range gets no mass (`mass: null`, `out_of_range: true`) — below the range that means loading more or concentrating, above it loading less — and `quantify` leaves the mass blank. With `--quant`, `plot-curve` shows those bands at their measured areas on the dashed model extensions, with `extrapolated sample` in the legend.
 
 ### Staged workflow
 
@@ -121,7 +121,11 @@ To run without installing, use the package from the repo root:
 PYTHONPATH=src python3 -m epcraft doctor
 ```
 
-`uv tool install` puts one executable on your PATH (usually `~/.local/bin`; run `uv tool update-shell` if it is missing). The base package uses the standard library. `epcraft doctor` reports whether Matplotlib is available, and `epcraft selftest` skips the densitometry drawing checks in a base installation. Runtime modules live in the `epcraft` package; presets and templates ship as package data, so locate them with `$(uv tool dir)/epcraft/bin/python -c "import epcraft; print(epcraft.data_dir())"` (a checkout's `src/epcraft/data/` remains the simplest source). Remove the tool with `uv tool uninstall epcraft`.
+`uv tool install` puts one executable on your PATH (usually `~/.local/bin`; run `uv tool update-shell` if it is missing). The base package uses the standard library. `epcraft doctor` reports whether Matplotlib is available. `epcraft selftest` checks the bundled gel preset, document template and a densitometry calculation offline. Runtime modules live in the `epcraft` package; presets and templates ship as package data, so locate them with `$(uv tool dir)/epcraft/bin/python -c "import epcraft; print(epcraft.data_dir())"` (a checkout's `src/epcraft/data/` remains the simplest source). Remove the tool with `uv tool uninstall epcraft`.
+
+## Running the regression suite
+
+From the repository root, run `PYTHONPATH=src python3 -m tests` with ImageMagick on `PATH`. Use a Python environment with `epcraft[plot]` installed to include the headless Matplotlib checks. The suite prints an explicit skip for those checks in a base environment.
 
 ## Repository layout
 
@@ -129,7 +133,8 @@ PYTHONPATH=src python3 -m epcraft doctor
 |---|---|
 | [`skills/epcraft-label/`](skills/epcraft-label/) | Labeling skill: `SKILL.md`, `references/` (conventions, pitfalls, VectorCraft) — no runnable scripts |
 | [`skills/epcraft-quantify/`](skills/epcraft-quantify/) | Quantification skill: `SKILL.md`, `references/densitometry.md` — consumes the labeling report |
-| `src/epcraft/` | Installable package shared by both skills: runtime modules plus bundled `data/`, `templates/`, `fixtures/` (renamed by `ep-yl2.1`; before that, `src/ep_craft/`) |
+| `src/epcraft/` | Installable package shared by both skills, with runtime modules, bundled `data/` and `templates/` |
+| [`tests/`](tests/) | Repository regression suites and fixtures |
 | [`pyproject.toml`](pyproject.toml) | Packaging: console script `epcraft`, package data, setuptools build |
 | [`specs/`](specs/) | Design specs (VectorCraft output, editable output, gel prior, skill split) |
 | [`tickets/`](tickets/) | Work breakdown for the VectorCraft output |

@@ -14,15 +14,19 @@ What is asserted is the scientific content of the picture:
 * a residual strip that shares the volume axis, with zero and +/-10 % lines,
 * the annotation block (fit, r2, n, baseline, unit, equation), the English title/labels,
 * a native Matplotlib marker legend with only the active categories (filled/hollow shapes,
-  SD entry only when a replicate bar exists),
-* sample squares from quant.json (hollow when out of range), and byte-identical output when
-  quant is absent,
+  SD entry only when a replicate bar or a sample fit bar exists),
+* sample squares from quant.json (filled in range, hollow out of range), and byte-identical
+  output when quant is absent,
+* vertical ±1 SD fit bars centred on the sample mass, drawn only when the band carries a
+  drawable mass_sd, capped and clipped by the curve frame,
+* every sample on the main axes, with out-of-range samples labeled at the actual area and
+  model value on a dashed extension, and the canvas height unaffected by sample count,
 * public CLI defaults, errors and overwrite protection.
 
 Matplotlib is an optional `[plot]` extra; the gateway / base selftest decides whether the
 suites run at all, so this module does not silently skip.
 
-Run:  PYTHONPATH=src python3 -m epcraft.selftest_plot_curve_acceptance
+Run:  PYTHONPATH=src python3 -m tests.selftest_plot_curve_acceptance
 `run()` returns the number of passed checks and prints
 `selftest_plot_curve_acceptance N/N 通过`.
 """
@@ -38,7 +42,7 @@ import warnings
 
 os.environ.setdefault("MPLBACKEND", "Agg")
 
-from . import densitometry
+from epcraft import densitometry
 
 KIND = densitometry.CURVE_KIND
 QUANT_KIND = "ep-craft-densitometry-quant"
@@ -51,7 +55,7 @@ _NUM = re.compile(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?")
 
 def _plot():
     """The renderer module, with the two public names this suite exercises."""
-    from . import dens_plot
+    from epcraft import dens_plot
     for name in ("plot_curve",):
         assert callable(getattr(dens_plot, name, None)), \
             "dens_plot.%s 不是可调用对象" % name
@@ -228,14 +232,13 @@ def _axes(fig):
 
 
 def _pair(fig):
-    """(main, residual) axes: the taller/top one is the curve, the lower one the strip."""
-    axes = _axes(fig)
-    assert len(axes) == 2, "plot_curve 应只有主轴 + 残差轴两个 Axes，实际 %d 个" % len(axes)
-    main = max(axes, key=lambda a: a.get_position().y1)
-    resid = [a for a in axes if a is not main][0]
-    assert resid.get_position().y1 <= main.get_position().y0 + 0.08, \
-        "残差轴不在主轴下方：main=%r resid=%r" % (main.get_position().bounds,
-                                                   resid.get_position().bounds)
+    """The only axes are the main curve and the residual panel beneath it."""
+    axes = sorted(_axes(fig), key=lambda ax: ax.get_position().y1, reverse=True)
+    assert len(fig.axes) == len(axes) == 2, "Expected exactly two axes, got %d" % len(fig.axes)
+    main, resid = axes
+    assert resid.get_position().y1 <= main.get_position().y0
+    assert _joined(main, resid)
+    assert main.get_xlim() == resid.get_xlim()
     return main, resid
 
 
@@ -244,6 +247,34 @@ def _joined(ax1, ax2):
         return bool(ax1.get_shared_x_axes().joined(ax1, ax2))
     except Exception:
         return bool(ax1.get_shared_x_axes().joined(ax1, ax2))
+
+
+def _draw(fig):
+    """(renderer, pixel height): draw the Figure once so text layouts can be measured."""
+    fig.canvas.draw()
+    return fig.canvas.get_renderer(), float(fig.bbox.height)
+
+
+def _text_box(fig, text):
+    """(x0, y0, x1, y1) of a Figure text in PNG pixels; y counts from the top edge."""
+    renderer, height = _draw(fig)
+    box = text.get_window_extent(renderer)
+    return (float(box.x0), height - float(box.y1), float(box.x1), height - float(box.y0))
+
+
+def _axes_box(fig, ax):
+    """(x0, y0, x1, y1) of an Axes in PNG pixels; y counts from the top edge."""
+    _renderer, height = _draw(fig)
+    width = float(fig.bbox.width)
+    pos = ax.get_position()
+    return (pos.x0 * width, (1.0 - pos.y1) * height, pos.x1 * width, (1.0 - pos.y0) * height)
+
+
+def _overlap(box1, box2):
+    """Area shared by two pixel boxes; 0.0 when they are apart or only touch."""
+    width = min(box1[2], box2[2]) - max(box1[0], box2[0])
+    height = min(box1[3], box2[3]) - max(box1[1], box2[1])
+    return width * height if width > 0.0 and height > 0.0 else 0.0
 
 
 def _arr(seq):
@@ -312,7 +343,11 @@ def _markers(ax):
             out.append({"x": float(x), "y": float(y), "shape": _marker_shape(marker),
                         "filled": not _hollow(face), "face": face, "edge": edge,
                         "size": size, "kind": "line"})
+    from matplotlib.collections import PathCollection
+
     for coll in ax.collections:
+        if not isinstance(coll, PathCollection):
+            continue
         try:
             offsets = _arr(coll.get_offsets())
         except Exception:
@@ -430,18 +465,38 @@ def _xerr_at(ax, x, y, xtol, ytol):
 
 
 def _yerr_segments(ax):
+    """All vertical error segments on the Axes → [(x0, y0, x1, y1)], from ErrorbarContainers.
+
+    Matplotlib ≥3.10 stores only the bar-line collection in `container.lines[2]`, so every
+    collection there is read instead of assuming a (line, bars) pair.
+    """
     from matplotlib.container import ErrorbarContainer
     out = []
     for container in ax.containers:
         if not isinstance(container, ErrorbarContainer) or not container.has_yerr:
             continue
         bars = container.lines[2]
-        if len(bars) < 2:
-            continue
-        for seg in bars[1].get_segments():
-            (x0, y0), (x1, y1) = seg
-            out.append((float(x0), float(y0), float(x1), float(y1)))
+        if not isinstance(bars, (tuple, list)):
+            bars = [bars]
+        for collection in bars:
+            get_segments = getattr(collection, "get_segments", None)
+            if get_segments is None:
+                continue
+            for seg in get_segments():
+                (x0, y0), (x1, y1) = seg
+                out.append((float(x0), float(y0), float(x1), float(y1)))
     return out
+
+
+def _yerr_at(ax, x, y, xtol, ytol):
+    """(lo, hi) of the vertical bar centred on (x, y), or None."""
+    for x0, y0, x1, y1 in _yerr_segments(ax):
+        if abs(x0 - x) > xtol or abs(x1 - x) > xtol:
+            continue
+        lo, hi = min(y0, y1), max(y0, y1)
+        if lo - ytol <= y <= hi + ytol:
+            return lo, hi
+    return None
 
 
 def _model(curve, volume):
@@ -490,7 +545,7 @@ def _linear_curve():
         "version": 1, "kind": KIND, "unit": "ug", "baseline": "flank", "fit": "linear",
         "source": {"dens": "fig.dens.json", "std": "2=5,3=10,4=20,5=20,6=40", "drop": [2]},
         "points": [
-            {"mass": 5.0, "volume": 1.7, "n": 1, "sd": None, "cv_pct": None,
+            {"mass": 5.0, "volume": 2.5, "n": 1, "sd": None, "cv_pct": None,
              "lanes": [2], "entries": [[2, 1]], "used": False},
             {"mass": 10.0, "volume": 3.0, "n": 1, "sd": None, "cv_pct": None,
              "lanes": [3], "entries": [[3, 1]], "used": True},
@@ -581,11 +636,57 @@ def _quant():
     }
 
 
+def _copy(payload):
+    """A deep copy of a JSON fixture, so a check can mutate it freely."""
+    return json.loads(json.dumps(payload, ensure_ascii=False))
+
+
+# mass_sd per (lane, band) for the sample fit bars: two in-range bars, one legacy-zero, one OOR.
+_SD = {(9, 1): 0.9, (9, 2): 1.6, (11, 1): 2.4, (12, 1): 2.0}
+
+
+def _quant_sd(values=None):
+    """`_quant()` plus per-band mass_sd; values defaults to the mixed fixture in `_SD`."""
+    quant = _copy(_quant())
+    values = _SD if values is None else values
+    for lane in quant["lanes"]:
+        for band in lane["bands"]:
+            band["mass_sd"] = values.get((lane["lane"], band["index"]))
+    return quant
+
+
+def _quant_in_range():
+    """`_quant_sd()` with only in-range lanes."""
+    quant = _quant_sd({(9, 1): 0.9, (9, 2): 1.6, (11, 1): 2.4})
+    quant["lanes"] = quant["lanes"][:2]
+    quant["overall_mass"] = 66.3
+    quant.pop("notes", None)
+    return quant
+
+
+def _quant_clustered():
+    """Below- and above-range samples with some areas close together."""
+    quant = _copy(_quant())
+
+    def oor(index, y_cm, mw, area):
+        return {"index": index, "y_cm": y_cm, "mw_kda": mw, "area": area, "mass": None,
+                "mass_sd": None, "out_of_range": True, "rel_pct": None}
+
+    quant["lanes"][0]["bands"].extend([oor(3, 1.6, 55.0, 1.12), oor(4, 5.2, 20.0, 1.13)])
+    quant["lanes"][1]["bands"].append(oor(2, 4.0, 28.0, 11.05))
+    quant["lanes"].append({"lane": 13, "label": "S5", "load_ul": 2.0,
+                           "bands": [oor(1, 1.0, 60.0, 12.6)],
+                           "mass_total": None, "conc": None, "out_of_range": True,
+                           "out_of_range_bands": [1], "frac_pct_among_lanes": None})
+    quant.pop("notes", None)
+    return quant
+
+
 # ---------------------------------------------------------------- CLI harness
 
 def _cli(argv):
     """Run the public CLI in-process → (rc, stdout, stderr); argparse exits count as rc 2."""
-    from . import gel_photo
+    from epcraft import gel_photo
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         try:
@@ -633,7 +734,7 @@ def _write_json(path, payload):
 
 def check_cli_parser():
     """`plot-curve` stays registered under both groups with §3.4 defaults."""
-    from . import gel_photo
+    from epcraft import gel_photo
     for group in ("dens", "densitometry"):
         ap = gel_photo.build_parser(canvas=True)
         args = ap.parse_args([group, "plot-curve", "--curve", "fig.curve.json"])
@@ -713,31 +814,26 @@ def check_fit_line_linear():
         assert lines, "没有找到按 slope/intercept 绘制的拟合线"
         xs_all = [float(x) for ln in lines for x in ln.get_xdata()]
         lo, hi = min(xs_all), max(xs_all)
-        vmin = curve["range"]["volume_min"]
-        vmax = curve["range"]["volume_max"]
-        span = vmax - vmin
-        assert lo <= vmin - 0.05 * span + 0.03 * span, \
-            "拟合线左端 %.4f 没有覆盖 -10%% 延伸（vmin %.4f）" % (lo, vmin)
-        assert hi >= vmax + 0.05 * span - 0.03 * span, \
-            "拟合线右端 %.4f 没有覆盖 +10%% 延伸（vmax %.4f）" % (hi, vmax)
-        assert lo >= vmin - 0.12 * span - 1e-9, "拟合线左端越界：%.4f" % lo
-        assert hi <= vmax + 0.12 * span + 1e-9, "拟合线右端越界：%.4f" % hi
+        assert (lo, hi) == main.get_xlim()
+        assert main.get_ylim()[0] > 0, "正值数据的纵轴被强制扩到零"
         for ln in lines:
             xs, ys = _line_xy(ln)
             expected = _arr([_model(curve, x) for x in xs])
             assert float(abs(ys - expected).max()) <= \
                 1e-6 * max(1.0, float(abs(expected).max())), \
                 "拟合线不在 y = intercept + slope*x 上"
-        # Force the left extension to cross the bottom of the axes. The artist's
-        # data must still follow the model below zero so clipping preserves its slope.
+        # The same padding rule applies when the left extension crosses zero.
         curve["fit_params"]["intercept"] = -10.0
         (_w, _h), fig, _caught, _out = _render_file(td, "lin-crossing.png", curve)
         main, _resid = _pair(fig)
         extensions = [line for line in _fit_line(main, curve) if _is_dashed(line)]
         assert len(extensions) == 2, "拟合线两端的虚线必须沿用同一个模型"
-        left = min(extensions, key=lambda line: min(line.get_xdata()))
-        assert min(left.get_ydata()) < main.get_ylim()[0] < max(left.get_ydata()), \
-            "左侧虚线应由坐标轴裁切，不能把端点压到零线上"
+        y_values = [point["mass"] for point in curve["points"]]
+        y_values.extend(_model(curve, x) for x in main.get_xlim())
+        low, high = min(y_values), max(y_values)
+        assert low < 0 < high
+        pad = 0.10 * (high - low)
+        assert main.get_ylim() == (low - pad, high + pad)
     return True
 
 
@@ -764,22 +860,21 @@ def check_fit_line_power():
     return True
 
 
-def check_fit_line_wide_frame():
-    """A far-out dropped point widens the frame; the fit line stops at its +10 % extension."""
+def check_dropped_points_inside_padded_axes():
+    """Include even the outermost dropped points and pad both ends by 10% of the full span."""
     curve = _linear_curve()
-    curve["points"].append({"mass": 4.0, "volume": 40.0, "n": 1, "sd": None, "cv_pct": None,
-                            "lanes": [7], "entries": [[7, 1]], "used": False})
+    for lane, area in ((7, 0.1), (8, 40.0)):
+        curve["points"].append(dict(curve["points"][0], mass=1000.0, volume=area,
+                                    lanes=[lane], entries=[[lane, 1]]))
     with tempfile.TemporaryDirectory() as td:
-        (_w, _h), fig, _caught, _out = _render_file(td, "wide.png", curve)
+        _, fig, _, _ = _render_file(td, "limits.png", curve)
         main, _resid = _pair(fig)
-        lines = _fit_line(main, curve)
-        assert lines, "宽画框里没有拟合线"
-        hi = max(float(x) for ln in lines for x in ln.get_xdata())
-        vmax = curve["range"]["volume_max"]
-        ext = vmax + 0.10 * (vmax - curve["range"]["volume_min"])
-        assert hi <= ext + 0.02 * (vmax - curve["range"]["volume_min"]), \
-            "拟合线画到了整幅宽画框（右端 %.2f，延伸应止于 %.2f）" % (hi, ext)
-        assert main.get_xlim()[1] >= 40.0 - 1e-6, "宽画框没有容纳 volume=40 的被 drop 点"
+        pad = 0.10 * (40.0 - 0.1)
+        assert main.get_xlim() == (0.1 - pad, 40.0 + pad)
+        assert main.get_ylim()[1] > 1000.0
+        for area in (0.1, 40.0):
+            hits = _marker_at(_markers(main), area, 1000.0, 1e-9, 1e-9, "circle")
+            assert len(hits) == 1 and not hits[0]["filled"]
     return True
 
 
@@ -803,8 +898,8 @@ def check_points_and_dropped():
             else:
                 assert any(not m["filled"] for m in hits), \
                     "被 drop 的点 (%.2f, %.1f) 不是空心" % (point["volume"], point["mass"])
-        text = _all_text(fig).lower()
-        assert "dropped" in text, "图里没有 dropped 标注"
+        assert "dropped" in [label for _, label in _legend_entries(fig)]
+        assert all(text.get_text() != "dropped" for text in fig.texts)
         assert any(p["used"] is False for p in curve["points"]), "fixture 没有 dropped 点"
     return True
 
@@ -908,6 +1003,13 @@ def check_annotation():
         assert re.search(r"\bn\b|point", low), "注释里没有点数 n"
         # English figure text: no CJK anywhere (µ is not CJK).  Lane fallback is tested below.
         assert not _CJK.search(text), "图里出现了中日韩字符：%r" % _CJK.findall(text)
+        assert "± SE" not in text
+        curve["unit"] = "mg/mL"
+        curve["fit_params"].update(slope_sd=0.0196, intercept_sd=0.0802)
+        _, fig, _, _ = _render_file(td, "ann-se.png", curve, width=600)
+        text = _all_text(fig)
+        assert "concentration = (3.762 ± 0.0196) · area - (1.497 ± 0.0802)" in text
+        assert "Coefficients ± SE" in text
     return True
 
 
@@ -978,40 +1080,229 @@ def check_native_marker_legend():
     return True
 
 
+def _check_sample_positions(fig, curve, quant):
+    main, _resid = _pair(fig)
+    markers = [m for m in _markers(main) if m["shape"] == "square"]
+    fit_lines = _fit_line(main, curve)
+    solid, = [line for line in fit_lines if not _is_dashed(line)]
+    dashed = [line for line in fit_lines if _is_dashed(line)]
+    vmin, vmax = (curve["range"][key] for key in ("volume_min", "volume_max"))
+    assert len(dashed) == 2
+    assert min(solid.get_xdata()) == vmin and max(solid.get_xdata()) == vmax
+    assert all(max(line.get_xdata()) <= vmin or min(line.get_xdata()) >= vmax for line in dashed)
+    xlo, xhi = main.get_xlim()
+    ylo, yhi = main.get_ylim()
+    areas = [point["volume"] for point in curve["points"]]
+    remaining = list(markers)
+    for lane in quant["lanes"]:
+        for band in lane["bands"]:
+            area = band["area"]
+            areas.append(area)
+            outside = not vmin <= area <= vmax
+            fit_only = outside or band["mass"] is None
+            mass = _model(curve, area) if fit_only else band["mass"]
+            assert xlo <= area <= xhi and ylo <= mass <= yhi, (area, mass, xlo, xhi, ylo, yhi)
+            hits = _marker_at(remaining, area, mass, 1e-9, 1e-9)
+            assert len(hits) == 1, (lane["lane"], band["index"], area, mass, hits)
+            hit, = hits
+            assert hit["filled"] is not fit_only
+            remaining.remove(hit)
+            label = "L%d" % lane["lane"]
+            if len(lane["bands"]) > 1:
+                label += ".%d" % band["index"]
+            if outside:
+                assert any(any(math.isclose(x, area, abs_tol=1e-9) and
+                               math.isclose(y, mass, abs_tol=1e-9)
+                               for x, y in zip(line.get_xdata(), line.get_ydata()))
+                           for line in dashed), (label, area, mass)
+            assert [t.get_text() for t in fig.texts].count(label) == 1, label
+    assert all("extrapolated" not in text.get_text() for text in fig.texts)
+    assert not remaining
+    extension = 0.1 * (max(areas) - min(areas))
+    assert xlo == min(areas) - extension
+    assert xhi == max(areas) + extension
+
+
 def check_quant_markers():
-    """quant.json adds filled sample squares; out-of-range ones are hollow; lanes are labelled."""
-    curve = _linear_curve()
-    quant = _quant()
+    """Quantified and extrapolated bands have their own styles on the same main axes."""
+    curve, quant = _linear_curve(), _quant()
     with tempfile.TemporaryDirectory() as td:
-        (_w, _h), fig, _caught, _out = _render_file(td, "quant.png", curve, quant=quant)
+        _, fig, _, _ = _render_file(td, "quant.png", curve, quant=quant)
+        _check_sample_positions(fig, curve, quant)
+        labels = [label for _, label in _legend_entries(fig)]
+        assert "sample" in labels and "extrapolated sample" in labels
+    return True
+
+
+def check_sample_fit_bars():
+    """In-range sample bands carry a vertical ±1 SD fit bar; the legend advertises it once."""
+    curve = _linear_curve()
+    quant = _quant_sd()
+    with tempfile.TemporaryDirectory() as td:
+        (_w, _h), fig, _caught, _out = _render_file(td, "sd.png", curve, quant=quant)
         main, _resid = _pair(fig)
-        markers = _markers(main)
-        xmax = max(b["area"] for lane in quant["lanes"] for b in lane["bands"])
-        ymax = max(p["mass"] for p in curve["points"])
-        xtol = 0.02 * xmax + 0.1
-        ytol = 0.02 * ymax + 0.2
-        text = _all_text(fig)
+        xtol = 0.02 * max(b["area"] for l in quant["lanes"] for b in l["bands"]) + 0.1
+        segments = _yerr_segments(main)
+        bars = 0
         for lane in quant["lanes"]:
             for band in lane["bands"]:
                 if band["out_of_range"]:
-                    hits = [m for m in markers if m["shape"] == "square"
-                            and abs(m["x"] - band["area"]) <= xtol]
-                    assert hits, "超范围样品带 (lane %d, area %.2f) 没有方块" % (
-                        lane["lane"], band["area"])
-                    assert any(not m["filled"] for m in hits), \
-                        "超范围样品带 (lane %d) 不是空心方块" % lane["lane"]
-                else:
-                    hits = _marker_at(markers, band["area"], band["mass"], xtol, ytol,
-                                      shape="square")
-                    assert hits, "样品带 (lane %d, area %.2f, mass %.1f) 没有方块" % (
-                        lane["lane"], band["area"], band["mass"])
-                    assert any(m["filled"] for m in hits), \
-                        "样品带 (lane %d) 不是实心方块" % lane["lane"]
-            assert str(lane["lane"]) in text or (lane.get("label") and lane["label"] in text), \
-                "图里没有样品泳道 %d 的标签" % lane["lane"]
-        assert "sample" in text.lower(), "图例没有 sample"
-        assert "out of range" in text.lower() or "out" in text.lower(), \
-            "图例/标签没有 out-of-range 说明"
+                    # An out-of-range band has no calibrated mass, so it gets no fit bar.
+                    assert not [s for s in segments
+                                if abs(s[0] - band["area"]) <= xtol
+                                and abs(s[2] - band["area"]) <= xtol], \
+                        "超范围样品带 (lane %d) 画了 SD 棒" % lane["lane"]
+                    continue
+                bar = _yerr_at(main, band["area"], band["mass"], xtol, 1e9)
+                assert bar is not None, \
+                    "样品带 (lane %d, area %.2f) 没有竖直 SD 棒" % (lane["lane"], band["area"])
+                lo, hi = bar
+                assert abs((lo + hi) / 2.0 - band["mass"]) <= 0.05 * band["mass"] + 0.2, \
+                    "SD 棒不在 mass %.1f 上下对称：%.2f..%.2f" % (band["mass"], lo, hi)
+                assert abs((hi - lo) / 2.0 - band["mass_sd"]) <= 0.05 * band["mass_sd"] + 0.15, \
+                    "SD 棒半高 %.3f ≠ mass_sd %.3f" % ((hi - lo) / 2.0, band["mass_sd"])
+                bars += 1
+        assert bars >= 2, "fixture 只画出 %d 条样品 SD 棒" % bars
+
+        # Caps: both ends of every sample fit bar carry a cap marker, as the replicate bars do.
+        from matplotlib.container import ErrorbarContainer
+        x_bars = [c for c in main.containers
+                  if isinstance(c, ErrorbarContainer) and c.has_xerr]
+        y_bars = [c for c in main.containers
+                  if isinstance(c, ErrorbarContainer) and c.has_yerr]
+        assert x_bars, "没有重复点方差棒可作配色参照"
+        assert y_bars, "没有画出样品 SD 棒"
+        for container in y_bars:
+            caps = [line for line in container.lines[1] if str(line.get_marker()) == "_"]
+            assert caps, "样品 SD 棒没有端帽"
+            assert len(caps) == 2, "样品 SD 棒端帽 %d 个，应为上下各一个" % len(caps)
+            ends = sorted(float(line.get_ydata()[0]) for line in caps)
+            segments = _yerr_segments(main)
+            bar = [(min(s[1], s[3]), max(s[1], s[3])) for s in segments
+                   if abs(s[0] - float(caps[0].get_xdata()[0])) <= 1e-6]
+            assert len(bar) == 1, "端帽与 SD 棒没有一一对应"
+            assert abs(ends[0] - bar[0][0]) <= 1e-6 and abs(ends[1] - bar[0][1]) <= 1e-6, \
+                "端帽没有落在 SD 棒两端：%r vs %r" % (ends, bar[0])
+
+        # The drawn bars reuse the grey of the replicate-area bars (one error colour on the plot).
+        def edge_of(container):
+            bars = container.lines[2]
+            bars = bars if isinstance(bars, (tuple, list)) else [bars]
+            return _rgba(bars[0].get_edgecolor()[0])
+
+        grey = edge_of(x_bars[0])
+        for container in y_bars:
+            assert all(abs(a - b) <= 0.02 for a, b in zip(grey, edge_of(container))), \
+                "样品 SD 棒没有沿用方差棒的灰色：%r vs %r" % (grey, edge_of(container))
+
+        # Legend: exactly one extra entry, whose proxy is a vertical two-point line.
+        labels = [label.strip() for _h, label in _legend_entries(fig)]
+        sd_labels = [label for label in labels if "SD fit" in label]
+        assert len(sd_labels) == 1, "±1 SD fit 图例应恰好一条，实际 %r" % sd_labels
+        assert sd_labels[0].startswith("±1 SD fit"), "SD 图例标签不是 ±1 SD fit：%r" % sd_labels
+        handles = [handle for handle, label in _legend_entries(fig)
+                   if label.strip() == sd_labels[0]]
+        assert len(handles) == 1, "±1 SD fit 图例 %d 条，应恰好一条" % len(handles)
+        segments = getattr(handles[0], "get_segments", lambda: [])()
+        assert segments, "±1 SD fit 图例句柄不是线段：%r" % (handles[0],)
+        for seg in segments:
+            (x0, y0), (x1, y1) = seg
+            assert abs(x0 - x1) <= 1e-9 and abs(y0 - y1) > 1e-9, \
+                "±1 SD fit 图例句柄不是竖直棒：%r" % (tuple(seg),)
+
+        # Clip: a bar taller than the frame is cut by the Axes, never drawn outside or rescaled.
+        tall = _quant_sd()
+        tall["lanes"][0]["bands"][1].update(mass=43.9, area=9.6, mass_sd=9.0)
+        (_w, _h), fig2, _caught2, _out2 = _render_file(td, "clamp.png", curve, quant=tall)
+        main2, _resid2 = _pair(fig2)
+        top = main2.get_ylim()[1]
+        bar = _yerr_at(main2, 9.6, 43.9, 0.3, 1e9)
+        assert bar is not None, "顶部样品带没有 SD 棒"
+        assert max(bar) > top + 1e-6, "超高 SD 棒被压回画框内（%.3f ≤ %.3f）" % (max(bar), top)
+        # The clip box is in display pixels: it must be the main frame, so the overshoot is cut.
+        frame = _axes_box(fig2, main2)
+        for container in [c for c in main2.containers
+                          if isinstance(c, ErrorbarContainer) and c.has_yerr]:
+            for collection in ([container.lines[2]] if not isinstance(container.lines[2],
+                                                                      (tuple, list))
+                               else container.lines[2]):
+                assert collection.get_clip_on(), "SD 棒没有开启裁切"
+                box = collection.get_clip_box()
+                assert box is not None, "SD 棒没有裁切框"
+                # Clip boxes use display pixels (bottom-up); compare them on the PNG grid.
+                height = float(fig2.bbox.height)
+                top_px, bottom_px = height - float(box.y1), height - float(box.y0)
+                assert abs(top_px - frame[1]) <= 1.0, \
+                    "SD 棒裁切框顶边 %.1f 与主轴框顶 %.1f 不符" % (top_px, frame[1])
+                assert abs(bottom_px - frame[3]) <= 1.0, \
+                    "SD 棒裁切框底边 %.1f 与主轴框底 %.1f 不符" % (bottom_px, frame[3])
+    return True
+
+
+def check_sample_fit_bars_absent():
+    """No bar and no ±1 SD fit legend entry when mass_sd is missing, zero or undrawable."""
+    curve = _linear_curve()
+    values = {(9, 1): 0.0, (9, 2): 0.001, (11, 1): float("nan"), (12, 1): -1.0}
+    with tempfile.TemporaryDirectory() as td:
+        for name, quant in (("legacy", _quant()),
+                            ("zero", _quant_sd(values))):
+            (_w, _h), fig, caught, _out = _render_file(td, name + ".png", curve, quant=quant)
+            main, _resid = _pair(fig)
+            assert _yerr_segments(main) == [], \
+                "%s: 没有可画的 mass_sd 却画了竖直棒" % name
+            labels = [label.strip() for _h, label in _legend_entries(fig)]
+            assert "±1 SD fit" not in labels, \
+                "%s: 没有 SD 棒却出现 ±1 SD fit 图例：%r" % (name, labels)
+            assert not [w for w in caught if "Glyph" in str(w.message)], caught
+        # mass_sd absent from the quant payload is the legacy report shape.
+        (_w, _h), fig, _caught, _out = _render_file(td, "missing.png", curve, quant=_quant())
+        assert "±1 SD fit" not in _all_text(fig), "旧版 quant 里出现了 ±1 SD fit 文案"
+        # A valid mass_sd on an out-of-range band must not create a bar either.
+        quant = _quant_sd({(12, 1): 2.0})
+        (_w, _h), fig, _caught, _out = _render_file(td, "oor.png", curve, quant=quant)
+        main, _resid = _pair(fig)
+        assert _yerr_segments(main) == [], "超范围样品带画了 SD 棒"
+        assert "±1 SD fit" not in _all_text(fig), "超范围样品带触发了 ±1 SD fit 图例"
+    return True
+
+
+def check_dashed_extrapolated_samples():
+    """Linear and power extensions reach the most distant sample on each side."""
+    linear = _linear_curve()
+    # The leftmost model value is negative. It must be plotted at its true ordinate.
+    linear["fit_params"]["intercept"] = -10.0
+    with tempfile.TemporaryDirectory() as td:
+        for curve in (linear, _power_curve()):
+            quant = _quant_clustered()
+            if curve["fit"] == "power":
+                vmin, vmax = (curve["range"][key] for key in ("volume_min", "volume_max"))
+                for lane in quant["lanes"]:
+                    for band in lane["bands"]:
+                        if band["out_of_range"]:
+                            band["area"] = vmax * 1.4 if lane["lane"] == 13 else vmin / 2 + band["area"] / 100
+                        else:
+                            band["area"] = vmin + (vmax - vmin) * band["area"] / 20
+                            band["mass"] = _model(curve, band["area"])
+            _, fig, _, _ = _render_file(td, curve["fit"] + ".png", curve, quant=quant)
+            _check_sample_positions(fig, curve, quant)
+    return True
+
+
+def check_curve_fixed_geometry():
+    """Canvas height and panel positions stay fixed from zero to many extrapolated samples."""
+    curve = _linear_curve()
+    with tempfile.TemporaryDirectory() as td:
+        size, plain, _, _ = _render_file(td, "plain.png", curve)
+        plain_axes = _pair(plain)
+        for name, quant in (("inrange", _quant_in_range()), ("legacy", _quant()),
+                            ("clustered", _quant_clustered())):
+            sample_size, fig, _, _ = _render_file(td, name + ".png", curve, quant=quant)
+            assert sample_size == size
+            for original, current in zip(plain_axes, _pair(fig)):
+                assert original.get_position().bounds == current.get_position().bounds
+            if name == "inrange":
+                assert plain_axes[0].get_xlim() == _pair(fig)[0].get_xlim()
+                assert "extrapolated" not in _all_text(fig).lower()
     return True
 
 
@@ -1104,7 +1395,7 @@ def check_no_magick_no_temp():
     """The renderer does not touch ImageMagick and leaves no script/temp debris."""
     curve = _linear_curve()
     with tempfile.TemporaryDirectory() as td:
-        from . import magick_io
+        from epcraft import magick_io
         boom = AssertionError("matplotlib 渲染不应调用 ImageMagick")
         with unittest.mock.patch.object(magick_io, "_run", side_effect=boom):
             (_w, _h), _fig, _caught, out = _render_file(td, "clean.png", curve)
@@ -1183,7 +1474,7 @@ CHECKS = (
     check_size_blank_and_rerun,
     check_fit_line_linear,
     check_fit_line_power,
-    check_fit_line_wide_frame,
+    check_dropped_points_inside_padded_axes,
     check_points_and_dropped,
     check_error_bars,
     check_bar_free_without_replicates,
@@ -1192,6 +1483,10 @@ CHECKS = (
     check_geometry_and_frames,
     check_native_marker_legend,
     check_quant_markers,
+    check_sample_fit_bars,
+    check_sample_fit_bars_absent,
+    check_dashed_extrapolated_samples,
+    check_curve_fixed_geometry,
     check_quant_absent_identical,
     check_api_errors,
     check_cli_errors_and_overwrite,

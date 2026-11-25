@@ -17,8 +17,8 @@ import socketserver
 import tempfile
 import threading
 
-from . import sync_exec
-from . import vc_control
+from epcraft import sync_exec
+from epcraft import vc_control
 
 
 # ---------------------------------------------------------------- 假 app
@@ -541,12 +541,13 @@ def _crop_ops():
 
 def _crop_read():
     """gel_photo._read_all：Crop 画板的读回、重新裁切、报错与旧文档补画板（照片是 magick 现画的）。"""
-    from . import crop
-    from . import figure
-    from . import gel_photo
-    from . import vc_file
-    from . import workbench
-    from .magick_io import MAGICK, _run
+    from epcraft import crop
+    from epcraft import figure
+    from epcraft import gel_photo
+    from epcraft import gel_session
+    from epcraft import vc_file
+    from epcraft import workbench
+    from epcraft.magick_io import MAGICK, _run
     ok = 0
     dpi, wpx, hpx = 127, 250, 175                      # 胶面图 250×175 px @127 dpi = 5.00 × 3.50 cm（补画板按 0.01 cm 取整预设）
     width_cm = wpx * 2.54 / dpi
@@ -555,10 +556,10 @@ def _crop_read():
         _run([MAGICK, "-size", "480x360", "xc:gray(235)", "-fill", "gray(90)",
               "-draw", "rotate 1.5 rectangle 120,70 380,252", "-fill", "gray(30)",
               "-draw", "rectangle 170,120 180,200", "-depth", "8", photo])
-        args = gel_photo._default_detect_args()
+        args = gel_session.default_detect_args()
         preset = {"name": "t", "width_cm": width_cm, "height_cm": hpx * 2.54 / dpi, "lane_pitch_cm": 0.0}
         with contextlib.redirect_stdout(io.StringIO()):
-            embedded, _ga, st = gel_photo.gel_face(photo, preset, args, dpi)
+            embedded, _ga, st = gel_session.gel_face(photo, preset, args, dpi)
         assert vc_file.png_size(embedded) == (wpx, hpx)
         frame_px = crop.frame_from_stage1(st["gel_box"], st["angle"], st["size0"], st["size1"])
         jpeg, psize, _k = crop.preview(photo)

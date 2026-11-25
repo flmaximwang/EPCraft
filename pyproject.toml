@@ -32,12 +32,15 @@ Homepage = "https://github.com/flmaximwang/EPCraft"
 epcraft = "epcraft.cli:main"
 
 [tool.setuptools]
-packages = ["epcraft"]
-package-dir = { "" = "src" }
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["epcraft", "epcraft.*"]
+namespaces = false
 
 [tool.setuptools.package-data]
 epcraft = [
     "data/*.json",
     "templates/*",
-    "fixtures/*.json",
 ]

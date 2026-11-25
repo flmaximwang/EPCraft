@@ -13,10 +13,12 @@ import ast
 import json
 import math
 import os
+from pathlib import Path
+import sys
 import tempfile
 
-from . import densitometry
-from . import profiles
+from epcraft import densitometry
+from epcraft import profiles
 
 
 # ---------------------------------------------------------------- synthetic report v2
@@ -532,20 +534,25 @@ def check_json_io():
 # ---------------------------------------------------------------- 11) module purity
 
 def check_purity():
-    """`densitometry.py` is math + JSON only: no subprocess, no ImageMagick, no gel_photo (§2.11)."""
-    path = os.path.join(os.path.dirname(os.path.abspath(densitometry.__file__)), "densitometry.py")
-    with open(path, encoding="utf-8") as f:
-        tree = ast.parse(f.read(), path)
-    imported = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported.update(alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.level == 0:
-            imported.add((node.module or "").split(".")[0])
-    for forbidden in ("subprocess", "magick_io", "gel_photo", "dens_plot", "profiles"):
-        assert forbidden not in imported, "densitometry.py 不该 import %s" % forbidden
-    stdlib = getattr(__import__("sys"), "stdlib_module_names", set())
-    assert imported <= set(stdlib), "densitometry.py 导入了非 stdlib 模块：%s" % (imported - set(stdlib),)
+    """The offline densitometry package uses only stdlib and its own modules (§2.11)."""
+    root = Path(densitometry.__file__).parent
+    stdlib_names = getattr(sys, "stdlib_module_names", None)
+    stdlib = (stdlib_names - {"subprocess"}) if stdlib_names is not None else None
+    for path in sorted(root.rglob("*.py")):
+        relative = path.relative_to(root)
+        imported = set()
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), str(path))):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                if node.level:
+                    assert node.level <= len(relative.parts), (relative, node.lineno, node.module)
+                elif node.module:
+                    imported.add(node.module.split(".")[0])
+        for forbidden in ("subprocess", "magick_io", "gel_photo", "dens_plot", "profiles"):
+            assert forbidden not in imported, (relative, forbidden)
+        if stdlib is not None:
+            assert imported <= stdlib, (relative, imported - stdlib)
     return True
 
 
@@ -576,6 +583,253 @@ def _curve(areas, masses, **kwargs):
     dens = _curve_dens([[a] for a in areas])
     std = [(no, None, mass) for no, mass in enumerate(masses, 1)]
     return densitometry.build_curve(dens, std, **kwargs)
+
+
+# ---------------------------------------------------------------- 12b) fit statistics (ep-c1i §2/§3)
+
+# The exact fit_params key sets the ep-c1i contract fixes: the old point estimates plus the
+# statistics, and nothing else (`_quant_fit` tolerates the extra keys, so they must not grow).
+_LINEAR_STAT_KEYS = {"slope", "intercept", "r2", "n", "space",
+                     "slope_sd", "intercept_sd", "cov_slope_intercept", "residual_sd",
+                     "sxx", "mean_x"}
+_POWER_STAT_KEYS = {"exponent", "scale", "r2", "n", "space",
+                    "exponent_sd", "scale_sd", "residual_sd", "sxx", "mean_x"}
+
+# The four-dp rounding of ruling R2: a stored number may differ from the true value by at most
+# half a unit in the fourth decimal.  5.1e-5 leaves room for the binary repr of that rounding.
+_STAT_TOL = 5.1e-5
+
+
+def _fit_stat_values(params):
+    """The ep-c1i statistics of one `fit_params` dict, as `(name, stored)` pairs in a fixed order."""
+    return [(key, params.get(key)) for key in
+            ("slope_sd", "intercept_sd", "cov_slope_intercept", "residual_sd",
+             "exponent_sd", "scale_sd", "sxx", "mean_x") if key in params]
+
+
+def _assert_stat(params, key, expected, what):
+    """One statistic: a number (never None/NaN at n > 2) within the 4-dp rounding tolerance."""
+    value = params.get(key)
+    assert isinstance(value, float) and math.isfinite(value), \
+        "%s: %s 该是有限数（收到 %r）：%r" % (what, key, value, params)
+    assert abs(value - float(expected)) <= _STAT_TOL + abs(float(expected)) * 1e-12, \
+        "%s: %s = %r，独立手算为 %r（差 %.6g）：%r" % (
+            what, key, value, float(expected), abs(value - float(expected)), params)
+    assert _decimals(value) <= 4, "%s: %s 超过 4 位小数：%r" % (what, key, value)
+
+
+def check_fit_statistics_linear():
+    """ep-c1i §2/§3: the linear fit stores slope_sd, intercept_sd, cov_slope_intercept,
+    residual_sd, sxx and mean_x, each reproducing an independent hand computation.
+
+    The expected numbers are computed HERE with plain arithmetic from the same standard points
+    (no production helper is imported), so a formula bug inside `_linfit` cannot hide behind
+    itself.  Two curves are used: a noisy one whose literals are written out below, and a
+    second one checked only through the re-computed arithmetic.
+    """
+    # noisy fixture: areas 1, 2, 4, 8 ↔ masses 3, 5, 11, 19.  By hand:
+    #   x̄ = 3.75, Σ(x−x̄)² = 28.75, slope = 2.313043…, intercept = 0.826087…,
+    #   SSres = 1.774194…, s = sqrt(SSres/2) = 0.768963…,
+    #   slope_sd = s/sqrt(sxx) = 0.143412…, intercept_sd = s·sqrt(1/4 + x̄²/sxx) = 0.661098…,
+    #   cov = −s²·x̄/sxx = −0.077127…, r² = 1 − SSres/SStot = 0.992370…
+    curve = _curve([1.0, 2.0, 4.0, 8.0], [3.0, 5.0, 11.0, 19.0])
+    params = curve["fit_params"]
+    assert set(params) == _LINEAR_STAT_KEYS, sorted(params)
+    assert params["n"] == 4 and params["space"] == "linear", params
+    assert abs(params["slope"] - 2.3130) <= _STAT_TOL, params
+    assert abs(params["intercept"] - 0.8261) <= _STAT_TOL, params
+    assert abs(params["r2"] - 0.9924) <= _STAT_TOL, params
+    assert abs(params["mean_x"] - 3.75) <= _STAT_TOL, params
+    assert abs(params["sxx"] - 28.75) <= _STAT_TOL, params
+    assert abs(params["residual_sd"] - 0.7690) <= _STAT_TOL, params
+    assert abs(params["slope_sd"] - 0.1434) <= _STAT_TOL, params
+    assert abs(params["intercept_sd"] - 0.6611) <= _STAT_TOL, params
+    assert abs(params["cov_slope_intercept"] - (-0.0771)) <= _STAT_TOL, params
+
+    # the same formulas re-derived from the points, so the fixture literals above cannot be a
+    # self-fulfilling copy of whatever the implementation printed
+    reference = _ols_reference([1.0, 2.0, 4.0, 8.0], [3.0, 5.0, 11.0, 19.0])
+    for key, expected in (("slope_sd", reference["slope_sd"]),
+                          ("intercept_sd", reference["intercept_sd"]),
+                          ("cov_slope_intercept", reference["cov"]),
+                          ("residual_sd", reference["residual_sd"]),
+                          ("sxx", reference["sxx"]),
+                          ("mean_x", reference["mean_x"])):
+        _assert_stat(params, key, expected, "noisy linear fit")
+
+    # a second curve, only through the arithmetic: areas 2, 3, 5, 9 ↔ masses 4, 7, 13, 21
+    second = _curve([2.0, 3.0, 5.0, 9.0], [4.0, 7.0, 13.0, 21.0])
+    reference = _ols_reference([2.0, 3.0, 5.0, 9.0], [4.0, 7.0, 13.0, 21.0])
+    assert set(second["fit_params"]) == _LINEAR_STAT_KEYS, sorted(second["fit_params"])
+    for key, expected in (("slope_sd", reference["slope_sd"]),
+                          ("intercept_sd", reference["intercept_sd"]),
+                          ("cov_slope_intercept", reference["cov"]),
+                          ("residual_sd", reference["residual_sd"]),
+                          ("sxx", reference["sxx"]),
+                          ("mean_x", reference["mean_x"])):
+        _assert_stat(second["fit_params"], key, expected, "second linear fit")
+    # sxx / mean_x are stored in the fit's own space: linear → the areas themselves
+    assert abs(second["fit_params"]["mean_x"] - reference["mean_x"]) <= _STAT_TOL
+    assert abs(second["fit_params"]["sxx"] - reference["sxx"]) <= _STAT_TOL
+    # the covariance is negative whenever the points sit on the positive side (the line pivots
+    # about x̄): a sign flip here is the classic slope/intercept covariance bug
+    assert params["cov_slope_intercept"] <= 0.0, params
+    return True
+
+
+def check_fit_statistics_power():
+    """ep-c1i §2/§3: the power fit's statistics are computed in log10 space exactly like its r²,
+    and `scale_sd` applies the delta method `scale · ln(10) · se(log_c)`."""
+    # areas 1, 2, 4, 8 ↔ masses 2, 5, 9, 21 (deliberately not an exact power law)
+    curve = _curve([1.0, 2.0, 4.0, 8.0], [2.0, 5.0, 9.0, 21.0], fit="power")
+    params = curve["fit_params"]
+    assert set(params) == _POWER_STAT_KEYS, sorted(params)
+    assert params["n"] == 4 and params["space"] == "log10", params
+    # by hand, over (u, v) = (log10 area, log10 mass):
+    #   ū = 0.451545…, Σ(u−ū)² = 0.453095…, exponent = 1.102495…, log_c = 0.321289…,
+    #   s = 0.041744…, exponent_sd = s/sqrt(sxx) = 0.062016…,
+    #   scale = 10^log_c = 2.095508…, scale_sd = scale·ln(10)·s·sqrt(1/4 + ū²/sxx) = 0.168520…
+    assert abs(params["exponent"] - 1.1025) <= _STAT_TOL, params
+    assert abs(params["scale"] - 2.0955) <= _STAT_TOL, params
+    assert abs(params["r2"] - 0.9937) <= _STAT_TOL, params
+    assert abs(params["mean_x"] - 0.4515) <= _STAT_TOL, params
+    assert abs(params["sxx"] - 0.4531) <= _STAT_TOL, params
+    assert abs(params["residual_sd"] - 0.0417) <= _STAT_TOL, params
+    assert abs(params["exponent_sd"] - 0.0620) <= _STAT_TOL, params
+    assert abs(params["scale_sd"] - 0.1685) <= _STAT_TOL, params
+
+    areas = [1.0, 2.0, 4.0, 8.0]
+    masses = [2.0, 5.0, 9.0, 21.0]
+    reference = _ols_reference([math.log10(a) for a in areas], [math.log10(m) for m in masses])
+    for key, expected in (("exponent_sd", reference["slope_sd"]),
+                          ("residual_sd", reference["residual_sd"]),
+                          ("sxx", reference["sxx"]),
+                          ("mean_x", reference["mean_x"])):
+        _assert_stat(params, key, expected, "power fit, log10 space")
+    # the delta method is checked against its own formula, not against the stored scale: a
+    # implementation that forgot the ln(10) factor would be off by ~2.3×
+    scale = 10.0 ** reference["intercept"]
+    expected_scale_sd = scale * math.log(10.0) * reference["intercept_sd"]
+    _assert_stat(params, "scale_sd", expected_scale_sd, "power fit, delta method")
+    assert abs(params["scale_sd"] - (scale * reference["intercept_sd"])) > 0.05, \
+        "scale_sd 少了 delta 方法的 ln(10) 因子：%r" % (params["scale_sd"],)
+    # the log-space sxx must not be the linear-space one: on this fixture they differ a lot
+    linear_sxx = _ols_reference(areas, masses)["sxx"]
+    assert abs(params["sxx"] - linear_sxx) > 0.05, \
+        "power 的 sxx 不是对数空间的量：%r vs 线性空间 %r" % (params["sxx"], linear_sxx)
+    return True
+
+
+def check_fit_statistics_n2():
+    """ep-c1i §3: with n <= 2 there is no residual degree of freedom, so EVERY new value is None —
+    never a NaN, never a fake zero — and `curve` still succeeds.  The existing keys keep their
+    values and the statistics rollout adds no note."""
+    for fit in ("linear", "power"):
+        if fit == "linear":
+            curve = _curve([2.5, 5.0], [22.0, 42.0])
+            new_keys = ("slope_sd", "intercept_sd", "cov_slope_intercept", "residual_sd",
+                        "sxx", "mean_x")
+            expected_keys = _LINEAR_STAT_KEYS
+        else:
+            curve = _curve([2.0, 4.0], [4.0, 16.0], fit="power")
+            new_keys = ("exponent_sd", "scale_sd", "residual_sd", "sxx", "mean_x")
+            expected_keys = _POWER_STAT_KEYS
+        params = curve["fit_params"]
+        assert set(params) == expected_keys, sorted(params)
+        assert params["n"] == 2, params
+        for key in new_keys:
+            assert params[key] is None, \
+                "%s: n=2 时 %s 该是 None（收到 %r），不能造出零或 NaN" % (fit, key, params[key])
+        # the point estimates are untouched by the statistics rollout
+        if fit == "linear":
+            assert params["slope"] == 8.0 and params["intercept"] == 2.0, params
+        else:
+            assert params["exponent"] == 2.0 and params["scale"] == 1.0, params
+        assert params["r2"] == 1.0 and params["space"] == ("linear" if fit == "linear"
+                                                           else "log10"), params
+        # no NaN / Infinity anywhere: the JSON must be able to hold nulls instead
+        raw = json.dumps(curve)
+        for token in ("NaN", "Infinity", "nan", "inf"):
+            assert token not in raw, "curve 里出现了 %r：%r" % (token, raw[:200])
+        # 3 points is the first n with one residual degree of freedom: numbers appear again
+        if fit == "linear":
+            three = _curve([1.0, 2.0, 4.0], [3.0, 5.0, 11.0])
+        else:
+            three = _curve([1.0, 2.0, 4.0], [2.0, 5.0, 9.0], fit="power")
+        for key in new_keys:
+            assert isinstance(three["fit_params"][key], float), \
+                "%s: n=3 时 %s 该是实数（收到 %r）" % (fit, key, three["fit_params"][key])
+    # the n=2 curve keeps the note it already had, and gains none about the missing statistics
+    two = _curve([2.5, 5.0], [22.0, 42.0])
+    assert two["notes"] == ["只有 2 个标准点，r² 不足以说明形状"], two["notes"]
+    return True
+
+
+def check_fit_statistics_json():
+    """ep-c1i §3 precision: every statistic is 4 dp through `_num`, written as a JSON number (null
+    when None), and a `write_json` / `load_json` round trip keeps it exactly."""
+    curve = _curve([1.0, 2.0, 4.0, 8.0], [3.0, 5.0, 11.0, 19.0])
+    for key in ("slope_sd", "intercept_sd", "cov_slope_intercept", "residual_sd",
+                "sxx", "mean_x"):
+        value = curve["fit_params"][key]
+        assert isinstance(value, float) and math.isfinite(value), (key, value)
+        assert _decimals(value) <= 4, "fit_params[%r] 超过 4 位小数：%r" % (key, value)
+    power = _curve([1.0, 2.0, 4.0, 8.0], [2.0, 5.0, 9.0, 21.0], fit="power")
+    for key in ("exponent_sd", "scale_sd", "residual_sd", "sxx", "mean_x"):
+        value = power["fit_params"][key]
+        assert isinstance(value, float) and math.isfinite(value), (key, value)
+        assert _decimals(value) <= 4, "power fit_params[%r] 超过 4 位小数：%r" % (key, value)
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "stats.curve.json")
+        densitometry.write_json(curve, path)
+        with open(path, encoding="utf-8") as f:
+            raw = f.read()
+        back = densitometry.load_json(path, "ep-craft-densitometry-curve")
+        assert back == json.loads(raw), "round trip 丢了新增的统计字段"
+        assert back["fit_params"] == curve["fit_params"], (back["fit_params"],
+                                                            curve["fit_params"])
+        # the statistics are real JSON numbers, and the n=2 case is a JSON null (not "NaN")
+        for key in ("slope_sd", "intercept_sd", "cov_slope_intercept", "residual_sd",
+                    "sxx", "mean_x"):
+            assert isinstance(back["fit_params"][key], float), (key, back["fit_params"][key])
+        two = _curve([2.5, 5.0], [22.0, 42.0])
+        densitometry.write_json(two, path)
+        with open(path, encoding="utf-8") as f:
+            raw = f.read()
+        assert raw.count("null") >= 6, "n=2 的统计该以 null 落盘：%r" % (raw,)
+        back = densitometry.load_json(path, "ep-craft-densitometry-curve")
+        assert back["fit_params"]["residual_sd"] is None, back["fit_params"]
+    return True
+
+
+def _ols_reference(xs, ys):
+    """Plain-arithmetic OLS with the ep-c1i §2 statistics; computed in the test on purpose.
+
+    Nothing here calls `densitometry._linfit`: the acceptance suite must be able to disagree with
+    the production formula.  Returns full-precision values (the caller compares against the
+    4-dp stored ones within `_STAT_TOL`).
+    """
+    n = len(xs)
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    sxx = sum((x - mx) ** 2 for x in xs)
+    sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    slope = sxy / sxx
+    intercept = my - slope * mx
+    ssres = sum((y - (intercept + slope * x)) ** 2 for x, y in zip(xs, ys))
+    sstot = sum((y - my) ** 2 for y in ys)
+    r2 = 1.0 - ssres / sstot if sstot > 0.0 else 1.0
+    if n > 2:
+        sd = math.sqrt(ssres / (n - 2.0))
+        slope_sd = sd / math.sqrt(sxx)
+        intercept_sd = sd * math.sqrt(1.0 / n + mx * mx / sxx)
+        cov = -sd * sd * mx / sxx
+    else:
+        sd = slope_sd = intercept_sd = cov = None
+    return {"n": n, "mean_x": mx, "sxx": sxx, "slope": slope, "intercept": intercept,
+            "r2": r2, "residual_sd": sd, "slope_sd": slope_sd,
+            "intercept_sd": intercept_sd, "cov": cov}
+
 
 
 def check_curve_parse_std():
@@ -634,9 +888,14 @@ def check_curve_schema_and_fit():
     assert curve["unit"] == "ug" and curve["baseline"] == "flank" and curve["fit"] == "linear"
     assert curve["source"] == {"dens": "/tmp/fig.dens.json",
                                "std": "2=22,3=42,4=82,5=82,6=122,7=242", "drop": []}
-    assert set(curve["fit_params"]) == {"slope", "intercept", "r2", "n", "space"}
+    # ep-c1i §3: the fit carries its own statistics next to the point estimates.  This fixture
+    # is exactly linear, so every statistic is a true zero (n = 5 > 2, hence numbers, not None).
+    assert set(curve["fit_params"]) == _LINEAR_STAT_KEYS, sorted(curve["fit_params"])
     assert curve["fit_params"] == {"slope": 8.0, "intercept": 2.0, "r2": 1.0, "n": 5,
-                                   "space": "linear"}, curve["fit_params"]
+                                   "space": "linear",
+                                   "slope_sd": 0.0, "intercept_sd": 0.0,
+                                   "cov_slope_intercept": 0.0, "residual_sd": 0.0,
+                                   "sxx": 475.0, "mean_x": 12.5}, curve["fit_params"]
     point_keys = {"mass", "volume", "n", "sd", "cv_pct", "lanes", "entries", "used"}
     for point in curve["points"]:
         assert set(point) == point_keys, sorted(point)
@@ -671,11 +930,15 @@ def check_curve_schema_and_fit():
         assert _decimals(residual["rel_pct"]) <= 2
     # the power fit: mass = scale·volume^exponent, r² in log space (§4.5)
     power = _curve([2.0, 4.0, 6.0, 8.0], [0.2 * v ** 1.1 for v in (2.0, 4.0, 6.0, 8.0)], fit="power")
-    assert set(power["fit_params"]) == {"exponent", "scale", "r2", "n", "space"}
+    assert set(power["fit_params"]) == _POWER_STAT_KEYS, sorted(power["fit_params"])
     assert power["fit_params"]["space"] == "log10"
     assert abs(power["fit_params"]["exponent"] - 1.1) < 1e-3, power["fit_params"]
     assert abs(power["fit_params"]["scale"] - 0.2) < 1e-3, power["fit_params"]
     assert power["fit_params"]["r2"] == 1.0 and power["fit_params"]["n"] == 4
+    # §3: the power statistics live in log10 space — sxx and mean_x are the log sums
+    assert abs(power["fit_params"]["mean_x"] - 0.6461) <= 5e-5, power["fit_params"]["mean_x"]
+    assert abs(power["fit_params"]["sxx"] - 0.2045) <= 5e-5, power["fit_params"]["sxx"]
+    assert abs(power["fit_params"]["exponent_sd"]) <= 1e-3, power["fit_params"]
     for residual in power["residuals"]:
         assert abs(residual["predicted_mass"] - residual["mass"]) < 1e-2, residual
         assert residual["rel_pct"] == 0.0, residual
@@ -991,7 +1254,9 @@ def run():
     checks = [check_single_gaussian, check_sloping_background, check_two_gaussians,
               check_band_free_lane, check_saturation_flags, check_profile_ends, check_parse_lanes,
               check_lane_selection, check_schema, check_json_io, check_purity,
-              check_curve_parse_std, check_curve_schema_and_fit, check_curve_bands,
+              check_curve_parse_std, check_curve_schema_and_fit, check_fit_statistics_linear,
+              check_fit_statistics_power, check_fit_statistics_n2, check_fit_statistics_json,
+              check_curve_bands,
               check_curve_drop, check_curve_notes, check_curve_refusals, check_curve_json_io,
               check_format_curve]
     for check in checks:

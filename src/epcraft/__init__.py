@@ -10,7 +10,6 @@ Bundled resources are package data (one source of truth, no copies):
 
     epcraft/data/        marker and gel presets
     epcraft/templates/   VectorCraft object templates
-    epcraft/fixtures/    offline selftest fixtures
 """
 from pathlib import Path
 
@@ -19,7 +18,6 @@ __version__ = "0.1.0"
 PACKAGE_ROOT = Path(__file__).resolve().parent
 DATA_DIR = PACKAGE_ROOT / "data"
 TEMPLATES_DIR = PACKAGE_ROOT / "templates"
-FIXTURES_DIR = PACKAGE_ROOT / "fixtures"
 
 
 def package_root():
@@ -33,7 +31,3 @@ def data_dir():
 
 def templates_dir():
     return TEMPLATES_DIR
-
-
-def fixtures_dir():
-    return FIXTURES_DIR

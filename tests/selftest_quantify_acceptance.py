@@ -110,29 +110,44 @@ instead of as-typed) catches all 20.  Nothing in this file was tuned to either i
 every assertion cites the spec or the ruling, and every expected number is computed from the
 fixture.
 
-Run: `PYTHONPATH=src python3 -m epcraft.selftest_quantify_acceptance`
+Run: `PYTHONPATH=src python3 -m tests.selftest_quantify_acceptance`
 (`run()` prints `selftest_quantify_acceptance N/N 通过` and returns the number of checks).
 """
 import contextlib
 import inspect
 import io
 import json
+import math
 import os
 import re
 import tempfile
 
-from . import densitometry
-from . import gel_photo
+from epcraft import densitometry
+from epcraft import gel_photo
 from . import selftest_densitometry
 
 QUANT_KIND = "ep-craft-densitometry-quant"
 
+# ep-c1i §4: quant.json carries the propagated uncertainty next to every point estimate.
 TOP_KEYS = {"version", "kind", "unit", "baseline", "fit", "source", "lanes",
-            "overall_mass", "notes"}
+            "overall_mass", "notes", "uncertainty"}
 SOURCE_KEYS = {"dens", "curve", "load"}
 LANE_KEYS = {"lane", "label", "load_ul", "bands", "mass_total", "conc", "out_of_range",
-             "out_of_range_bands", "frac_pct_among_lanes"}
-BAND_KEYS = {"index", "y_cm", "mw_kda", "area", "mass", "out_of_range", "rel_pct"}
+             "out_of_range_bands", "frac_pct_among_lanes", "mass_total_sd", "conc_sd"}
+BAND_KEYS = {"index", "y_cm", "mw_kda", "area", "mass", "out_of_range", "rel_pct",
+             "mass_sd"}
+UNCERTAINTY_KEYS = {"basis", "k", "unit"}
+UNCERTAINTY_BASIS = "ols_prediction"
+
+# ep-c1i §3, restated here so this suite can disagree with the densitometry suite on purpose.
+LINEAR_FIT_KEYS = {"slope", "intercept", "r2", "n", "space",
+                   "slope_sd", "intercept_sd", "cov_slope_intercept", "residual_sd",
+                   "sxx", "mean_x"}
+POWER_FIT_KEYS = {"exponent", "scale", "r2", "n", "space",
+                  "exponent_sd", "scale_sd", "residual_sd", "sxx", "mean_x"}
+
+# Half a unit in the third decimal: the tolerance a 3-dp stored number may differ by (ruling R2).
+_TOL_3DP = 5.1e-4
 
 # lanes 1-4 are the standards (4 is dropped), 6..13 are the samples; 13 has no bands at all
 STANDARD_LANES = (1, 2, 3, 4)
@@ -664,7 +679,7 @@ def check_power_identity():
     the curve's `fit: "power"` and log-space fit params (§4.5 / §4.6)."""
     dens, curve = _fixture(fit="power")
     params = curve["fit_params"]
-    assert set(params) == {"exponent", "scale", "r2", "n", "space"}, sorted(params)
+    assert set(params) == POWER_FIT_KEYS, sorted(params)
     assert params["exponent"] == 1.0 and params["scale"] == 1.0, params
     assert params["space"] == "log10" and params["r2"] == 1.0
     quant = densitometry.quantify(dens, curve)
@@ -890,7 +905,7 @@ def check_cli_default_path():
     parser shape/defaults, both group names, default `fig.curve.json → fig.quant.json` (never
     `fig.curve.quant.json`), the fallback names, the §5 terminal block (header + one line per
     sample lane, no standard lane), and two identical CLI runs writing byte-identical JSON."""
-    from . import densitometry_cli  # noqa: F401  (the group must be registered by canvas_cli)
+    from epcraft import densitometry_cli  # noqa: F401  (the group must be registered by canvas_cli)
 
     # the sub-command must be discoverable, and its help must name every option of §3.3
     group_help = _help(["dens", "--help"])
@@ -1346,10 +1361,15 @@ def check_nonpositive_mass_null():
             assert band["mass"] is None or band["mass"] > 0.0, \
                 "非正的质量不该作为数出现在 quant 里：%r" % (band,)
 
-    # exactly one note about it (plus the skip note), naming the lane and the band
+    # exactly one note about it (plus the skip note), naming the lane and the band.  ep-c1i §4 adds
+    # a second unrelated note here — this curve is hand-written with n == 2, so it carries no
+    # residual scatter and says so once; that note is about the calibration, not about lane 3.
     skip = [note for note in quant["notes"] if "跳过" in note]
-    others = [note for note in quant["notes"] if "跳过" not in note]
+    scatter = [note for note in quant["notes"] if _is_no_scatter_note(note)]
+    others = [note for note in quant["notes"]
+              if "跳过" not in note and not _is_no_scatter_note(note)]
     assert len(skip) == 1, quant["notes"]
+    assert len(scatter) == 1, quant["notes"]
     assert len(others) == 1, quant["notes"]
     _single_line(others[0], "质量非正的注")
     assert re.search(r"泳道\s*3(?!\d)", others[0]), others[0]
@@ -1455,6 +1475,465 @@ def check_out_of_range_three_sig():
     return True
 
 
+# ---------------------------------------------------------------- ep-c1i §4: fit statistics helpers
+#
+# These helpers compute the expected OLS statistics HERE, with plain arithmetic, so this suite can
+# disagree with `densitometry._linfit`.  Nothing below imports a production formula helper.
+
+def _ols(xs, ys):
+    """Plain-arithmetic OLS with the stats ep-c1i §2 defines (full precision, no production code).
+
+    `slope_sd`, `intercept_sd` and `cov` are `None` when n <= 2, exactly like the stored ones; the
+    caller decides whether that absence is acceptable at its precision (4 dp for curve.json).
+    """
+    n = len(xs)
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    sxx = sum((x - mx) ** 2 for x in xs)
+    sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    slope = sxy / sxx
+    intercept = my - slope * mx
+    ssres = sum((y - (intercept + slope * x)) ** 2 for x, y in zip(xs, ys))
+    sstot = sum((y - my) ** 2 for y in ys)
+    r2 = 1.0 - ssres / sstot if sstot > 0.0 else 1.0
+    if n > 2:
+        sd = math.sqrt(ssres / (n - 2.0))
+        slope_sd, intercept_sd = sd / math.sqrt(sxx), sd * math.sqrt(1.0 / n + mx * mx / sxx)
+        cov = -sd * sd * mx / sxx
+    else:
+        sd = slope_sd = intercept_sd = cov = None
+    return {"n": n, "mean_x": mx, "sxx": sxx, "slope": slope, "intercept": intercept,
+            "r2": r2, "residual_sd": sd, "slope_sd": slope_sd,
+            "intercept_sd": intercept_sd, "cov": cov}
+
+
+def _is_no_scatter_note(note):
+    """True for the ONE note ep-c1i §4 writes when the calibration has no scatter to propagate."""
+    text = str(note)
+    return "残差散布" in text or "不确定度不给数" in text or "没有可用的残差" in text
+
+
+def _stats_from_params(params):
+    """The stored (rounded) statistics as the numbers the propagation formula must use."""
+    return {"n": params["n"], "mx": float(params["mean_x"]),
+            "s": float(params["residual_sd"]), "sxx": float(params["sxx"])}
+
+
+def _linear_prediction_sd(params, area):
+    """`s · sqrt(1 + 1/n + (x − x̄)²/sxx)` from the STORED (4 dp) linear fit_params."""
+    stats = _stats_from_params(params)
+    return stats["s"] * math.sqrt(1.0 + 1.0 / stats["n"]
+                                  + (float(area) - stats["mx"]) ** 2 / stats["sxx"])
+
+
+def _power_prediction_sd(params, area, mass):
+    """`mass · ln(10) · s · sqrt(1 + 1/n + (u − ū)²/sxx)` from the stored log-space fit_params."""
+    stats = _stats_from_params(params)
+    u = math.log10(float(area))
+    sd_log = stats["s"] * math.sqrt(1.0 + 1.0 / stats["n"]
+                                    + (u - stats["mx"]) ** 2 / stats["sxx"])
+    return float(mass) * math.log(10.0) * sd_log
+
+
+def _assert_3dp(actual, expected, what):
+    """One propagated number: stored at 3 dp, so half a unit in the third decimal is allowed."""
+    assert _number(actual) and _decimals(actual) <= 3, \
+        "%s 该是 3 位小数的数（收到 %r）" % (what, actual)
+    assert abs(actual - float(expected)) <= _TOL_3DP, \
+        "%s = %r，独立手算为 %r（差 %.6g）" % (what, actual, float(expected),
+                                              abs(actual - float(expected)))
+
+
+def _propagation_fixture(fit="linear"):
+    """Standards + samples for the ep-c1i §4 checks: a real `build_curve` fit with residual scatter.
+
+    The statistics are whatever `build_curve` stores (the digits come from the curve, not from
+    this file); every expected number below is then re-computed from THOSE stored values by `_ols`,
+    so the check is about propagation, not about the fit.
+    """
+    rows = ((1, 1.0, 3.0), (2, 2.0, 5.0), (3, 4.0, 11.0), (4, 8.0, 19.0), (5, 12.0, 31.0)) \
+        if fit == "linear" else \
+        ((1, 1.0, 2.0), (2, 2.0, 5.0), (3, 4.0, 9.0), (4, 8.0, 21.0), (5, 16.0, 38.0))
+    far = 6.5 if fit == "linear" else 6.0
+    mid = 10.0 if fit == "linear" else 13.0
+    edge = 1.0 if fit == "linear" else 0.5
+    std_lanes = [_lane(no, "S%d" % no, [_band(1, 2.0, 45.0, area, strongest=True)])
+                 for no, area, _mass in rows]
+    samples = [_lane(6, "A", [_band(1, 2.0, 45.0, 3.0), _band(2, 4.6, None, far)]),
+               _lane(7, "B", [_band(1, 2.0, 45.0, mid, strongest=True)]),
+               _lane(8, "C", [_band(1, 2.0, 45.0, edge), _band(2, 4.6, None, 12.0)])]
+    dens = _dens(std_lanes + samples)
+    curve = densitometry.build_curve(dens, [(no, None, mass) for no, _area, mass in rows],
+                                     fit=fit, baseline="flank", dens_path="fig.dens.json",
+                                     std_text=", ".join("%d=%g" % (no, mass)
+                                                        for no, _area, mass in rows))
+    return dens, curve
+
+
+# ---------------------------------------------------------------- ep-c1i §4: propagation
+
+def check_uncertainty_block():
+    """ep-c1i §4: quant.json says what its own numbers are — `{"basis": "ols_prediction",
+    "k": 1, "unit": <curve unit>}`, with exactly those three keys and the curve's unit copied."""
+    for fit in ("linear", "power"):
+        dens, curve = _propagation_fixture(fit)
+        quant = densitometry.quantify(dens, curve)
+        assert "uncertainty" in quant, sorted(quant)
+        unc = quant["uncertainty"]
+        assert isinstance(unc, dict), unc
+        assert set(unc) == UNCERTAINTY_KEYS, sorted(unc)
+        assert unc["basis"] == UNCERTAINTY_BASIS, unc
+        assert unc["k"] == 1 and not isinstance(unc["k"], bool), unc
+        assert unc["unit"] == curve["unit"], (unc, curve["unit"])
+        # no NaN / Infinity token: a JSON reader must be able to load this file
+        raw = json.dumps(quant)
+        for token in ("NaN", "Infinity"):
+            assert token not in raw, "quant.json 里出现了 %r" % (token,)
+    # the unit follows the curve, not a hard-coded "ug"
+    dens, curve = _propagation_fixture()
+    curve_ng = dict(curve, unit="ng")
+    quant = densitometry.quantify(dens, curve_ng)
+    assert quant["uncertainty"]["unit"] == "ng", quant["uncertainty"]
+    return True
+
+
+def check_mass_sd_linear():
+    """ep-c1i §4: a linear in-range band's `mass_sd` is the OLS PREDICTION SD
+    `s · sqrt(1 + 1/n + (x − x̄)²/sxx)`, re-computed here from the stored fit_params.
+
+    The leading `1` is the whole difference between a prediction interval and a confidence band: a
+    suite that only checked "some positive number" would pass a fit-mean interval that shrinks to
+    zero at x̄.  Both formulas are therefore asserted apart, and the prediction SD must stay above
+    the fit-mean SD everywhere.
+    """
+    dens, curve = _propagation_fixture("linear")
+    params = curve["fit_params"]
+    reference = _ols([1.0, 2.0, 4.0, 8.0, 12.0], [3.0, 5.0, 11.0, 19.0, 31.0])
+    # the fixture is only meaningful when the stored statistics are the ones we hand-computed
+    for key, expected in (("mean_x", reference["mean_x"]), ("sxx", reference["sxx"]),
+                          ("residual_sd", reference["residual_sd"]),
+                          ("slope", reference["slope"]), ("intercept", reference["intercept"])):
+        assert abs(params[key] - expected) <= 5.1e-5, (key, params[key], expected)
+    quant = densitometry.quantify(dens, curve, load={6: 2.0, 7: 2.0}, load_text="6=2,7=2")
+    assert set(quant["uncertainty"]) == UNCERTAINTY_KEYS, quant["uncertainty"]
+
+    for lane in quant["lanes"]:
+        for band in lane["bands"]:
+            if band["mass"] is None:
+                assert band["mass_sd"] is None, band
+                continue
+            expected = _linear_prediction_sd(params, band["area"])
+            _assert_3dp(band["mass_sd"], expected, "泳道 %d 带 %d 的 mass_sd"
+                        % (lane["lane"], band["index"]))
+            # the prediction SD can never be smaller than the fit-mean SD at the same x: a
+            # implementation that dropped the leading `1` would land on the smaller one
+            fit_mean = float(params["residual_sd"]) * math.sqrt(
+                (float(band["area"]) - float(params["mean_x"])) ** 2 / float(params["sxx"]))
+            assert band["mass_sd"] > fit_mean, (band["area"], band["mass_sd"], fit_mean)
+
+    # the SD is smallest near x̄ and grows towards both ends of the range — the shape a pure
+    # slope/intercept error would NOT have (it is largest at the ends and never has a `1`)
+    lane6 = _lane_of(quant, 6)
+    near = _band_of(lane6, 2)["mass_sd"]
+    far = _band_of(lane6, 1)["mass_sd"]
+    assert far != near, (lane6,)
+    centre = _band_of(_lane_of(quant, 7), 1)["mass_sd"]
+    assert centre > 0.0 and near > 0.0, (centre, near)
+    # the highest x in the range (area 12) carries the largest SD of the evaluated samples
+    widest = _band_of(_lane_of(quant, 8), 2)["mass_sd"]
+    assert widest > centre, (widest, centre)
+    return True
+
+
+def check_mass_sd_power():
+    """ep-c1i §4: a power band's `mass_sd` is
+    `mass · ln(10) · s · sqrt(1 + 1/n + (u − ū)²/sxx)` with `u = log10(area)`, i.e. the log-space
+    prediction SD mapped onto the mass scale by the same delta method `scale_sd` uses."""
+    dens, curve = _propagation_fixture("power")
+    params = curve["fit_params"]
+    reference = _ols([math.log10(v) for v in (1.0, 2.0, 4.0, 8.0, 16.0)],
+                     [math.log10(m) for m in (2.0, 5.0, 9.0, 21.0, 38.0)])
+    assert params["space"] == "log10", params
+    for key, expected in (("mean_x", reference["mean_x"]), ("sxx", reference["sxx"]),
+                          ("residual_sd", reference["residual_sd"]),
+                          ("exponent", reference["slope"]), ("scale", 10 ** reference["intercept"])):
+        assert abs(params[key] - expected) <= 5.1e-5, (key, params[key], expected)
+    quant = densitometry.quantify(dens, curve, load={6: 2.0, 7: 3.0}, load_text="6=2,7=3")
+
+    for lane in quant["lanes"]:
+        for band in lane["bands"]:
+            if band["mass"] is None:
+                assert band["mass_sd"] is None, band
+                continue
+            expected = _power_prediction_sd(params, band["area"], band["mass"])
+            _assert_3dp(band["mass_sd"], expected, "泳道 %d 带 %d 的 mass_sd"
+                        % (lane["lane"], band["index"]))
+            # without the ln(10) the number would be ~2.3× too small; require the factor
+            stats = _stats_from_params(params)
+            u = math.log10(float(band["area"]))
+            sd_log = stats["s"] * math.sqrt(1.0 + 1.0 / stats["n"]
+                                            + (u - stats["mx"]) ** 2 / stats["sxx"])
+            assert abs(band["mass_sd"] - float(band["mass"]) * sd_log) > 1e-6, \
+                "power 的 mass_sd 少了 delta 方法的 ln(10) 因子：%r" % (band,)
+
+    # the log-space SD is nearly uniform, so the mass SD scales with the mass itself (delta
+    # method): between the smallest and the largest in-range area the SD ratio must track the mass
+    # ratio, not stay constant (a log-space number leaked into the mass column would not)
+    small = _band_of(_lane_of(quant, 6), 1)
+    big = _band_of(_lane_of(quant, 7), 1)
+    assert small["mass_sd"] is not None and big["mass_sd"] is not None, (small, big)
+    ratio_mass = big["mass"] / small["mass"]
+    ratio_sd = big["mass_sd"] / small["mass_sd"]
+    assert 0.6 <= ratio_sd / ratio_mass <= 1.6, \
+        "power 的 mass_sd 该随质量一起放大（delta 方法）：mass ×%.2f 而 SD ×%.2f" % (
+            ratio_mass, ratio_sd)
+    return True
+
+
+def check_lane_uncertainty_sums():
+    """ep-c1i §4: `mass_total_sd` is the ROOT SUM OF SQUARES of the band SDs (independent errors),
+    `conc_sd` is that total SD over the load, and both are None exactly where their point
+    estimate is None."""
+    dens, curve = _propagation_fixture("linear")
+    quant = densitometry.quantify(dens, curve, load={6: 2.0}, load_text="6=2")
+    for lane in quant["lanes"]:
+        sds = [b["mass_sd"] for b in lane["bands"] if b["mass"] is not None]
+        if lane["mass_total"] is None:
+            assert lane["mass_total_sd"] is None, lane
+            assert lane["conc_sd"] is None, lane
+            continue
+        assert len(sds) == len([b for b in lane["bands"] if b["mass"] is not None]), lane
+        expected = math.sqrt(sum(sd * sd for sd in sds))
+        _assert_3dp(lane["mass_total_sd"], expected, "泳道 %d 的 mass_total_sd" % lane["lane"])
+        # not the sum, and not the maximum: either mistake is a plausible implementation bug
+        assert abs(lane["mass_total_sd"] - sum(sds)) > _TOL_3DP or len(sds) == 1, lane
+        if len(sds) > 1:
+            assert lane["mass_total_sd"] < sum(sds), lane
+            assert lane["mass_total_sd"] > max(sds), lane
+        if lane["load_ul"] is None or lane["conc"] is None:
+            assert lane["conc_sd"] is None, lane
+        else:
+            _assert_3dp(lane["conc_sd"], lane["mass_total_sd"] / lane["load_ul"],
+                        "泳道 %d 的 conc_sd" % lane["lane"])
+            # the concentration SD is the mass SD divided by the load, so it is always SMALLER
+            # than the mass total SD for a load above 1 uL and equal only at exactly 1 uL
+            if lane["load_ul"] > 1.0:
+                assert lane["conc_sd"] < lane["mass_total_sd"], lane
+    # lane 8 has two bands and no load: total SD yes, concentration SD no
+    lane8 = _lane_of(quant, 8)
+    assert lane8["mass_total"] is not None and lane8["mass_total_sd"] is not None, lane8
+    assert lane8["load_ul"] is None and lane8["conc"] is None and lane8["conc_sd"] is None, lane8
+    # loading lane 8 makes conc_sd appear, still the total SD over the load
+    loaded = densitometry.quantify(dens, curve, load={6: 2.0, 8: 4.0}, load_text="6=2,8=4")
+    lane8b = _lane_of(loaded, 8)
+    assert lane8b["conc"] is not None and lane8b["conc_sd"] is not None, lane8b
+    _assert_3dp(lane8b["conc_sd"], lane8b["mass_total_sd"] / 4.0, "泳道 8 加载后的 conc_sd")
+    return True
+
+
+def check_out_of_range_and_nonpositive_have_no_sd():
+    """ep-c1i §4: a band that got no mass (out of range, or a non-positive fitted value) has
+    `mass_sd: null`, and its lane's total SD / concentration SD follow the total's null."""
+    dens, curve = _propagation_fixture("linear")
+    # lane 9 is 20 % below volume_min, lane 10 is 20 % above volume_max
+    dens["lanes"].append(_lane(9, "LOW", [_band(1, 2.0, 45.0, 0.5, strongest=True)]))
+    dens["lanes"].append(_lane(10, "HIGH", [_band(1, 2.0, 45.0, 15.0, strongest=True)]))
+    # lane 11 pairs one out-of-range band with one in-range one: the total cannot be trusted, so
+    # neither the total SD nor the concentration SD may appear
+    dens["lanes"].append(_lane(11, "MIX", [_band(1, 2.0, 45.0, 0.5),
+                                           _band(2, 4.6, None, 3.0)]))
+    quant = densitometry.quantify(dens, curve, load={9: 2.0, 10: 2.0, 11: 2.0},
+                                  load_text="9=2,10=2,11=2")
+    for no in (9, 10):
+        lane = _lane_of(quant, no)
+        assert lane["out_of_range"] is True and lane["mass_total"] is None, lane
+        assert lane["mass_total_sd"] is None and lane["conc_sd"] is None, lane
+        for band in lane["bands"]:
+            assert band["out_of_range"] is True and band["mass"] is None, band
+            assert band["mass_sd"] is None, band
+    mixed = _lane_of(quant, 11)
+    assert mixed["mass_total"] is None and mixed["mass_total_sd"] is None, mixed
+    assert mixed["conc"] is None and mixed["conc_sd"] is None, mixed
+    # the in-range half of the mixed lane still carries its own SD (per band, not per lane)
+    in_range = _band_of(mixed, 2)
+    assert in_range["mass"] is not None and in_range["mass_sd"] is not None, in_range
+    _assert_3dp(in_range["mass_sd"], _linear_prediction_sd(curve["fit_params"],
+                                                           in_range["area"]),
+                "混合泳道里在范围内那一条带的 mass_sd")
+
+    # a NON-POSITIVE fitted value is the third no-mass case: with usable statistics present the
+    # band still gets no SD (there is no mass to attach it to), and its lane's total SD is null
+    # even though a sibling band in the same lane is perfectly in range.
+    crossing = {1: (13.0, 4.0), 2: (20.0, 60.0)}
+    neg = _dens([_lane(1, "S1", [_band(1, 2.0, 45.0, 13.0, strongest=True)]),
+                 _lane(2, "S2", [_band(1, 2.0, 45.0, 20.0, strongest=True)]),
+                 _lane(3, "NEG", [_band(1, 2.0, 45.0, 2.0, strongest=True)]),
+                 _lane(4, "POS", [_band(1, 2.0, 45.0, 15.0, strongest=True)])])
+    # mass = -100 + 8·area crosses zero at 12.5, inside the hand-widened range 1 .. 20
+    crossing_curve = _curve_doc([(1, crossing[1][0], crossing[1][1]),
+                                 (2, crossing[2][0], crossing[2][1])],
+                                {"slope": 8.0, "intercept": -100.0, "r2": 1.0, "n": 5,
+                                 "space": "linear", "residual_sd": 0.5, "sxx": 30.0,
+                                 "mean_x": 16.0},
+                                1.0, 20.0, -92.0, 60.0)
+    neg_quant = densitometry.quantify(neg, crossing_curve, load={3: 2.0, 4: 2.0},
+                                      load_text="3=2,4=2")
+    neg_lane = _lane_of(neg_quant, 3)
+    assert neg_lane["bands"][0]["mass"] is None and neg_lane["bands"][0]["mass_sd"] is None, \
+        neg_lane
+    assert neg_lane["mass_total"] is None and neg_lane["mass_total_sd"] is None, neg_lane
+    assert neg_lane["conc"] is None and neg_lane["conc_sd"] is None, neg_lane
+    # the positive lane in the same run keeps its SD, at the hand-computed prediction value
+    pos_lane = _lane_of(neg_quant, 4)
+    assert pos_lane["mass_total_sd"] is not None, pos_lane
+    _assert_3dp(pos_lane["bands"][0]["mass_sd"],
+                _linear_prediction_sd(crossing_curve["fit_params"],
+                                      pos_lane["bands"][0]["area"]),
+                "跨零拟合里仍在正侧那条带的 mass_sd")
+    return True
+
+
+def check_no_residual_sd_withholds_everything():
+    """ep-c1i §4: a hand-written curve.json without `residual_sd` (and an n == 2 curve from
+    `build_curve`) propagates NOTHING: every `mass_sd` / `mass_total_sd` / `conc_sd` is None and
+    exactly ONE note explains why — no number is invented, and no `± 0` pretends to a perfect fit."""
+    dens, curve = _propagation_fixture("linear")
+    bare = _curve_doc([(1, 1.0, 3.0), (2, 2.0, 5.0), (3, 4.0, 11.0), (4, 8.0, 19.0),
+                       (5, 12.0, 31.0)],
+                      {"slope": curve["fit_params"]["slope"],
+                       "intercept": curve["fit_params"]["intercept"],
+                       "r2": curve["fit_params"]["r2"], "n": 5, "space": "linear"},
+                      1.0, 12.0, 3.0, 31.0)
+    quant = densitometry.quantify(dens, bare, load={6: 2.0}, load_text="6=2")
+    for lane in quant["lanes"]:
+        for band in lane["bands"]:
+            assert band["mass_sd"] is None, band
+        assert lane["mass_total_sd"] is None, lane
+        assert lane["conc_sd"] is None, lane
+    # the point estimates are untouched: only the uncertainty is withheld
+    assert abs(_lane_of(quant, 6)["mass_total"] - 24.344) <= 0.0005, _lane_of(quant, 6)
+    notes = [note for note in quant["notes"] if _is_no_scatter_note(note)]
+    assert len(notes) == 1, quant["notes"]
+    _single_line(notes[0], "无残差散布的注")
+    assert "残差散布" in notes[0] and "不给数" in notes[0], notes[0]
+    skip = [note for note in quant["notes"] if "跳过" in note]
+    assert len(skip) == 1, quant["notes"]
+    assert len(quant["notes"]) == 2, quant["notes"]
+    # the terminal output prints no "±" next to any value in this case (an unknown must not look
+    # like a measured zero); the header's basis clause is the only place a ± appears
+    text = _formatted(quant, bare)[0]
+    lines = text.splitlines()
+    assert "±" in lines[0] and "SD" in lines[0], lines[0]
+    for line in lines[1:]:
+        assert "±" not in line, line
+    assert "None" not in text, text
+
+    # the same rule for a genuine n == 2 curve built by `build_curve`
+    two = _curve_doc([(1, 2.5, 22.0), (2, 5.0, 42.0)],
+                     {"slope": 8.0, "intercept": 2.0, "r2": 1.0, "n": 2, "space": "linear",
+                      "residual_sd": None, "sxx": 3.125, "mean_x": 3.75},
+                     2.5, 5.0, 22.0, 42.0)
+    two_quant = densitometry.quantify(dens, two)
+    for lane in two_quant["lanes"]:
+        for band in lane["bands"]:
+            assert band["mass_sd"] is None, band
+        assert lane["mass_total_sd"] is None, lane
+    assert len([n for n in two_quant["notes"] if _is_no_scatter_note(n)]) == 1, two_quant["notes"]
+    return True
+
+
+def check_uncertainty_terminal():
+    """ep-c1i §4 terminal: every known value prints its `±` SD at 3 significant digits, an unknown
+    SD omits the `±` entirely, and the header gains the basis clause."""
+    dens, curve = _propagation_fixture("linear")
+    quant = densitometry.quantify(dens, curve, load={6: 2.0, 7: 2.0}, load_text="6=2,7=2")
+    text = _formatted(quant, curve)[0]
+    assert "±" in text, text
+    head = text.splitlines()[0]
+    # the header names the basis: one short tail clause, and the JSON block is where it comes from
+    assert "±1 SD" in head, head
+    assert "拟合" in head, head
+    assert "None" not in text, text
+
+    lane6 = [ln for ln in text.splitlines() if ln.startswith("  泳道  6")][0]
+    band1 = _band_of(_lane_of(quant, 6), 1)
+    # `7.788 ± 1.09 ug`: value first, then ±, then the SD at three significant digits, then unit
+    found = re.search(r"7\.788\s*±\s*([0-9]+(?:\.[0-9]+)?)\s*ug", lane6)
+    assert found, "带值的质量该印成 `值 ± SD 单位`：%r" % (lane6,)
+    sd_text = found.group(1)
+    assert abs(float(sd_text) - band1["mass_sd"]) <= 0.005 + 1e-9, (sd_text, band1["mass_sd"])
+    # three significant digits, and never the full stored number (1.088 must not print as 1.088)
+    assert float(sd_text) != band1["mass_sd"], (sd_text, band1["mass_sd"])
+    assert len(sd_text.replace(".", "").lstrip("0")) <= 3, sd_text
+    assert abs(float(sd_text) - band1["mass_sd"]) <= 0.005 + 1e-9, (sd_text, band1["mass_sd"])
+    # the lane total and the concentration carry the same `±` shape
+    assert re.search(r"合计\s*24\.344\s*±\s*[0-9.]+\s*ug", lane6), lane6
+    assert re.search(r"浓度\s*12\.172\s*±\s*[0-9.]+\s*ug/uL", lane6), lane6
+    # the unit follows the SD, not the value: `± 1.09 ug`, never `± 1.09` with the unit dangling.
+    # (the header's `±1 SD` basis clause is not a value, so only the lane lines are scanned)
+    for line in text.splitlines()[1:]:
+        if not line.startswith("  泳道 "):
+            continue
+        for token in re.findall(r"±\s*[0-9.]+\s*(?:ug(?:/uL)?)?", line):
+            assert "ug" in token, "± 后面该跟着单位：%r" % (token,)
+
+    # the values and the SDs stay distinguishable at the printed precision
+    band2 = _band_of(_lane_of(quant, 6), 2)
+    found2 = re.search(r"16\.555\s*±\s*([0-9]+(?:\.[0-9]+)?)\s*ug", lane6)
+    assert found2, "第二条带也带着自己的 ± 值：%r" % (lane6,)
+    assert abs(float(found2.group(1)) - band2["mass_sd"]) <= 0.005 + 1e-9, (found2.group(1),
+                                                                         band2["mass_sd"])
+    assert found2.group(1) != sd_text, "两条带的 SD 不同，不该印成同一个数"
+    # a lane without a load prints no concentration and therefore no concentration SD
+    lane8 = [ln for ln in text.splitlines() if ln.startswith("  泳道  8")][0]
+    assert "浓度" not in lane8, lane8
+    assert "ug/uL" not in lane8, lane8
+    assert re.search(r"合计\s*33\.11\s*±\s*[0-9.]+\s*ug", lane8), lane8
+
+    # ep-c1i must not disturb the existing column alignment: the `±` sits INSIDE the last slot of
+    # a line, never in the label column, so every lane's body starts at the same display width
+    # (the labels here are A / B / C, i.e. already equal — the two-band and one-band lanes would
+    # drift apart if the uncertainty were appended before the padding).
+    widths = []
+    for line in text.splitlines()[1:]:
+        if not line.startswith("  泳道 "):
+            continue
+        found = re.search(r"带[0-9]|—|（无带）", line)
+        assert found, "泳道行该有带/无带的正文块：%r" % (line,)
+        widths.append(densitometry._dwidth(line[:found.start()]))
+    assert len(set(widths)) == 1, "加入 ± 后各泳道行的正文起始列不再对齐：%r" % (widths,)
+    return True
+
+
+def check_uncertainty_json_round_trip():
+    """ep-c1i §4 precision: the propagated numbers are stored at 3 dp, the block survives a
+    `write_json` / `load_json` round trip, and nothing non-finite reaches the file."""
+    dens, curve = _propagation_fixture("power")
+    quant = densitometry.quantify(dens, curve, load={6: 2.0}, load_text="6=2")
+    for lane in quant["lanes"]:
+        if lane["mass_total_sd"] is not None:
+            assert _decimals(lane["mass_total_sd"]) <= 3, lane
+        if lane["conc_sd"] is not None:
+            assert _decimals(lane["conc_sd"]) <= 3, lane
+        for band in lane["bands"]:
+            if band["mass_sd"] is not None:
+                assert _decimals(band["mass_sd"]) <= 3, band
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "u.quant.json")
+        densitometry.write_json(quant, path)
+        with open(path, encoding="utf-8") as f:
+            raw = f.read()
+        for token in ("NaN", "Infinity", "-Infinity"):
+            assert token not in raw, "quant.json 里出现了 %r" % (token,)
+        back = densitometry.load_json(path, QUANT_KIND)
+        assert back == json.loads(raw), "round trip 丢了传播字段"
+        assert back["uncertainty"] == quant["uncertainty"], back["uncertainty"]
+        assert back == quant, "load_json 往返与内存里的 quant 不一致"
+        # a None SD is a JSON null, never a 0 and never the string "null"
+        assert '"mass_sd": null' in raw, raw[:400]
+    return True
+
+
 # ---------------------------------------------------------------- runner
 
 CHECKS = [
@@ -1481,6 +1960,14 @@ CHECKS = [
     check_nonpositive_mass_null,
     check_terminal_precision,
     check_out_of_range_three_sig,
+    check_uncertainty_block,
+    check_mass_sd_linear,
+    check_mass_sd_power,
+    check_lane_uncertainty_sums,
+    check_out_of_range_and_nonpositive_have_no_sd,
+    check_no_residual_sd_withholds_everything,
+    check_uncertainty_terminal,
+    check_uncertainty_json_round_trip,
 ]
 
 

@@ -28,7 +28,7 @@ What is asserted is the scientific content of the picture:
 Matplotlib is an optional `[plot]` extra; the gateway / base selftest decides whether the
 suites run at all, so this module does not silently skip.
 
-Run:  PYTHONPATH=src python3 -m epcraft.selftest_dens_plot
+Run:  PYTHONPATH=src python3 -m tests.selftest_dens_plot
 `run()` returns the number of passed checks and prints `selftest_dens_plot N/N 通过`.
 """
 import contextlib
@@ -43,7 +43,7 @@ import warnings
 
 os.environ.setdefault("MPLBACKEND", "Agg")
 
-from . import densitometry
+from epcraft import densitometry
 
 KIND = densitometry.KIND
 _CJK = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]")
@@ -54,7 +54,7 @@ _NUM = re.compile(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?")
 
 def _plot():
     """The renderer module, with the names this suite exercises."""
-    from . import dens_plot
+    from epcraft import dens_plot
     for name in ("plot_bands", "LaneLabelWarning"):
         assert hasattr(dens_plot, name), "dens_plot 缺少 %s" % name
     assert callable(dens_plot.plot_bands), "dens_plot.plot_bands 不是可调用对象"
@@ -494,7 +494,7 @@ def _np_finite_2d(values):
 # ---------------------------------------------------------------- CLI harness
 
 def _cli(argv):
-    from . import gel_photo
+    from epcraft import gel_photo
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         try:
@@ -620,7 +620,7 @@ def _window_tick_positions(ax):
 
 def check_api_signature():
     """Public signature keeps the old arguments and adds keyword-only `groups`."""
-    from . import dens_plot
+    from epcraft import dens_plot
     sig = inspect.signature(dens_plot.plot_bands)
     names = list(sig.parameters)
     assert names[:6] == ["dens", "out", "baseline", "lanes", "cols", "width"], names
@@ -638,7 +638,7 @@ def check_api_signature():
 
 def check_cli_parser():
     """`plot-bands` keeps §3.4 defaults and accepts repeatable --group."""
-    from . import gel_photo
+    from epcraft import gel_photo
     for group in ("dens", "densitometry"):
         ap = gel_photo.build_parser(canvas=True)
         args = ap.parse_args([group, "plot-bands", "--dens", "d.json"])
@@ -679,7 +679,7 @@ def check_default_path_and_alias():
             assert os.path.isfile("fig.bands.png"), out
             assert "fig.bands.png" in out, out
             w, h = _png_size("fig.bands.png")
-            from . import gel_photo
+            from epcraft import gel_photo
             default_width = gel_photo.build_parser(canvas=True).parse_args(
                 ["dens", "plot-bands", "--dens", "fig.dens.json"]).width
             assert abs(w - default_width) <= 2, (w, default_width)
@@ -1090,7 +1090,7 @@ def check_nonenglish_lane_fallback():
         text = _all_text(fig)
         assert "Lane 4" in text, "非英文泳道没有回退成 Lane 4：%r" % text
         assert not _CJK.search(text), "图里仍有中日韩字符：%r" % _CJK.findall(text)
-        from . import dens_plot
+        from epcraft import dens_plot
         lane_warnings = [w for w in caught if issubclass(w.category, dens_plot.LaneLabelWarning)]
         assert lane_warnings, "非英文泳道没有发出 LaneLabelWarning：%r" % [
             (w.category.__name__, str(w.message)) for w in caught]
@@ -1213,7 +1213,7 @@ def check_no_magick_no_temp():
     """The renderer does not touch ImageMagick and leaves no MVG / temp debris."""
     dens = _dens()
     with tempfile.TemporaryDirectory() as td:
-        from . import magick_io
+        from epcraft import magick_io
         boom = AssertionError("matplotlib 渲染不应调用 ImageMagick")
         with unittest.mock.patch.object(magick_io, "_run", side_effect=boom):
             (_w, _h), _fig, _caught, out, _paths = _render_file(

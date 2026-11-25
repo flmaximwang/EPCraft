@@ -27,9 +27,9 @@ def cmd_workbench_to_figure(args):
     return run(args)
 
 
-def add_commands(sub):
-    from . import gel_photo, figure
-    from .canvas_cli import cmd_figure_export
+def add_commands(sub, figure_export=None):
+    """figure_export = canvas_cli.cmd_figure_export（由上层注入，本模块不反向 import canvas_cli）。"""
+    from . import gel_session, figure
 
     group = sub.add_parser("workflow", help="Advance photo → Crop → Workbench → Profiles/Figure → PNG")
     stages = group.add_subparsers(dest="action", required=True)
@@ -48,7 +48,7 @@ def add_commands(sub):
     image.add_argument("--doc", required=True, help="Document created by init-canvas")
     image.add_argument("--port", type=int, default=vc_control.DEFAULT_PORT)
     image.add_argument("--dpi", type=int, default=300)
-    gel_photo._add_detect(image)
+    gel_session.add_detect_args(image)
     image.set_defaults(func=cmd_img_to_crop)
 
     wb = document_stage("crop-to-workbench", "Seed Workbench from the current Crop frame", cmd_crop_to_workbench)
@@ -67,6 +67,7 @@ def add_commands(sub):
         parser.add_argument("--dry-run", action="store_true", help="Print planned changes without saving")
         parser.add_argument("--reset-peaks", nargs="*", type=int, default=None, metavar="N")
 
-    export = document_stage("export", "Export the Figure canvas as PNG", cmd_figure_export)
-    export.add_argument("--out", help="PNG path (default: document stem + .png)")
-    export.add_argument("--background", default="white")
+    if figure_export is not None:
+        export = document_stage("export", "Export the Figure canvas as PNG", figure_export)
+        export.add_argument("--out", help="PNG path (default: document stem + .png)")
+        export.add_argument("--background", default="white")

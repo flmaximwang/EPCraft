@@ -16,11 +16,11 @@ import tempfile
 import zlib
 
 
-from . import doc_edit                                                                         # noqa: E402
-from . import figure                                                                           # noqa: E402
-from . import vc_file                                                                          # noqa: E402
-from . import workbench                                                                        # noqa: E402
-from . import workbench_io                                                                     # noqa: E402
+from epcraft import doc_edit                                                                         # noqa: E402
+from epcraft import figure                                                                           # noqa: E402
+from epcraft import vc_file                                                                          # noqa: E402
+from epcraft import workbench                                                                        # noqa: E402
+from epcraft import workbench_io                                                                     # noqa: E402
 
 
 def _png(w, h, rgb=(128, 128, 128)):

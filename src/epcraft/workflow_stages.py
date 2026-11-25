@@ -24,7 +24,7 @@ import os
 
 from . import crop
 from . import figure
-from . import gel_photo
+from . import gel_session
 from . import profiles
 from . import sync_exec
 from . import vc_control
@@ -64,25 +64,11 @@ def _gel(cm, key):
         raise RuntimeError("ep-meta 的 gel 缺 %s（先跑 img-to-crop）" % key)
 
 
-def _gel_node(document):
-    """Workbench 的整胶图（gel 图层里叫 gel 的图片）；没有 → None。"""
-    lay = vc_file.layer_by_name(document, "gel")
-    imgs = [n for n in (vc_file.lay_children(lay) if lay else [])
-            if n["kind"].get("type") == "image" and n.get("name") == "gel"]
-    return imgs[0] if len(imgs) == 1 else None
-
-
 def _live_snapshot(args, path):
     """--dry-run 用：读活文档但**不存盘**（连临时快照也不做，免得动活文档的路径 / dirty 状态）。"""
     port = int(getattr(args, "port", vc_control.DEFAULT_PORT))
     client, _launched = vc_control.connect(port, launch=True)
-    idx, _dirty = gel_photo._doc_state(client, path)
-    if idx is None:
-        client.open(path)
-        idx, _dirty = gel_photo._doc_state(client, path)
-    if idx is None:
-        raise RuntimeError("VectorCraft 没能打开 %s" % path)
-    client.execute("document.activate", {"index": idx})
+    gel_session.ensure_open(client, path)
     return client, client.document_json(), (vc_file.read(path)[1] if os.path.exists(path) else {})
 
 
@@ -91,7 +77,7 @@ def _read_live(args, path, dry_run):
     if dry_run:
         return _live_snapshot(args, path)
     client, document, blobs = workflow_start.live_document(args, path)
-    gel = _gel_node(document)
+    gel = vc_file.gel_node(document)
     if gel is not None and gel["kind"]["key"] not in blobs:
         raise RuntimeError("活文档里的胶面图不在磁盘那份里 —— 先在 VectorCraft 里存盘，再跑这一步")
     return client, document, blobs
@@ -144,7 +130,7 @@ def cmd_crop_to_workbench(args):
                            % (vc_file.png_size(png) + want_px + (dpi,)))
     print("[i] 按 Crop 框重新裁切：转 %.3f°、%d×%d px（%d dpi）" % (ang, want_px[0], want_px[1], dpi))
 
-    names, angles, mk_labels, cand, mk_note = gel_photo._lanes_and_markers(args, lane_count)
+    names, angles, mk_labels, cand, mk_note = gel_session.lanes_and_markers(args, lane_count)
     trim = parse_keep(args.trim_lanes, lane_count) if args.trim_lanes else []
     lane_angle, marker_angle = window_deg(args.label_angle), window_deg(args.marker_label_angle)
     if args.profiles not in ("stack", "strips"):
@@ -169,9 +155,9 @@ def cmd_crop_to_workbench(args):
         print("[i] %s" % n)
 
     raw = {}
-    report = gel_photo._mark_low_confidence(
+    report = gel_session.mark_low_confidence(
         model, profiles.analyze(model, png, names, overrides={}, raw=raw))
-    model["meta"].update(gel_photo._meta_state(model, raw))   # bands / peak_auto（下一次差分的基准）
+    model["meta"].update(gel_session.meta_state(model, raw))   # bands / peak_auto（下一次差分的基准）
     peaks = [(ln["lane"], b["y_cm"]) for ln in report["lanes"] if not ln["marker"] for b in ln["bands"]]
 
     key, w, h = vc_file.add_image(builder, png)
@@ -216,7 +202,7 @@ def _seed_model(png, width_cm, height_cm, lane_count, pitch, names, mk_labels, c
                   % (ml, m["meta"]["marker_confidence"].get("gate")))
     if not tried:
         raise err if err else RuntimeError("建不出 Workbench 模型（没有 marker 候选泳道）")
-    ml, model, sd = max(tried, key=lambda t: (gel_photo._gate_ratio(t[1]["meta"]["marker_confidence"]),
+    ml, model, sd = max(tried, key=lambda t: (gel_session.gate_ratio(t[1]["meta"]["marker_confidence"]),
                                               len(t[1]["bands"])))
     conf = model["meta"]["marker_confidence"]
     conf["ok"] = False
@@ -273,7 +259,7 @@ def _common_model(args, path, dry_run):
     """读活文档 → 模型、报告、布局、client。两个派生阶段共用。"""
     client, document, blobs = _read_live(args, path, dry_run)
     workflow_start.require_init(document)
-    gel = _gel_node(document)
+    gel = vc_file.gel_node(document)
     if gel is None:
         raise RuntimeError("Workbench 还没有胶面图 —— 先跑 `epcraft workflow crop-to-workbench`")
     key = gel["kind"]["key"]
@@ -288,10 +274,10 @@ def _common_model(args, path, dry_run):
     if layout not in ("stack", "strips"):
         layout = figure.PROFILE_LAYOUT
 
-    reset_lanes, reset_all, warns = gel_photo._peak_reset_lanes(model, getattr(args, "reset_peaks", None))
+    reset_lanes, reset_all, warns = gel_session.peak_reset_lanes(model, getattr(args, "reset_peaks", None))
     for n in warns:
         print("[!] %s" % n)
-    overrides, warns = gel_photo._peak_override_state(model, workbench.sample_ticks(document), reset_lanes)
+    overrides, warns = gel_session.peak_override_state(model, workbench.sample_ticks(document), reset_lanes)
     for n in warns:
         print("[!] %s" % n)
     if overrides:
@@ -299,10 +285,10 @@ def _common_model(args, path, dry_run):
     else:
         meta.pop("peak_overrides", None)
     raw = {}
-    report = gel_photo._mark_low_confidence(
+    report = gel_session.mark_low_confidence(
         model, profiles.analyze(model, png, [None] * len(model["lanes"]),
                                 overrides=meta.get("peak_overrides"), raw=raw))
-    meta.update(gel_photo._meta_state(model, raw))
+    meta.update(gel_session.meta_state(model, raw))
     return client, document, model, report, layout, reset_lanes, reset_all
 
 
@@ -326,7 +312,7 @@ def _stale_gel_segs(document, model):
     里的胶段可能还嵌着旧胶面图（旧像素、旧尺寸），导出永远是旧的。判据：内嵌图与 Workbench 那张 gel
     图的 key、像素尺寸、每像素 pt 全对上才算新鲜；对不上就整段删掉，让 plan_sync 按当前图重建。
     """
-    gel = _gel_node(document)
+    gel = vc_file.gel_node(document)
     if gel is None:
         return []
     k = gel["kind"]

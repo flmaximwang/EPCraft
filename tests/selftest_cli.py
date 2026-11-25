@@ -6,7 +6,7 @@
 launch 的 connect/open、figure export 的画板选择与输出保护、workbench export/import
 的参数转交，以及 main 的一行错误边界（RuntimeError / OSError / ValueError → 2）。
 
-运行：python3 -m epcraft.selftest_cli（在 src/ 上或安装后）
+运行：PYTHONPATH=src python3 -m tests.selftest_cli（在仓库根目录）
 """
 import contextlib
 import io
@@ -19,9 +19,9 @@ from pathlib import Path
 
 
 import epcraft                    # noqa: E402
-from . import canvas_cli          # noqa: E402
-from . import gel_photo           # noqa: E402
-from . import vc_control          # noqa: E402
+from epcraft import canvas_cli          # noqa: E402
+from epcraft import gel_photo           # noqa: E402
+from epcraft import vc_control          # noqa: E402
 
 
 # ---------------------------------------------------------------- 小工具
@@ -93,7 +93,7 @@ def test_parser_hierarchy():
         (["densitometry", "measure", "fig.mw.json"], "densitometry", "measure", "cmd_measure"),
         (["dens", "measure", "fig.mw.json", "--lanes", "2-4"], "dens", "measure", "cmd_measure"),
         (["doctor"], "doctor", None, "cmd_doctor"),
-        (["selftest"], "selftest", None, "cmd_selftest_all"),
+        (["selftest"], "selftest", None, "cmd_selftest"),
     ]
     for argv, cmd, action, func in cases:
         a = ap.parse_args(argv)
@@ -156,7 +156,7 @@ def test_legacy_parser_unchanged():
                        (["edit", "f.vectorcraft"], "cmd_edit"),
                        (["export", "old.scene.json"], "_removed_export"),
                        (["doctor"], "cmd_doctor"),
-                       (["selftest"], "cmd_selftest_legacy")):
+                       (["selftest"], "cmd_selftest")):
         a = ap.parse_args(argv)
         assert a.func.__name__ == func, (argv, a.func)
     # 自动识别：旧扁平入口也接受新层级，但老命令仍走扁平 parser
@@ -480,7 +480,7 @@ def test_densitometry_curve_cli():
             assert f1.read() == f2.read(), "两次 curve 的 JSON 不一致"
 
         # 默认输出名（R12）：fig.dens.json → fig.curve.json；不是 .dens.json 的退回落扩展名
-        from . import densitometry_cli
+        from epcraft import densitometry_cli
         calls = ((os.path.join(td, "fig.dens.json"), os.path.join(td, "fig.curve.json")),
                  (os.path.join(td, "FIG.DENS.JSON"), os.path.join(td, "FIG.curve.json")),
                  (os.path.join(td, "mydens.json"), os.path.join(td, "mydens.curve.json")),
@@ -599,17 +599,15 @@ def test_densitometry_curve_cli():
 def test_public_entry():
     """入口 = python3 -m epcraft（包可导入）与安装后的 console script。"""
     import importlib.util
-    from epcraft import cli as package_cli
-    package = Path(__file__).resolve().parent                    # …/src/epcraft（签出）或 site-packages/epcraft
-    repo = package.parent.parent if package.parent.name == "src" else None
-    if repo is not None and not (repo / "pyproject.toml").is_file():
-        repo = None
+    from epcraft import cli as package_cli, package_root
+    repo = Path(__file__).resolve().parent.parent
+    source = package_root().parent == repo / "src"
     assert callable(package_cli.main), package_cli.main
     assert importlib.util.find_spec("epcraft.__main__") is not None, "缺少 python -m epcraft 的 __main__"
 
     # 模块入口真的能跑（签出时用 repo/src，安装后用当前解释器里的包）
     env = dict(os.environ)
-    if repo is not None:
+    if source:
         src = str(repo / "src")
         env["PYTHONPATH"] = src + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     r = subprocess.run([sys.executable, "-m", "epcraft", "--help"],
@@ -624,7 +622,7 @@ def test_public_entry():
     selected = [ep for ep in (eps.select(group="console_scripts", name="epcraft")
                               if hasattr(eps, "select") else eps.get("console_scripts", []))
                 if ep.name == "epcraft"]
-    if repo is None:
+    if not source:
         assert any(ep.value == "epcraft.cli:main" for ep in selected), selected
 
     help_text = gel_photo.build_parser(canvas=True).format_help()

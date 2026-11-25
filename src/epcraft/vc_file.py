@@ -95,6 +95,40 @@ def layer_by_name(document, name):
     return hits[0] if hits else None
 
 
+def gel_node(document):
+    """Workbench 的胶面图（gel 图层里叫 gel 的图片）；没有 / 不唯一 → None。"""
+    lay = layer_by_name(document, "gel")
+    imgs = [n for n in (lay_children(lay) if lay else [])
+            if n["kind"].get("type") == "image" and n.get("name") == "gel"]
+    return imgs[0] if len(imgs) == 1 else None
+
+
+def doc_origin(document):
+    """Workbench 胶面图左上角 (x, y) pt：cm → pt 的原点（没有胶面图 → RuntimeError）。"""
+    img = gel_node(document)
+    if img is None:
+        raise RuntimeError("文档里没有唯一的胶面图（gel 图层里名叫 gel 的图片）")
+    return img["kind"]["xf"][4], img["kind"]["xf"][5]
+
+
+def meta_node(document, layer="ep-meta", name="ep-meta"):
+    """ep-meta 图层里名叫 ep-meta 的那个对象（图层不在 / 找不到 → None）。"""
+    lay = layer_by_name(document, layer)
+    return next((n for n in (lay_children(lay) if lay else []) if n.get("name") == name), None)
+
+
+def doc_meta(document):
+    """Return the ep-meta node and parsed JSON object, or None for either missing value."""
+    node = meta_node(document)
+    if node is None:
+        return None, None
+    try:
+        value = json.loads(text_info(node)["text"])
+    except (KeyError, TypeError, ValueError):
+        return node, None
+    return node, value if isinstance(value, dict) else None
+
+
 def layer_flags(lay):
     """图层的 (visible, locked, printable)：前两个挂在节点上（缺省 True/False），printable 在 kind 里。"""
     return lay.get("visible", True), lay.get("locked", False), lay["kind"].get("printable", True)
@@ -280,6 +314,32 @@ def clip(doc, name, rect, content):
                                                      {"p": [x + w, y + h]}, {"p": [x, y + h]}],
                                          "closed": True}]
     path["kind"]["live"].update(w=w, h=h, xf=[1.0, 0.0, 0.0, 1.0, x, y])
+    g["kind"]["children"] = [path, content]
+    return g
+
+
+def clip_quad(doc, name, corners, content):
+    """剪切组（四边形）：corners = [TL, TR, BR, BL] pt，只露出 content 落在这个四边形里的部分。
+
+    与 clip() 同一套结构（模板剪切组 + 一条带 "clipping": true 的闭合路径）；
+    轴对齐的矩形（TL.y == TR.y、BL.x == TL.x、没有斜边）直接交给 clip()，输出与旧版逐字节相同。
+    真正的四边形没有 live 矩形形状可写（live.shape "rectangle" 只能表达矩形），所以去掉 live ——
+    剪切按路径几何走，与模板里那条矩形路径的实测行为一致（references/vectorcraft.md §1/§2）。
+    """
+    if len(corners) != 4:
+        raise RuntimeError("clip_quad 要 4 个角 TL TR BR BL（收到 %d）" % len(corners))
+    (x0, y0), (x1, y1), (x2, y2), (x3, y3) = [(float(x), float(y)) for x, y in corners]
+    if abs(y1 - y0) <= 1e-9 and abs(y2 - y3) <= 1e-9 and abs(x0 - x3) <= 1e-9 and abs(x1 - x2) <= 1e-9:
+        return clip(doc, name, (x0, y0, x1 - x0, y3 - y0), content)
+    g = copy.deepcopy(doc["tpl"]["clip"])
+    g["id"] = _id(doc)
+    g["name"] = name
+    path = next(c for c in g["kind"]["children"] if c["kind"].get("clipping"))
+    path = copy.deepcopy(path)
+    path["id"] = _id(doc)
+    path.pop("name", None)
+    path["kind"]["path"]["subpaths"] = [{"anchors": [{"p": [x, y]} for x, y in corners], "closed": True}]
+    path["kind"].pop("live", None)
     g["kind"]["children"] = [path, content]
     return g
 
