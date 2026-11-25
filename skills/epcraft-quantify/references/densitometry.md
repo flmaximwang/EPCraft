@@ -21,6 +21,7 @@ epcraft densitometry plot --dens fig.dens.json --curve fig.curve.json   # both P
 epcraft densitometry quantify --dens fig.dens.json --curve fig.curve.json [--sample "SampleA=12,13,14"] [--sample-band 14,19] [--drop-sample 13] [--load-cv 3] [--report [PATH]]
 epcraft densitometry plot-bands --dens fig.dens.json [--baseline flank|global|both]
 epcraft densitometry plot-curve --curve fig.curve.json [--quant fig.quant.json]
+epcraft densitometry plot-quant --quant fig.quant.json [--out fig.quant.png] [--width 1020] [--cols 2]
 ```
 
 Every command accepts `--out`; without one the output path follows the chain suffix: `fig.mw.json` → `fig.dens.json` → `fig.curve.json` → `fig.quant.json`, and the plots are `fig.bands.png` / `fig.curve.png`. An `--out` that names a directory, sits in a directory that does not exist, or points at an input this command reads is refused with an error and a non-zero exit (directories are never created, inputs are never overwritten).

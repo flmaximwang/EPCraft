@@ -1452,8 +1452,10 @@ def run():
     else:
         from ..plotting import test_dens_plot
         from ..plotting import test_plot_curve_acceptance
+        from ..plotting import test_plot_quant_acceptance
         ok += test_dens_plot.run()
         ok += test_plot_curve_acceptance.run()
+        ok += test_plot_quant_acceptance.run()
 
     # 77++++) Quantify acceptance: areas to masses with the stored fit, the out-of-range and
     #      non-positive-mass refusals, --load, lane shares, the terminal block and the CLI. Written

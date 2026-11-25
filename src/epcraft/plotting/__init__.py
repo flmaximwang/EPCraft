@@ -16,9 +16,10 @@ callers and the acceptance suites keep importing and patching that module.
 
 from .bands import BASELINES, KIND, band_layout, plot_bands
 from .curve import CURVE_KIND, CURVE_SUFFIX, QUANT_KIND, curve_layout, plot_curve
+from .quant import plot_quant, quant_layout
 from .render import LaneLabelWarning
 
 __all__ = [
     "BASELINES", "CURVE_KIND", "CURVE_SUFFIX", "KIND", "QUANT_KIND", "LaneLabelWarning",
-    "band_layout", "curve_layout", "plot_bands", "plot_curve",
+    "band_layout", "curve_layout", "plot_bands", "plot_curve", "plot_quant", "quant_layout",
 ]

@@ -341,6 +341,53 @@ def _add_plot_curve(actions):
     p.set_defaults(func=cmd_plot_curve)
 
 
+QUANT_OUT_SUFFIX = ".quant.png"
+QUANT_SUFFIX = getattr(densitometry, "QUANT_SUFFIX", ".quant.json")
+
+
+def _quant_png_path(quant_path, out):
+    """plot-quant output path: `fig.quant.json` → `fig.quant.png` (or `--out`)."""
+    if out is None:
+        text = str(quant_path)
+        if text.lower().endswith(QUANT_SUFFIX):
+            target = text[:-len(QUANT_SUFFIX)] + QUANT_OUT_SUFFIX
+        else:
+            target = os.path.splitext(text)[0] + QUANT_OUT_SUFFIX
+        target = os.path.abspath(target)
+    else:
+        target = os.path.abspath(out)
+    if os.path.isdir(target):
+        raise ValueError("--out 指向的是目录 %s（要写文件路径）" % target)
+    parent = os.path.dirname(target) or "."
+    if not os.path.isdir(parent):
+        raise ValueError("输出目录 %s 不存在（不自动创建，先建好它）" % parent)
+    return target
+
+
+def cmd_plot_quant(args):
+    """quant.json → PNG with sample series concentration / ratio-fit plots."""
+    from .. import plotting as dens_plot
+
+    quant_path = os.path.abspath(args.quant)
+    quant = densitometry.load_json(quant_path, dens_plot.QUANT_KIND)
+    out = _quant_png_path(quant_path, args.out)
+    _refuse_overwrite(out, (quant_path,))
+    w, h = dens_plot.plot_quant(quant, out, width=args.width, cols=args.cols)
+    print("[i] 写出 %s（%dx%d 像素）" % (out, w, h))
+    return 0
+
+
+def _add_plot_quant(actions):
+    """`plot-quant` — sample series quantification & ratio-regression plots."""
+    p = actions.add_parser("plot-quant",
+                           help="Render a quant.json as a PNG (ratio fit / replicate concentrations)")
+    p.add_argument("--quant", required=True, help="quant.json written by `quantify`")
+    p.add_argument("--out", help="output PNG (default: fig.quant.json -> fig.quant.png)")
+    p.add_argument("--width", type=int, default=1020, help="image width in pixels (default %(default)s)")
+    p.add_argument("--cols", type=int, default=2, help="columns for multi-sample grid (default %(default)s)")
+    p.set_defaults(func=cmd_plot_quant)
+
+
 # ---------------------------------------------------------------- plot (unified, ticket ep-4xa)
 
 def _standards_members(curve):
@@ -602,4 +649,5 @@ def add_commands(sub):
     _add_plot(actions)
     _add_plot_bands(actions)
     _add_plot_curve(actions)
+    _add_plot_quant(actions)
     _add_quantify(actions)
