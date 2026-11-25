@@ -236,17 +236,25 @@ def lane_is_quad(ln):
     return profiles.is_quad(ln)
 
 
-def _assemble(gel, lanes, marker_rows_cm, lane_names, marker_labels, marker_lane, window, meta, how, gate=None):
-    """两个建模入口的共同后半段：MW 槽按序直挂、置信信息、积分窗、元数据、校验。
-
-    「出生即 MW」（ep-bdt）：第 k 条带（y 升序）挂第 k 个 MW 槽，没有配对步骤；叫出几条放几条线，
-    数量对不上不拒绝 —— 少了只挂前 k 个槽，多了不落线，两者都进 marker_confidence.notes。
-    """
+def marker_mws(marker_labels):
+    """marker 标签 → (MW 槽序列, 提示)。每个标签占 max(1, rows) 个槽（并带 = 两个槽）。"""
     entries = [as_entry(e, {}) for e in marker_labels]
     for e in entries:
         if not parse_mw(e.get("text", "")):
             raise WorkbenchError("marker 标签 %r 里没有分子量数字，没法做成 band 线" % e.get("text"))
-    mws, notes = expand_marker_mws(entries, as_entry)
+    return expand_marker_mws(entries, as_entry)
+
+
+def bands_from_rows(marker_rows_cm, mws, marker_lane, how, gate=None, notes=None):
+    """marker 行 + MW 槽 → (bands, notes, marker_confidence)。「出生即 MW」的唯一实现（ep-bdt）。
+
+    第 k 条带（y 升序）挂第 k 个 MW 槽，没有配对步骤；叫出几条放几条线，数量对不上不拒绝 ——
+    少了只挂前 k 个槽，多了不落线，两者都进 notes；劈峰只提示、不并峰。
+    gate = profiles.pick_marker 的 info（闸门只决定置信度，不影响这里挂几条线）。
+    notes = 调用方已有的提示（marker 标签展开时产生的那几条），接在后面。
+    render（from_image / from_record）与 `sync --reset-marker` 重检都走这里：MW 顺序语义只有一份。
+    """
+    notes = list(notes or [])
     rows = sorted(float(y) for y in marker_rows_cm)
     bands = [{"mw": float(mw), "y_cm": round(float(y), 4)}
              for y, mw in zip(rows, mws) if mw is not None]
@@ -259,6 +267,33 @@ def _assemble(gel, lanes, marker_rows_cm, lane_names, marker_labels, marker_lane
     split = split_peak_note(rows)
     if split:
         notes.append(split)
+    # 置信信息：闸门（pick_marker）只决定这里，不决定成败。picked = 真落线的条数。
+    # ratio / nth / next 是断崖诊断（render 全不过闸门时拿 ratio 挑道、终端打印用），不影响语义。
+    g = gate or {}
+    # ok = 闸门过 + 每个 MW 槽都挂上了 + 没有劈峰提示。只比 len(rows) == len(mws) 不够：
+    # rows 多于数字时计数可能相等，而槽里有 None → 实际落线更少。
+    full = len(rows) == len(mws) and all(mw is not None for mw in mws)
+    ok = bool(g.get("ok", True)) and full and not split
+    gate_reason = None if g.get("ok", True) else g.get("reason")
+    if not full and not gate_reason:
+        gate_reason = "检出 %d 条带、MW 槽 %d 个、实际落线 %d 条" % (len(rows), len(mws), len(bands))
+    if split and not gate_reason:
+        gate_reason = split
+    conf = {"ok": ok, "picked": len(bands), "need": len(mws), "gate": gate_reason,
+            "ratio": g.get("ratio"), "nth": g.get("nth"), "next": g.get("next"), "notes": notes}
+    return bands, notes, conf
+
+
+def fit_bands(marker_rows_cm, marker_labels, marker_lane, how, gate=None):
+    """marker 行 + 标签 → (bands, notes, marker_confidence)（render 两个入口用的那层）。"""
+    mws, notes = marker_mws(marker_labels)
+    return bands_from_rows(marker_rows_cm, mws, marker_lane, how, gate, notes)
+
+
+def _assemble(gel, lanes, marker_rows_cm, lane_names, marker_labels, marker_lane, window, meta, how, gate=None):
+    """两个建模入口的共同后半段：MW 槽按序直挂、置信信息、积分窗、元数据、校验。"""
+    entries = [as_entry(e, {}) for e in marker_labels]
+    bands, notes, conf = fit_bands(marker_rows_cm, entries, marker_lane, how, gate)
 
     top, bottom = window if window else (TOP_GUARD_CM, gel["height_cm"] * (1.0 - BOTTOM_GUARD))
     m = dict(meta or {})
@@ -279,21 +314,7 @@ def _assemble(gel, lanes, marker_rows_cm, lane_names, marker_labels, marker_lane
              prev_centres_cm=[round((ln["left_cm"] + ln["right_cm"]) / 2.0, 4) for ln in lanes],
              # ep-meta 记一份 marker 泳道：0 条 band 线时文档里没有线可量，读回只能靠它
              marker_lane=int(marker_lane))
-    # 置信信息：闸门（pick_marker）只决定这里，不决定成败。picked = 真落线的条数。
-    # ratio / nth / next 是断崖诊断（render 全不过闸门时拿 ratio 挑道、终端打印用），不影响语义。
-    g = gate or {}
-    # ok = 闸门过 + 每个 MW 槽都挂上了 + 没有劈峰提示。只比 len(rows) == len(mws) 不够：
-    # rows 多于数字时计数可能相等，而槽里有 None → 实际落线更少。
-    full = len(rows) == len(mws) and all(mw is not None for mw in mws)
-    ok = bool(g.get("ok", True)) and full and not split
-    gate_reason = None if g.get("ok", True) else g.get("reason")
-    if not full and not gate_reason:
-        gate_reason = "检出 %d 条带、MW 槽 %d 个、实际落线 %d 条" % (len(rows), len(mws), len(bands))
-    if split and not gate_reason:
-        gate_reason = split
-    m["marker_confidence"] = {"ok": ok, "picked": len(bands), "need": len(mws), "gate": gate_reason,
-                              "ratio": g.get("ratio"), "nth": g.get("nth"), "next": g.get("next"),
-                              "notes": notes}
+    m["marker_confidence"] = conf
     model = {"gel": gel, "window": {"top_cm": round(float(top), 4), "bottom_cm": round(float(bottom), 4)},
              "lanes": lanes, "bands": bands, "marker_lane": int(marker_lane), "meta": m}
     errs = validate(model)
@@ -325,6 +346,34 @@ def frame(model, x0, y0=0.0):
     w = model["gel"]["width_cm"] * PT + 2 * m
     h = model["gel"]["height_cm"] * PT + 2 * m
     return {"artboard": (x0, y0, w, h), "gel_x": x0 + m, "gel_y": y0 + m}
+
+
+def lane_span_pt(gx, lane, y_cm=0.0, height_cm=None):
+    """band 横线在文档里的两端 x（pt）：泳道左右边各伸出 GRAB_CM（与 add_workbench / doc_edit 同一几何）。"""
+    xl, xr = lane_bounds(lane, y_cm, height_cm)
+    return (gx + (xl - GRAB_CM) * PT, gx + (xr + GRAB_CM) * PT)
+
+
+def band_name(mw):
+    """band 线在文档里的名字：`band <MW>`（`%g`；from_document 用 _BAND_NAME 读回）。"""
+    return "band %s" % _fmt_mw(mw)
+
+
+def band_mw(name):
+    """`band <MW>` 线名 → MW（不是 band 线 → None）。_BAND_NAME 的公开读法。"""
+    m = _BAND_NAME.match(name or "")
+    return float(m.group(1)) if m else None
+
+
+def band_spec(band, lane, gx, gy, layer="marker bands", height_cm=None):
+    """一条 band 线的建对象规格（横跨 marker 泳道的洋红线）：几何与样式只此一份。
+
+    `sync --reset-marker` 重检出的新线走这里，与 render 画出的线逐点一致（否则读回时 y 会差一点）。
+    """
+    x0, x1 = lane_span_pt(gx, lane, band["y_cm"], height_cm)
+    y = gy + float(band["y_cm"]) * PT
+    return {"kind": "line", "layer": layer, "name": band_name(band["mw"]),
+            "a": [x0, y], "b": [x1, y], "rgb": list(RGB["band"]), "width": LINE_W}
 
 
 def add_workbench(doc, layers, model, gel_key, gel_w_px, gel_h_px, x0, y0=0.0, peaks=(), tags=True):
@@ -370,11 +419,9 @@ def add_workbench(doc, layers, model, gel_key, gel_w_px, gel_h_px, x0, y0=0.0, p
                 rgb=(0.35, 0.35, 0.35)))
     mk = model["lanes"][model["marker_lane"] - 1]
     for b in model["bands"]:
-        y = Y(b["y_cm"])
-        xl, xr = lane_bounds(mk, b["y_cm"], H)         # 条带线按**它自己那一行**的泳道边界伸出去
-        kids(layers["marker bands"]).append(vc_file.line(
-            doc, "band %s" % _fmt_mw(b["mw"]), (X(xl - GRAB_CM), y), (X(xr + GRAB_CM), y),
-            RGB["band"], LINE_W))
+        sp = band_spec(b, mk, gx, gy, height_cm=H)
+        kids(layers["marker bands"]).append(vc_file.line(doc, sp["name"], tuple(sp["a"]), tuple(sp["b"]),
+                                                         RGB["band"], LINE_W))
     by_lane = {}
     for lane, y_cm in peaks:
         if int(lane) != model["marker_lane"]:            # marker 道由 band <MW> 线表示，不画刻度

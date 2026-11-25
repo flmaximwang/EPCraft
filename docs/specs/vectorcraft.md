@@ -162,6 +162,7 @@ The same code runs in `render` (on detected geometry) and in `sync` (on the user
    - **Per-lane, not global:** a lane with no override keeps being updated by the detector on every sync. One lane's edits never freeze the others.
    - **Overrides apply inside `analyze`:** suppressed bands are dropped; each `add` y is measured on the lane profile with the same formulas as an automatic band (prominence against the lighter flank within 0.15 cm, `snr = prominence / noise`, half-height width), and carries `"manual": true` in the report. `strongest` is chosen over all bands, manual ones included. Profiles artboard markers and the MW report follow the report, so they include manual bands; the report marks them (`✎`).
    - `render` writes a fresh document and starts with `peak_overrides` empty; only `sync` carries overrides forward (§12). `sync --reset-peaks [N…]` clears them for the named lanes, or for all lanes when none are named.
+   - **marker ladder re-detection (ep-ugj).** The `band <MW>` lines born at render (§8) are not re-detected by `sync`: sample lanes follow the detector every run, but the ladder only snaps within `SNAP_CM = 0.06`. After the Crop frame moves or the lanes are reshaped the whole ladder is off, so `sync --reset-marker [--lane N]` re-runs `profiles.pick_marker` on the **current** gel face with the **current** lane geometry (`profiles.sample_lane`, so slanted lanes integrate over `L(y)…R(y)`), rebuilds every `band <MW>` line through the same "MW at birth" rule (`workbench.bands_from_rows`: k-th band → k-th MW slot, names from the label sequence), and writes `ep-meta.marker_confidence` from this run's gate. Candidate lanes: `--lane N` only, else the single `ep-meta.marker_lane`; a gate failure never refuses — the bands are rebuilt and the run is marked low confidence (`calibration.low_confidence`, `[!] 低置信`). The band-line deletes/creates/reshapes travel in the same `epcraft sync` undo group as labels, Profiles, `fig.png` and `fig.mw.json`; an identical detection yields zero ops. `--lane` without `--reset-marker` is an error, and `--dry-run` writes nothing (it refuses when the live document holds gel bytes the file lacks, instead of saving).
 
 `fig.mw.json` (v2):
 
@@ -195,7 +196,7 @@ Only stage 1 (the gel face) still comes from the old pipeline. The Workbench is 
 ```bash
 epcraft render IMG.jpeg --gel-size data/gel_size.json --markers data/markers.json --preset N \
     --lanes lanes.json [--trim-lanes 1,2] [--dpi 300] [--port 7797] --out fig.vectorcraft
-epcraft sync fig.vectorcraft [--port 7797] [--dpi 300] [--reset-peaks [N ...]]
+epcraft sync fig.vectorcraft [--port 7797] [--dpi 300] [--reset-peaks [N ...]] [--reset-marker [--lane N]]
 epcraft probe IMG.jpeg ...    # prints the detection; no files
 epcraft doctor                # also checks VectorCraft.app and its version
 ```

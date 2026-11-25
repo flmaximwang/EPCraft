@@ -334,6 +334,7 @@ marker 标签表、**上一次的泳道中心**（给标签匹配用）、上一
 
 ```bash
 epcraft figure sync fig.vectorcraft [--port 7797] [--dry-run] [--dpi 300] [--reset-peaks [N ...]]
+                               [--reset-marker [--lane N]]
 ```
 
 ### 9a. 做什么
@@ -352,7 +353,18 @@ epcraft figure sync fig.vectorcraft [--port 7797] [--dry-run] [--dpi 300] [--res
    `裁切框：转 +0.40°，移 +0.05/−0.10 cm，宽 ×1.020（重新裁了胶面图）`（cm = 旧比例下的胶面 cm；框没动就没有这行），
    以及 `已更新：artboard 1, delete …, create …, move …`；有 `?` 泳道时打 `[?] 泳道 [n] 还没有名字`。
 
-`--dry-run` 只打印摘要和操作列表，不动文档。`--dpi` 只在 `ep-meta` 没记 dpi 时用。
+`--dry-run` 只打印摘要和操作列表，不动文档（也不会为「活文档比磁盘新」这种情形自己存盘：那种情况直接报错，让用户先 ⌘S）。
+`--dpi` 只在 `ep-meta` 没记 dpi 时用。
+
+**`--reset-marker`：把整把梯子重叫一遍。** band 线是 render 时落下的，正常 sync 只在 ±0.06 cm 内吸附（§7），所以用户挪了 Crop 框或
+改了泳道几何之后，整排线的 y 都会偏、越界的根本吸不上。`sync --reset-marker` 不等这一点：按**当前**胶面图和**当前**泳道几何
+（`profiles.sample_lane`，斜泳道按行取 L(y)…R(y)）在 marker 道重跑 `pick_marker`，取显著度前 N 名（N = `ep-meta.marker_labels`
+展开出的 MW 槽数），然后直接重建 `band <MW>` 线（名字照旧按标签序列挂，语义同 §5「出生即 MW」）。打印每条的旧/新 y 对照和闸门诊断
+（`picked N/M`、断崖比值、第 N 名显著度），`ep-meta.marker_confidence` 按这次重检重写；不过闸门照现有语义标低置信（§7、§11），
+**不拒绝执行**。`--lane N` 用第 N 条道重检，并把它写成新的 `ep-meta.marker_lane`；不给就用当前 `ep-meta.marker_lane`
+（候选只有这一条；万一将来有多条候选，全不过闸门时按断崖比值挑一条、仍标低置信）。band 线的 delete/create/reshape 与后面的
+标签、Profiles、`fig.png`、`fig.mw.json` 在**同一个** `epcraft sync` 撤销组里，⌘Z 一次全撤。重检结果与现有线一致 → 0 个改动
+（只重写 `marker_confidence`）。`--lane` 不带 `--reset-marker` 报错。
 
 ### 9b. 会变什么、永远不变什么
 

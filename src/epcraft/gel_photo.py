@@ -47,6 +47,7 @@ from . import profiles                                                          
 from . import vc_control                                                                      # noqa: E402
 from . import vc_file                                                                         # noqa: E402
 from . import workbench                                                                       # noqa: E402
+from . import marker_redetect                                                                 # noqa: E402
 from .env_check import cmd_doctor                                                       # noqa: E402
 from .lane_select import parse_keep                                                     # noqa: E402
 from .mw_report import format_report_v2, write_v2                                       # noqa: E402
@@ -185,6 +186,8 @@ def cmd_sync(args):
     path = os.path.abspath(args.doc)
     if not os.path.exists(path):
         raise RuntimeError("找不到 %s（先 render）" % path)
+    if getattr(args, "lane", None) is not None and not getattr(args, "reset_marker", False):
+        raise RuntimeError("--lane 只配 --reset-marker 用（用哪条道重检 marker 梯子）；单给 --lane 没有意义")
     stem = os.path.splitext(path)[0]
     client, _launched = vc_control.connect(args.port, path=path, launch=True)
     idx, _dirty = gel_session.doc_state(client, path)
@@ -196,7 +199,12 @@ def cmd_sync(args):
     _top, blobs = vc_file.read(path)                     # 胶面图从磁盘上那份读（gel 层锁定，图不会变）
     gel = vc_file.gel_node(dj)
     if gel is not None and gel["kind"]["key"] not in blobs:
-        _top, blobs = client.save(path)                  # 活文档的胶面图不在磁盘那份里（如撤销了上次的重新裁切）
+        # 活文档的胶面图不在磁盘那份里（如撤销了上次的重新裁切）。--dry-run 不写盘，这里没法自己存一份，
+        # 于是明确报错，而不是偷偷存盘之后再说「只打印不写」。
+        if getattr(args, "dry_run", False):
+            raise RuntimeError("活文档里的胶面图还没存进 %s —— --dry-run 不写盘；先在 VectorCraft 里存一下"
+                               "（⌘S），或去掉 --dry-run 让 sync 存" % os.path.basename(path))
+        _top, blobs = client.save(path)
     model, notes, cs = _read_all(dj, blobs, int(_doc_meta(dj).get("dpi") or args.dpi))
     for n in notes:
         print("[i] %s" % n)
@@ -213,6 +221,19 @@ def cmd_sync(args):
     conf = model["meta"].get("marker_confidence")
     if not isinstance(conf, dict):
         model["meta"]["marker_confidence"] = {}
+    # ---- marker 重检（--reset-marker，票 ep-ugj）：按当前 Crop 框 + 当前泳道几何在 marker 道重叫峰，
+    #      直接换掉 band <MW> 线。必须在 analyze 之前：报告里的标定点 / 低置信标记都要用新线；
+    #      meta_state 也必须在它之后（ep-meta.bands 记的是新 y，否则下一次 sync 又要动）。
+    #      model 的 marker_lane 与 meta 的 marker_lane 是两份：peak_auto（meta_state）读的是前者。
+    rk = None
+    if getattr(args, "reset_marker", False):
+        rk = marker_redetect.plan(model, cs["png"], lane=getattr(args, "lane", None), document=dj)
+        for line in marker_redetect.format_plan(rk):
+            print(line)
+        model["bands"] = rk["bands"]
+        model["marker_lane"] = rk["lane"]
+        model["meta"]["marker_lane"] = rk["lane"]
+        model["meta"]["marker_confidence"] = rk["confidence"]
     # ---- 样品带：文档里的刻度 vs 上一轮 peak_auto → 逐道 override（spec §7.5）。必须在 analyze 之前：
     #      这一轮的报告和重建的刻度都要用新 override；_meta_state 随后写的 peak_auto 仍是抑制之前的检测器叫带。
     #      --reset-peaks：被清的道这一轮不差分（文档里那批刻度正是产生这些 override 的旧线，差分会把
@@ -230,6 +251,10 @@ def cmd_sync(args):
                                                 overrides=model["meta"].get("peak_overrides"), raw=raw))
     model["meta"].update(gel_session.meta_state(model, raw))
     ops, meta = figure.plan_sync(dj, model, report, layout=layout)
+    if rk is not None:
+        # band 线的操作由重检自己出（plan_sync 从不管 marker bands 图层）。relink 之后、plan_sync 的
+        # 操作之前：同一个撤销组里先摆线，再重建标签 / Profiles —— 标签用的是新 y。
+        ops = rk["ops"] + ops
     ops = [op for op in cs["ops"] if op["op"] == "relink"] + ops + \
           [op for op in cs["ops"] if op["op"] != "relink"]          # relink 最先（sync_exec 也会保证）
     names = meta["lane_names"]
@@ -237,8 +262,10 @@ def cmd_sync(args):
                   notes=[n for n in report["notes"] if not n.endswith("还没有名字")]
                   + ["泳道 %d 还没有名字" % ln["lane"] for ln in report["lanes"]
                      if names[ln["lane"] - 1] is None and not ln["trimmed"]])
-    for line in _summary(old, model, report, cs["lines"], reset_lanes, reset_all):
+    for line in _summary(old, model, report, cs["lines"], reset_lanes, reset_all, skip_bands=rk is not None):
         print("[i] %s" % line)
+    if rk is not None and not rk["ops"]:
+        print("[i] marker 重检：与现有 band 线一致（0 个改动）")
     if args.dry_run:
         print(json.dumps(_printable(ops), ensure_ascii=False, indent=1))
         return 0
@@ -464,10 +491,11 @@ def _printable(ops):
             for op in ops]
 
 
-def _summary(old, model, report, crop_lines=(), reset_lanes=(), reset_all=False):
+def _summary(old, model, report, crop_lines=(), reset_lanes=(), reset_all=False, skip_bands=False):
     """这次 sync 相对上一次改了什么（给用户看的几行）；crop_lines = Crop 画板那一步的行（重新裁切 / 补画板）。
 
-    reset_lanes / reset_all = 这一轮 --reset-peaks 清掉的道（见 _peak_reset_lanes）。"""
+    reset_lanes / reset_all = 这一轮 --reset-peaks 清掉的道（见 _peak_reset_lanes）。
+    skip_bands = 这一轮做了 marker 重检：逐条新旧 y 由 marker_redetect.format_plan 打印过了，这里不再重说。"""
     out = []
     prev = old.get("prev_centres_cm") or []
     new = workbench.centres(model)
@@ -490,11 +518,14 @@ def _summary(old, model, report, crop_lines=(), reset_lanes=(), reset_all=False)
     bd = ["band %g %s" % (mw, "删除" if mw not in nb else "%+.2f cm" % (nb[mw] - ob[mw]))
           for mw in ob if mw not in nb or abs(nb[mw] - ob[mw]) >= 0.005]
     bd += ["band %g 新增" % mw for mw in nb if mw not in ob]
-    if bd:
+    if bd and not skip_bands:
         out.append("marker 线：%s" % "，".join(bd))
     pk = _peak_summary(old, model, reset_lanes, reset_all)
     if pk:
         out.append(pk)
+    if skip_bands:
+        # band 线的新旧 y 已经由 marker_redetect.format_plan 逐条打印过了；别再用「Workbench 没有改动」兜底
+        return out + list(crop_lines)
     return (out or ["Workbench 没有改动"]) + list(crop_lines)
 
 
@@ -654,6 +685,11 @@ def _add_sync_parser(parent):
     s.add_argument("--reset-peaks", nargs="*", type=int, default=None, metavar="N",
                    help="清掉这些泳道的样品带 override，这次 sync 直接按纯自动重叫带、重写刻度："
                         "--reset-peaks 3 12 只清道 3、12；--reset-peaks 不带道号清全部")
+    s.add_argument("--reset-marker", action="store_true",
+                   help="按当前 Crop 框 + 当前泳道几何在 marker 道重叫显著度前 N 名，重建 band <MW> 线，"
+                        "然后照常 sync（标签 / Profiles / fig.png / fig.mw.json 一起更新）；一条撤销步")
+    s.add_argument("--lane", type=int, default=None, metavar="N",
+                   help="配 --reset-marker：用第 N 条泳道重检（默认 ep-meta.marker_lane）；重检后它就是新 marker 道")
     s.set_defaults(func=cmd_sync)
     return s
 

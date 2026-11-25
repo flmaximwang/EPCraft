@@ -52,8 +52,8 @@ def test_import_direction():
     #       → 入口（gel_photo）。只许依赖前面的；sync 与各阶段流程的共同工具都从 gel_session 取。
     # densitometry 是离线定量链的第一段（报告 v2 → dens.json），只吃 profiles 的报告、不碰画板；
     # 链的其余模块（dens_plot 渲染、densitometry_cli 参数）排在管线末尾：数学不许依赖它们。
-    later = ["well_grid", "profiles", "densitometry", "workbench", "gel_session", "figure", "doc_edit",
-             "sync_exec", "dens_plot", "densitometry_cli", "workbench_io", "workflow_start",
+    later = ["well_grid", "profiles", "densitometry", "workbench", "marker_redetect", "gel_session", "figure",
+             "doc_edit", "sync_exec", "dens_plot", "densitometry_cli", "workbench_io", "workflow_start",
              "workflow_stages", "workflow_cli", "canvas_cli", "gel_photo"]
     rules = {"gel_area": set(later), "gel_detect": set(later)}
     for i, mod in enumerate(later):
