@@ -1444,6 +1444,13 @@ def selftest():
     from . import selftest_quantify_acceptance
     ok += selftest_quantify_acceptance.run()
 
+    # 77+++) Lane-quad acceptance (ep-t27): independent suite for trapezoid lanes — read-back keeps
+    #      both ends of a slanted separator, per-row integration, true quad clips with the old seam
+    #      rule, crossing refusal, backwards-compatible Workbench IO, fig.mw.json quad lanes, and the
+    #      rectangular-output regression captured from the pre-change implementation.
+    from . import selftest_lane_quad_acceptance
+    ok += selftest_lane_quad_acceptance.run()
+
     # 78) 标签角度（V9）：角度是逆时针度（90 = 从下往上读），写进点文字的 xf（绕锚点）；读回同值；
     #     旋转后按**墨迹框**摆位与量页边（竖排的泳道名框底离胶顶 4 pt、框中线=泳道中心，页顶留白
     #     装得下整条字）；marker 标签也能竖排（框内边离胶 4 pt）；render 完 plan_sync = 0（幂等）；
