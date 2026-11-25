@@ -7,8 +7,8 @@ plotting — the densitometry plotting subpackage (spec §4.7).
                 PNG output plumbing, value → pixel mappings and number/tick helpers
     bands.py    ``plot_bands``: dens validation, group normalisation, traces, band layout
                 and the band-tile drawing
-    curve.py    ``plot_curve``: curve/quant validation, status strip, error bars, curve
-                layout and the curve drawing
+    curve.py    ``plot_curve``: curve/quant validation, fit and sample markers, error bars,
+                residuals and curve layout
 
 ``epcraft.dens_plot`` remains the public entry point and re-exports the names below, so
 callers and the acceptance suites keep importing and patching that module.

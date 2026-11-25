@@ -84,13 +84,6 @@ SAMPLE_HALF = 4.5
 RESID_R = 3.5
 ERR_BAR_MIN_PX = 1.0
 
-# Out-of-range status strip (ep-c1i).  The strip is built only when a sample cannot be
-# placed on the mass axis, so a curve without one keeps the old two-axes geometry exactly.
-STATUS_ROW_H = 36                  # vertical pitch of one marker/tag row inside the strip
-STATUS_PAD = 6                     # top/bottom padding of the strip
-STATUS_GAP = 20                    # room between the main axes and the strip
-STATUS_MARK_Y = 27                 # marker centre inside a row, measured from the row top
-
 ANN_STEP = 30
 TOP_PAD = 20
 LEFT_PAD = 110
@@ -424,17 +417,12 @@ class TraceAxes:
 
 
 class CurveAxes:
-    """plot-curve's value → pixel mapping: `.x(volume)`, `.y(mass)`, `.yr(rel_pct)`.
-
-    ``status_box`` is the optional out-of-range strip between the main axes and the
-    residual strip; it is None when no sample left the mass axis.
-    """
-    def __init__(self, main_box, resid_box, x_range, y_range, rel_range, status_box=None):
+    """Value-to-pixel mapping for the curve and its shared-area residual panel."""
+    def __init__(self, main_box, resid_box, x_range, y_range, rel_range):
         self.main = Mapping(main_box, x_range, y_range, y_down=False)
         self.resid = Mapping(resid_box, x_range, rel_range, y_down=False)
         self.box = main_box
         self.resid_box = resid_box
-        self.status_box = None if status_box is None else tuple(float(v) for v in status_box)
         self.x_range = tuple(float(v) for v in x_range)
         self.y_range = tuple(float(v) for v in y_range)
         self.rel_range = tuple(float(v) for v in rel_range)

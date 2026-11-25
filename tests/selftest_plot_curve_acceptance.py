@@ -19,10 +19,8 @@ What is asserted is the scientific content of the picture:
   output when quant is absent,
 * vertical ±1 SD fit bars centred on the sample mass, drawn only when the band carries a
   drawable mass_sd, capped and clipped by the curve frame,
-* an out-of-range status strip that shares the volume axis with the curve and the residual,
-  carries the hollow sample markers and `L<lane>.<band> below/above range` tags that never
-  overlap, and stays absent — with the two-axes geometry unchanged — when nothing is out of
-  range,
+* every sample on the main axes, with out-of-range samples labeled at the actual area and
+  model value on a dashed extension, and the canvas height unaffected by sample count,
 * public CLI defaults, errors and overwrite protection.
 
 Matplotlib is an optional `[plot]` extra; the gateway / base selftest decides whether the
@@ -233,36 +231,14 @@ def _axes(fig):
     return [ax for ax in fig.axes if ax.get_visible()]
 
 
-def _stack(fig):
-    """(main, status, residual): the curve axes, the optional OOR status strip, the residual strip.
-
-    `status` is None when nothing is out of range, so the plain picture keeps two Axes.
-    """
-    axes = sorted(_axes(fig), key=lambda a: a.get_position().y1, reverse=True)
-    assert len(axes) in (2, 3), \
-        "plot_curve 应只有主轴 + 残差轴两个 Axes（超范围时再加一条状态带），实际 %d 个" % len(axes)
-    main, resid = axes[0], axes[-1]
-    status = axes[1] if len(axes) == 3 else None
-    assert resid.get_position().y1 <= main.get_position().y0 + 0.08, \
-        "残差轴不在主轴下方：main=%r resid=%r" % (main.get_position().bounds,
-                                                   resid.get_position().bounds)
-    if status is not None:
-        assert status.get_position().y1 <= main.get_position().y0 + 0.08, \
-            "状态带不在主轴下方：main=%r status=%r" % (main.get_position().bounds,
-                                                       status.get_position().bounds)
-        assert resid.get_position().y1 <= status.get_position().y0 + 0.08, \
-            "残差轴不在状态带下方：status=%r resid=%r" % (status.get_position().bounds,
-                                                         resid.get_position().bounds)
-        assert _joined(main, status), "状态带没有和主轴共享 volume 轴"
-        assert _joined(status, resid), "状态带没有和残差轴共享 volume 轴"
-    return main, status, resid
-
-
 def _pair(fig):
-    """(main, residual) axes for a picture without an out-of-range status strip."""
-    main, status, resid = _stack(fig)
-    assert status is None, \
-        "没有超范围样品时不应出现状态带，实际 %d 个 Axes" % len(_axes(fig))
+    """The only axes are the main curve and the residual panel beneath it."""
+    axes = sorted(_axes(fig), key=lambda ax: ax.get_position().y1, reverse=True)
+    assert len(fig.axes) == len(axes) == 2, "Expected exactly two axes, got %d" % len(fig.axes)
+    main, resid = axes
+    assert resid.get_position().y1 <= main.get_position().y0
+    assert _joined(main, resid)
+    assert main.get_xlim() == resid.get_xlim()
     return main, resid
 
 
@@ -294,26 +270,11 @@ def _axes_box(fig, ax):
     return (pos.x0 * width, (1.0 - pos.y1) * height, pos.x1 * width, (1.0 - pos.y0) * height)
 
 
-def _marker_box(fig, ax, marker):
-    """(x0, y0, x1, y1) of one `_markers()` entry in PNG pixels; y counts from the top."""
-    _renderer, height = _draw(fig)
-    half = float(marker["size"]) * float(fig.dpi) / 72.0 / 2.0
-    px, py = ax.transData.transform((marker["x"], marker["y"]))
-    return (px - half, height - py - half, px + half, height - py + half)
-
-
 def _overlap(box1, box2):
     """Area shared by two pixel boxes; 0.0 when they are apart or only touch."""
     width = min(box1[2], box2[2]) - max(box1[0], box2[0])
     height = min(box1[3], box2[3]) - max(box1[1], box2[1])
     return width * height if width > 0.0 and height > 0.0 else 0.0
-
-
-def _box_gap(box1, box2):
-    """Distance in pixels between two boxes; 0.0 when they overlap."""
-    dx = max(0.0, max(box1[0], box2[0]) - min(box1[2], box2[2]))
-    dy = max(0.0, max(box1[1], box2[1]) - min(box1[3], box2[3]))
-    return math.hypot(dx, dy)
 
 
 def _arr(seq):
@@ -382,7 +343,11 @@ def _markers(ax):
             out.append({"x": float(x), "y": float(y), "shape": _marker_shape(marker),
                         "filled": not _hollow(face), "face": face, "edge": edge,
                         "size": size, "kind": "line"})
+    from matplotlib.collections import PathCollection
+
     for coll in ax.collections:
+        if not isinstance(coll, PathCollection):
+            continue
         try:
             offsets = _arr(coll.get_offsets())
         except Exception:
@@ -691,7 +656,7 @@ def _quant_sd(values=None):
 
 
 def _quant_in_range():
-    """`_quant_sd()` with only in-range lanes: a status strip must not appear."""
+    """`_quant_sd()` with only in-range lanes."""
     quant = _quant_sd({(9, 1): 0.9, (9, 2): 1.6, (11, 1): 2.4})
     quant["lanes"] = quant["lanes"][:2]
     quant["overall_mass"] = 66.3
@@ -700,11 +665,7 @@ def _quant_in_range():
 
 
 def _quant_clustered():
-    """Five out-of-range bands whose areas cluster in 1.1..1.2 and near 11.0, so tags collide.
-
-    The status strip has to stagger the rows: adjacent tags and the markers of neighbouring
-    bands would otherwise overlap.
-    """
+    """Below- and above-range samples with some areas close together."""
     quant = _copy(_quant())
 
     def oor(index, y_cm, mw, area):
@@ -1118,48 +1079,59 @@ def check_native_marker_legend():
     return True
 
 
+def _check_sample_positions(fig, curve, quant):
+    main, _resid = _pair(fig)
+    markers = [m for m in _markers(main) if m["shape"] == "square"]
+    fit_lines = _fit_line(main, curve)
+    solid, = [line for line in fit_lines if not _is_dashed(line)]
+    dashed = [line for line in fit_lines if _is_dashed(line)]
+    vmin, vmax = (curve["range"][key] for key in ("volume_min", "volume_max"))
+    assert len(dashed) == 2
+    assert min(solid.get_xdata()) == vmin and max(solid.get_xdata()) == vmax
+    assert all(max(line.get_xdata()) <= vmin or min(line.get_xdata()) >= vmax for line in dashed)
+    xlo, xhi = main.get_xlim()
+    ylo, yhi = main.get_ylim()
+    areas = [p["volume"] for p in curve["points"]]
+    remaining = list(markers)
+    for lane in quant["lanes"]:
+        for band in lane["bands"]:
+            area = band["area"]
+            areas.append(area)
+            outside = not vmin <= area <= vmax
+            fit_only = outside or band["mass"] is None
+            mass = _model(curve, area) if fit_only else band["mass"]
+            assert xlo <= area <= xhi and ylo <= mass <= yhi, (area, mass, xlo, xhi, ylo, yhi)
+            hits = _marker_at(remaining, area, mass, 1e-9, 1e-9)
+            assert len(hits) == 1, (lane["lane"], band["index"], area, mass, hits)
+            hit, = hits
+            assert hit["filled"] is not fit_only
+            remaining.remove(hit)
+            label = "L%d" % lane["lane"]
+            if len(lane["bands"]) > 1:
+                label += ".%d" % band["index"]
+            if outside:
+                label += " (extrapolated)"
+                assert any(any(math.isclose(x, area, abs_tol=1e-9) and
+                               math.isclose(y, mass, abs_tol=1e-9)
+                               for x, y in zip(line.get_xdata(), line.get_ydata()))
+                           for line in dashed), (label, area, mass)
+            elif fit_only:
+                label += " (not quantified)"
+            assert [t.get_text() for t in fig.texts].count(label) == 1, label
+    assert not remaining
+    extension = 0.1 * (vmax - vmin)
+    assert xlo == min([vmin - extension] + areas)
+    assert xhi == max([vmax + extension] + areas)
+
+
 def check_quant_markers():
-    """quant.json adds filled sample squares; out-of-range ones go hollow to the status strip."""
-    curve = _linear_curve()
-    quant = _quant()
+    """Quantified and extrapolated bands have their own styles on the same main axes."""
+    curve, quant = _linear_curve(), _quant()
     with tempfile.TemporaryDirectory() as td:
-        (_w, _h), fig, _caught, _out = _render_file(td, "quant.png", curve, quant=quant)
-        main, status, _resid = _stack(fig)
-        assert status is not None, "有超范围样品带却没有状态带"
-        markers = _markers(main)
-        xmax = max(b["area"] for lane in quant["lanes"] for b in lane["bands"])
-        ymax = max(p["mass"] for p in curve["points"])
-        xtol = 0.02 * xmax + 0.1
-        ytol = 0.02 * ymax + 0.2
-        text = _all_text(fig)
-        for lane in quant["lanes"]:
-            for band in lane["bands"]:
-                if band["out_of_range"]:
-                    # Out-of-range bands leave the mass axes: hollow square on the status strip.
-                    hits = [m for m in markers if m["shape"] == "square"
-                            and abs(m["x"] - band["area"]) <= xtol]
-                    assert not any(m["filled"] for m in hits), \
-                        "超范围样品带 (lane %d) 仍留在主轴上的实心方块" % lane["lane"]
-                    strip_hits = [m for m in _markers(status) if m["shape"] == "square"
-                                  and abs(m["x"] - band["area"]) <= xtol]
-                    assert strip_hits, "超范围样品带 (lane %d, area %.2f) 没有方块" % (
-                        lane["lane"], band["area"])
-                    assert any(not m["filled"] for m in strip_hits), \
-                        "超范围样品带 (lane %d) 不是空心方块" % lane["lane"]
-                    tag = "L%d.%d" % (lane["lane"], band["index"])
-                    assert tag in text, "状态带没有 %s 的标签：%r" % (tag, _texts(fig))
-                else:
-                    hits = _marker_at(markers, band["area"], band["mass"], xtol, ytol,
-                                      shape="square")
-                    assert hits, "样品带 (lane %d, area %.2f, mass %.1f) 没有方块" % (
-                        lane["lane"], band["area"], band["mass"])
-                    assert any(m["filled"] for m in hits), \
-                        "样品带 (lane %d) 不是实心方块" % lane["lane"]
-            assert str(lane["lane"]) in text or (lane.get("label") and lane["label"] in text), \
-                "图里没有样品泳道 %d 的标签" % lane["lane"]
-        assert "sample" in text.lower(), "图例没有 sample"
-        assert "out of range" in text.lower() or "out" in text.lower(), \
-            "图例/标签没有 out-of-range 说明"
+        _, fig, _, _ = _render_file(td, "quant.png", curve, quant=quant)
+        _check_sample_positions(fig, curve, quant)
+        labels = [label for _, label in _legend_entries(fig)]
+        assert "sample" in labels and "extrapolated sample" in labels
     return True
 
 
@@ -1169,7 +1141,7 @@ def check_sample_fit_bars():
     quant = _quant_sd()
     with tempfile.TemporaryDirectory() as td:
         (_w, _h), fig, _caught, _out = _render_file(td, "sd.png", curve, quant=quant)
-        main, _status, _resid = _stack(fig)
+        main, _resid = _pair(fig)
         xtol = 0.02 * max(b["area"] for l in quant["lanes"] for b in l["bands"]) + 0.1
         segments = _yerr_segments(main)
         bars = 0
@@ -1245,7 +1217,7 @@ def check_sample_fit_bars():
         tall = _quant_sd()
         tall["lanes"][0]["bands"][1].update(mass=43.9, area=9.6, mass_sd=9.0)
         (_w, _h), fig2, _caught2, _out2 = _render_file(td, "clamp.png", curve, quant=tall)
-        main2, _status2, _resid2 = _stack(fig2)
+        main2, _resid2 = _pair(fig2)
         top = main2.get_ylim()[1]
         bar = _yerr_at(main2, 9.6, 43.9, 0.3, 1e9)
         assert bar is not None, "顶部样品带没有 SD 棒"
@@ -1278,7 +1250,7 @@ def check_sample_fit_bars_absent():
         for name, quant in (("legacy", _quant()),
                             ("zero", _quant_sd(values))):
             (_w, _h), fig, caught, _out = _render_file(td, name + ".png", curve, quant=quant)
-            main, _status, _resid = _stack(fig)
+            main, _resid = _pair(fig)
             assert _yerr_segments(main) == [], \
                 "%s: 没有可画的 mass_sd 却画了竖直棒" % name
             labels = [label.strip() for _h, label in _legend_entries(fig)]
@@ -1291,119 +1263,49 @@ def check_sample_fit_bars_absent():
         # A valid mass_sd on an out-of-range band must not create a bar either.
         quant = _quant_sd({(12, 1): 2.0})
         (_w, _h), fig, _caught, _out = _render_file(td, "oor.png", curve, quant=quant)
-        main, _status, _resid = _stack(fig)
+        main, _resid = _pair(fig)
         assert _yerr_segments(main) == [], "超范围样品带画了 SD 棒"
         assert "±1 SD fit" not in _all_text(fig), "超范围样品带触发了 ±1 SD fit 图例"
     return True
 
 
-def check_oor_status_strip():
-    """Out-of-range bands leave the mass axes for a strip that shares x and stays tag-clean."""
-    curve = _linear_curve()
-    quant = _quant_clustered()
+def check_dashed_extrapolated_samples():
+    """Linear and power extensions reach the most distant sample on each side."""
+    linear = _linear_curve()
+    # The leftmost model value is negative. It must be plotted at its true ordinate.
+    linear["fit_params"]["intercept"] = -10.0
     with tempfile.TemporaryDirectory() as td:
-        (_w, _h), fig, _caught, _out = _render_file(td, "strip.png", curve, quant=quant)
-        main, status, resid = _stack(fig)
-        assert status is not None, "有超范围样品带却没有状态带"
-        assert _joined(main, status) and _joined(status, resid), \
-            "状态带没有和主轴/残差轴共享 volume 轴"
-        assert abs(status.get_xlim()[0] - main.get_xlim()[0]) < 1e-9
-        assert abs(status.get_xlim()[1] - main.get_xlim()[1]) < 1e-9
-        sb, mb, rb = status.get_position(), main.get_position(), resid.get_position()
-        assert mb.y0 - sb.y1 >= 0.0 and sb.y0 - rb.y1 >= 0.0, \
-            "状态带没有夹在主轴和残差轴之间：%r / %r / %r" % (mb.bounds, sb.bounds, rb.bounds)
-        assert abs(sb.x0 - mb.x0) <= 1e-3 and abs(sb.width - mb.width) <= 1e-3, \
-            "状态带没有和主轴左右对齐"
-        assert sb.height < mb.height, "状态带比主轴还高"
-
-        markers = _markers(status)
-        main_markers = _markers(main)
-        xtol = 0.02 * max(b["area"] for l in quant["lanes"] for b in l["bands"]) + 0.1
-        tags = {}
-        for lane in quant["lanes"]:
-            for band in lane["bands"]:
-                if not band["out_of_range"]:
-                    continue
-                hits = [m for m in markers if m["shape"] == "square"
-                        and abs(m["x"] - band["area"]) <= xtol]
-                assert hits, "状态带没有样品带 (lane %d, area %.2f) 的方块" % (
-                    lane["lane"], band["area"])
-                assert any(not m["filled"] for m in hits), \
-                    "状态带样品带 (lane %d) 不是空心方块" % lane["lane"]
-                assert not [m for m in main_markers if m["shape"] == "square"
-                            and abs(m["x"] - band["area"]) <= xtol], \
-                    "超范围样品带 (lane %d) 仍画在质量轴上" % lane["lane"]
-                tag_text = "L%d.%d" % (lane["lane"], band["index"])
-                match = [t for t in fig.texts if t.get_text().startswith(tag_text)]
-                assert len(match) == 1, "状态带没有唯一的 %s 标签：%r" % (tag_text, _texts(fig))
-                label = match[0].get_text().lower()
-                assert "range" in label and ("below" in label or "above" in label), \
-                    "%s 标签没有说明 below/above range：%r" % (tag_text, label)
-                tags[tag_text] = match[0]
-
-        # Tags must not overlap each other, and must stay inside the strip.
-        strip_box = _axes_box(fig, status)
-        boxes = []
-        for tag_text, text in tags.items():
-            box = _text_box(fig, text)
-            boxes.append((tag_text, box))
-            assert strip_box[1] - 1e-6 <= box[1] and box[3] <= strip_box[3] + 1e-6, \
-                "%s 标签跑出状态带：%r vs %r" % (tag_text, box, strip_box)
-            assert strip_box[0] - 0.5 <= box[0] and box[2] <= strip_box[2] + 0.5, \
-                "%s 标签横向跑出状态带：%r vs %r" % (tag_text, box, strip_box)
-        for i, (name1, box1) in enumerate(boxes):
-            for name2, box2 in boxes[i + 1:]:
-                assert _overlap(box1, box2) <= 1e-9, \
-                    "%s 与 %s 标签重叠：%r vs %r" % (name1, name2, box1, box2)
-
-        # Every tag belongs to exactly one marker: its own is the nearest one on the strip, and
-        # no tag is allowed to sit on top of a marker.
-        for tag_text, text in tags.items():
-            lane_no, band_no = tag_text[1:].split(".")
-            area = [b["area"] for l in quant["lanes"] if str(l["lane"]) == lane_no
-                    for b in l["bands"] if str(b["index"]) == band_no][0]
-            own = [m for m in markers if abs(m["x"] - area) <= xtol]
-            assert own, "%s 没有自己的方块" % tag_text
-            tag_box = _text_box(fig, tags[tag_text])
-            gaps = [(_box_gap(tag_box, _marker_box(fig, status, m)), m) for m in markers]
-            nearest = min(gap for gap, _m in gaps)
-            own_gap = min(gap for gap, m in gaps if abs(m["x"] - area) <= xtol)
-            assert own_gap <= nearest + 1e-6, \
-                "%s 标签离别的方块更近：own %.2fpx nearest %.2fpx" % (tag_text, own_gap, nearest)
-            assert own_gap <= max(_marker_box(fig, status, own[0])[3] - _marker_box(fig, status,
-                                                                                    own[0])[1],
-                                 16.0), "%s 标签离自己的方块 %.2fp 太远" % (tag_text, own_gap)
-            for marker in markers:
-                assert _overlap(tag_box, _marker_box(fig, status, marker)) <= 1e-9, \
-                    "%s 标签压到方块：tag=%r marker=%.2f@%.1f" % (
-                        tag_text, tag_box, marker["x"], marker["y"])
+        for curve in (linear, _power_curve()):
+            quant = _quant_clustered()
+            if curve["fit"] == "power":
+                vmin, vmax = (curve["range"][key] for key in ("volume_min", "volume_max"))
+                for lane in quant["lanes"]:
+                    for band in lane["bands"]:
+                        if band["out_of_range"]:
+                            band["area"] = vmax * 1.4 if lane["lane"] == 13 else vmin / 2 + band["area"] / 100
+                        else:
+                            band["area"] = vmin + (vmax - vmin) * band["area"] / 20
+                            band["mass"] = _model(curve, band["area"])
+            _, fig, _, _ = _render_file(td, curve["fit"] + ".png", curve, quant=quant)
+            _check_sample_positions(fig, curve, quant)
     return True
 
 
-def check_oor_strip_absent_geometry():
-    """With every band in range the strip disappears and the two-axes geometry is unchanged."""
+def check_curve_fixed_geometry():
+    """Canvas height and panel positions stay fixed from zero to many extrapolated samples."""
     curve = _linear_curve()
     with tempfile.TemporaryDirectory() as td:
-        (w0, h0), fig0, _c0, _o0 = _render_file(td, "plain.png", curve)
-        main0, resid0 = _pair(fig0)
-        (w1, h1), fig1, _c1, _o1 = _render_file(td, "inrange.png", curve,
-                                                quant=_quant_in_range())
-        main1, status1, resid1 = _stack(fig1)
-        assert status1 is None, "全部在范围内却出现了状态带"
-        assert (w1, h1) == (w0, h0), "只有范围内样品时画框变了：%r vs %r" % ((w1, h1), (w0, h0))
-        for old, new in ((main0, main1), (resid0, resid1)):
-            ob, nb = old.get_position().bounds, new.get_position().bounds
-            assert all(abs(a - b) <= 1e-9 for a, b in zip(ob, nb)), \
-                "画框位置变了：%r vs %r" % (ob, nb)
-            assert old.get_xlim() == new.get_xlim(), \
-                "x 范围变了：%r vs %r" % (old.get_xlim(), new.get_xlim())
-        assert "out of range" not in _all_text(fig1).lower(), \
-            "没有超范围样品却出现 out of range 图例"
-        # Legacy quant (no mass_sd) also keeps the two-axes height: bars add nothing to the frame.
-        (w2, h2), fig2, _c2, _o2 = _render_file(td, "legacy.png", curve, quant=_quant())
-        _main2, status2, _resid2 = _stack(fig2)
-        assert status2 is not None, "旧版 quant 的超范围样品带没有状态带"
-        assert w2 == w0, w2
+        size, plain, _, _ = _render_file(td, "plain.png", curve)
+        plain_axes = _pair(plain)
+        for name, quant in (("inrange", _quant_in_range()), ("legacy", _quant()),
+                            ("clustered", _quant_clustered())):
+            sample_size, fig, _, _ = _render_file(td, name + ".png", curve, quant=quant)
+            assert sample_size == size
+            for original, current in zip(plain_axes, _pair(fig)):
+                assert original.get_position().bounds == current.get_position().bounds
+            if name == "inrange":
+                assert plain_axes[0].get_xlim() == _pair(fig)[0].get_xlim()
+                assert "extrapolated" not in _all_text(fig).lower()
     return True
 
 
@@ -1586,8 +1488,8 @@ CHECKS = (
     check_quant_markers,
     check_sample_fit_bars,
     check_sample_fit_bars_absent,
-    check_oor_status_strip,
-    check_oor_strip_absent_geometry,
+    check_dashed_extrapolated_samples,
+    check_curve_fixed_geometry,
     check_quant_absent_identical,
     check_api_errors,
     check_cli_errors_and_overwrite,
