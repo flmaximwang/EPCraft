@@ -1,7 +1,7 @@
 """
 bands — plot-bands: local band-peak traces of a dens.json (spec §4.7).
 
-``plot_bands(dens, out, baseline="both", lanes=None, cols=2, width=1440, *, groups=None)``
+``plot_bands(dens, out, baseline="both", lanes=None, cols=2, width=1120, *, groups=None)``
     Local band-peak traces, one tile per lane (or per named group).  The x axis is the true
     migration distance from the dens.json profile (``y_cm``), the y axis is the active
     baseline minus the raw gray value (a signed ink trace).  All traces in the figure share a
@@ -611,7 +611,7 @@ def _tile_subtitle(tile, baseline):
     return text
 
 
-def band_layout(dens, baseline="both", lanes=None, cols=2, width=1440, groups=None):
+def band_layout(dens, baseline="both", lanes=None, cols=2, width=1120, groups=None):
     """Geometry and trace data for plot-bands.
 
     Returns a dict with the canvas size, one entry per *tile* (a lane or a named group), the
@@ -788,7 +788,7 @@ def _warn_lane_labels(tiles):
 
 
 def _style_trace_axes(ax, geo, show_y_label, show_x_label):
-    """Common frame/ticks/grid styling for one local trace panel (readable at 1440 px)."""
+    """Common frame/ticks/grid styling for one local trace panel (readable at 1120 px)."""
     font = geo["font"]
     for spine in ax.spines.values():
         spine.set_color(_mcolor(GRID_RGB))
@@ -971,7 +971,7 @@ def _draw_bands_title(fig, geo):
               va="top", font=geo["font"], clip_width=geo["width"] - 2 * MARGIN)
 
 
-def plot_bands(dens, out, baseline="both", lanes=None, cols=2, width=1440, *, groups=None):
+def plot_bands(dens, out, baseline="both", lanes=None, cols=2, width=1120, *, groups=None):
     """Render dens.json as local band-peak traces → (width, height).
 
     ``groups=None`` preserves the lane view: one tile per selected lane, all of that lane's

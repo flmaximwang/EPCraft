@@ -3,7 +3,7 @@
 """test_dens_plot — independent acceptance suite for the matplotlib `plot-bands`.
 
 The renderer is a black box: every check calls the public
-`dens_plot.plot_bands(dens, out, baseline="both", lanes=None, cols=2, width=1440, *, groups=None)`
+`dens_plot.plot_bands(dens, out, baseline="both", lanes=None, cols=2, width=1120, *, groups=None)`
 (or the public `dens plot-bands` CLI), captures the Matplotlib Figure that the renderer saves
 and reads the PNG back with Matplotlib's own image reader.  There are no MVG scripts, no
 ImageMagick calls and no pixel arithmetic borrowed from the renderer.
@@ -103,7 +103,7 @@ def _capture_figures():
         yield figures, paths
 
 
-def _render(path, dens, baseline="both", lanes=None, cols=2, width=1440, groups=None,
+def _render(path, dens, baseline="both", lanes=None, cols=2, width=1120, groups=None,
             api=True):
     _matplotlib, _Figure, _Canvas, _np = _mpl()
     figures, paths, caught = [], [], []

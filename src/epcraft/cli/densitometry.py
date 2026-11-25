@@ -275,7 +275,7 @@ def _add_plot_bands(actions):
     p.add_argument("--baseline", choices=["flank", "global", "both"], default="both",
                    help="baseline correction to display (default %(default)s)")
     p.add_argument("--cols", type=int, default=2, help="columns in the grid (default %(default)s)")
-    p.add_argument("--width", type=int, default=1440, help="image width in pixels (default %(default)s)")
+    p.add_argument("--width", type=int, default=1120, help="image width in pixels (default %(default)s)")
     p.set_defaults(func=cmd_plot_bands)
 
 
@@ -528,7 +528,7 @@ def _add_plot(actions):
                    help="baseline correction to display (default %(default)s)")
     p.add_argument("--cols", type=int, default=2,
                    help="columns in the band grid (default %(default)s)")
-    p.add_argument("--width", type=int, default=1440,
+    p.add_argument("--width", type=int, default=1120,
                    help="band image width in pixels (default %(default)s)")
     p.add_argument("--curve-width", type=int, default=1020,
                    help="curve image width in pixels (default %(default)s)")

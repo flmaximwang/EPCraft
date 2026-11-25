@@ -70,7 +70,7 @@ epcraft densitometry quantify --dens dens.json --curve curve.json [--out quant.j
 ```
 epcraft densitometry plot --dens dens.json --curve curve.json [--quant quant.json]
                           [--group NAME=LANE[:BAND][@CONC],…] [--baseline flank|global|both]
-                          [--cols 2] [--width 1440] [--curve-width 1020]
+                          [--cols 2] [--width 1120] [--curve-width 1020]
                           [--bands-out bands.png] [--curve-out curve.png]
 epcraft densitometry plot-bands --dens dens.json [--out dens.png] [--lanes 2-15]
                                  [--baseline flank|global|both] [--cols 3] [--width 2400]
