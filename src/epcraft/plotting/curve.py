@@ -343,8 +343,6 @@ def curve_layout(curve, quant=None, width=1020):
             if not math.isfinite(mass):
                 raise RuntimeError("quant 的泳道 %d 有一条带的绘图质量不是有限数" % no)
             label = "L%d.%s" % (no, idx) if len(bands) > 1 and idx is not None else "L%d" % no
-            if fit_only:
-                label += " (extrapolated)" if outside else " (not quantified)"
             samples.append({"lane": no, "band": idx, "area": area, "mass": mass,
                             "mass_sd": band["mass_sd"], "out": fit_only,
                             "outside": outside, "label": label})
@@ -727,13 +725,6 @@ def _draw_curve_main(fig, geo):
         nw = _text_width(font, CURVE_TICK_FONT, geo["guide_note"])
         boxes.append((nx - nw, ny, nx, ny + CURVE_TICK_FONT))
 
-    for p, own in zip(geo["points"], point_boxes):
-        if p["used"]:
-            continue
-        tx, ty, align, box = _place_label("dropped", MARK_FONT, p["x"], p["y"], boxes,
-                                          font, geo["main_box"], skip=own)
-        _fig_text(fig, tx, ty, "dropped", MARK_FONT, DROP_RGB, ha=align, font=font)
-        boxes.append(box)
     for s, own in zip(geo["samples"], sample_boxes):
         tx, ty, align, box = _place_label(s["label"], MARK_FONT, s["x"], s["y"], boxes,
                                           font, geo["main_box"], skip=own)

@@ -904,8 +904,8 @@ def check_points_and_dropped():
             else:
                 assert any(not m["filled"] for m in hits), \
                     "被 drop 的点 (%.2f, %.1f) 不是空心" % (point["volume"], point["mass"])
-        text = _all_text(fig).lower()
-        assert "dropped" in text, "图里没有 dropped 标注"
+        assert "dropped" in [label for _, label in _legend_entries(fig)]
+        assert all(text.get_text() != "dropped" for text in fig.texts)
         assert any(p["used"] is False for p in curve["points"]), "fixture 没有 dropped 点"
     return True
 
@@ -1110,14 +1110,12 @@ def _check_sample_positions(fig, curve, quant):
             if len(lane["bands"]) > 1:
                 label += ".%d" % band["index"]
             if outside:
-                label += " (extrapolated)"
                 assert any(any(math.isclose(x, area, abs_tol=1e-9) and
                                math.isclose(y, mass, abs_tol=1e-9)
                                for x, y in zip(line.get_xdata(), line.get_ydata()))
                            for line in dashed), (label, area, mass)
-            elif fit_only:
-                label += " (not quantified)"
             assert [t.get_text() for t in fig.texts].count(label) == 1, label
+    assert all("extrapolated" not in text.get_text() for text in fig.texts)
     assert not remaining
     extension = 0.1 * (vmax - vmin)
     assert xlo == min([vmin - extension] + areas)
