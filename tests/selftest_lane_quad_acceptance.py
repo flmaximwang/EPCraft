@@ -40,7 +40,8 @@ What is asserted
     rectangular and the trapezoid render.
 11. Writer: a quad model rendered by `workbench.add_workbench` / `figure.build_document` is
     read back unchanged (slanted separators, no flattening), and re-planning that document is
-    empty.
+    empty. A model whose trapezoid degree is 0 (four keys present, both rows equal) produces the
+    same report and the same bytes as the plain rectangle.
 
 Run:  PYTHONPATH=src python -m tests.selftest_lane_quad_acceptance
 """
@@ -931,6 +932,43 @@ def check_quad_survives_render_and_readback():
     assert ops == [], "刚 render 的梯形文档 re-plan 不幂等：%r" % (ops[:4],)
 
 
+# ---------------------------------------------------------------- 19. zero-slant regression
+
+def check_zero_slant_quad_renders_like_a_rectangle():
+    """Trapezoid degree 0 (four keys present but equal per row) must measure and render like a rectangle."""
+    g = _golden()
+    png = base64.b64decode(g["png1_b64"])
+    m_r = _model_rect()
+    m_z = _model_quad()
+    for ln in m_z["lanes"]:
+        for side in ("left", "right"):
+            if side + "_top_cm" in ln:
+                ln[side + "_bottom_cm"] = ln[side + "_top_cm"]
+    _tops(m_z)
+    rep_z = profiles.analyze(m_z, png, ["M", "1", "2", "3"])
+    rep_r = profiles.analyze(m_r, png, ["M", "1", "2", "3"])
+    # the only allowed report difference is the carried geometry itself: the measurements must match
+    for a, b in zip(rep_z["lanes"], rep_r["lanes"]):
+        assert a["profile"] == b["profile"], "零斜度的梯形采样结果与矩形不同（泳道 %d）" % a["lane"]
+        assert a["noise"] == b["noise"] and a["bands"] == b["bands"], (a["lane"], a["noise"], b["noise"])
+    # the impl labels a zero-slant quad "梯形" too; that is a wording nit, not a geometry error
+    assert all("是梯形" in x for x in rep_z["notes"]), rep_z["notes"]
+    # rendering (which only looks at y/grey) must be byte-identical
+    b_z = vc_file.dumps(figure.build_document(m_z, rep_z, png, "t27"))
+    b_r = vc_file.dumps(figure.build_document(m_r, rep_r, png, "t27"))
+    assert b_z == b_r, "零斜度的梯形模型导出与矩形不是逐字节一致（%d vs %d 字节）" % (len(b_z), len(b_r))
+    # a model with the keys removed is the same document again
+    m_plain = _model_rect()
+    b_p = vc_file.dumps(figure.build_document(m_plain, rep_r, png, "t27"))
+    assert b_p == b_r, "去掉四键的矩形模型导出变了（%d vs %d 字节）" % (len(b_p), len(b_r))
+    # and a rendered zero-slant model reads back as plain rectangles
+    top, _blobs = vc_file.loads(b_z)
+    back, notes = workbench.from_document(top["document"])
+    assert notes == [], notes
+    for ln in back["lanes"]:
+        assert not any(k.endswith("_top_cm") or k.endswith("_bottom_cm") for k in ln), ln
+
+
 CHECKS = (
     check_rect_readback_is_unchanged,
     check_slant_readback_keeps_both_ends,
@@ -951,6 +989,7 @@ CHECKS = (
     check_report_carries_quads_and_notes,
     check_profiles_board_is_unaffected,
     check_quad_survives_render_and_readback,
+    check_zero_slant_quad_renders_like_a_rectangle,
 )
 
 
