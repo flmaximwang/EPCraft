@@ -350,8 +350,8 @@ def curve_layout(curve, quant=None, width=1020):
     sample_areas = [s["area"] for s in samples]
     drawn_lo = min([ext_lo] + sample_areas)
     drawn_hi = max([ext_hi] + sample_areas)
-    volumes = [p["volume"] for p in points]
-    x_range = (min([drawn_lo] + volumes), max([drawn_hi] + volumes))
+    x_range = (drawn_lo, drawn_hi)
+    points = [p for p in points if p["used"] or drawn_lo <= p["volume"] <= drawn_hi]
     masses = [p["mass"] for p in points] + [s["mass"] for s in samples]
     fit_ends = [fn(drawn_lo), fn(drawn_hi)]
     y_lo = min([0.0] + masses)

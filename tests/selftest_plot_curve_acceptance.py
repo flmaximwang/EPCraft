@@ -545,7 +545,7 @@ def _linear_curve():
         "version": 1, "kind": KIND, "unit": "ug", "baseline": "flank", "fit": "linear",
         "source": {"dens": "fig.dens.json", "std": "2=5,3=10,4=20,5=20,6=40", "drop": [2]},
         "points": [
-            {"mass": 5.0, "volume": 1.7, "n": 1, "sd": None, "cv_pct": None,
+            {"mass": 5.0, "volume": 2.5, "n": 1, "sd": None, "cv_pct": None,
              "lanes": [2], "entries": [[2, 1]], "used": False},
             {"mass": 10.0, "volume": 3.0, "n": 1, "sd": None, "cv_pct": None,
              "lanes": [3], "entries": [[3, 1]], "used": True},
@@ -865,22 +865,20 @@ def check_fit_line_power():
     return True
 
 
-def check_fit_line_wide_frame():
-    """A far-out dropped point widens the frame; the fit line stops at its +10 % extension."""
+def check_dropped_points_do_not_expand_axes():
+    """Dropped points on either side leave the standard range and its extensions unchanged."""
     curve = _linear_curve()
-    curve["points"].append({"mass": 4.0, "volume": 40.0, "n": 1, "sd": None, "cv_pct": None,
-                            "lanes": [7], "entries": [[7, 1]], "used": False})
+    for lane, area in ((7, 0.1), (8, 40.0)):
+        curve["points"].append(dict(curve["points"][0], mass=1000.0, volume=area,
+                                    lanes=[lane], entries=[[lane, 1]]))
     with tempfile.TemporaryDirectory() as td:
-        (_w, _h), fig, _caught, _out = _render_file(td, "wide.png", curve)
+        _, fig, _, _ = _render_file(td, "limits.png", curve)
         main, _resid = _pair(fig)
-        lines = _fit_line(main, curve)
-        assert lines, "宽画框里没有拟合线"
-        hi = max(float(x) for ln in lines for x in ln.get_xdata())
-        vmax = curve["range"]["volume_max"]
-        ext = vmax + 0.10 * (vmax - curve["range"]["volume_min"])
-        assert hi <= ext + 0.02 * (vmax - curve["range"]["volume_min"]), \
-            "拟合线画到了整幅宽画框（右端 %.2f，延伸应止于 %.2f）" % (hi, ext)
-        assert main.get_xlim()[1] >= 40.0 - 1e-6, "宽画框没有容纳 volume=40 的被 drop 点"
+        vmin, vmax = (curve["range"][key] for key in ("volume_min", "volume_max"))
+        pad = 0.10 * (vmax - vmin)
+        assert main.get_xlim() == (vmin - pad, vmax + pad)
+        assert main.get_ylim()[1] < 1000.0
+        assert all(vmin - pad <= marker["x"] <= vmax + pad for marker in _markers(main))
     return True
 
 
@@ -1091,7 +1089,7 @@ def _check_sample_positions(fig, curve, quant):
     assert all(max(line.get_xdata()) <= vmin or min(line.get_xdata()) >= vmax for line in dashed)
     xlo, xhi = main.get_xlim()
     ylo, yhi = main.get_ylim()
-    areas = [p["volume"] for p in curve["points"]]
+    areas = []
     remaining = list(markers)
     for lane in quant["lanes"]:
         for band in lane["bands"]:
@@ -1475,7 +1473,7 @@ CHECKS = (
     check_size_blank_and_rerun,
     check_fit_line_linear,
     check_fit_line_power,
-    check_fit_line_wide_frame,
+    check_dropped_points_do_not_expand_axes,
     check_points_and_dropped,
     check_error_bars,
     check_bar_free_without_replicates,
