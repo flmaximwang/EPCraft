@@ -54,8 +54,9 @@ def plan_edit(document, model, trim=None, names=None, marker_lane=None):
             raise workbench.WorkbenchError("所有泳道都在 trimmed 里 —— Figure 至少要留一条")
         if trim != [i for i, ln in enumerate(model["lanes"], 1) if ln["trimmed"]]:
             ops += [{"op": "delete", "id": c["id"]} for c in vc_file.lay_children(L["trimmed"])]
+            H = model["gel"]["height_cm"]
             for t in trim:
-                a, b = model["lanes"][t - 1]["left_cm"], model["lanes"][t - 1]["right_cm"]
+                a, b = workbench.lane_bounds(model["lanes"][t - 1], 0.0, H)   # mark 画在胶顶那行
                 q = (b - a) / 4.0
                 ops.append({"op": "create", "layer": "trimmed", "spec": {
                     "kind": "line", "layer": "trimmed", "name": "trim",
@@ -68,11 +69,14 @@ def plan_edit(document, model, trim=None, names=None, marker_lane=None):
         if not 1 <= ml <= n:
             raise workbench.WorkbenchError("marker 泳道 %d 超出 1–%d" % (ml, n))
         ln = model["lanes"][ml - 1]
-        x0, x1 = X(ln["left_cm"] - workbench.GRAB_CM), X(ln["right_cm"] + workbench.GRAB_CM)
+        H = model["gel"]["height_cm"]
         moved = 0
         for c in vc_file.lay_children(L["marker bands"]):
             (ax, ay), (bx, by) = vc_file.line_ends(c)
             y = (ay + by) / 2.0
+            # band 线横跨泳道在它自己那一行的宽度（梯形泳道按 y 取 L(y)..R(y)），不是胶顶那行
+            la, lb = workbench.lane_bounds(ln, (y - gy) / PT, H)
+            x0, x1 = X(la - workbench.GRAB_CM), X(lb + workbench.GRAB_CM)
             if max(abs(ax - x0), abs(bx - x1), abs(ay - y), abs(by - y)) > 0.01:
                 ops.append({"op": "reshape", "id": c["id"], "points": [[x0, y], [x1, y]], "closed": False})
                 moved += 1

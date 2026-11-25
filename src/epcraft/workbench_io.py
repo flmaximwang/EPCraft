@@ -10,6 +10,8 @@
      "gel": {"width_cm", "height_cm"},
      "window": {"top_cm", "bottom_cm"},
      "lanes": [{"left_cm", "right_cm", "trimmed", "name"}],   # 从左到右；相邻泳道首尾相接
+                                                              # 梯形泳道另带 left_top_cm / left_bottom_cm /
+                                                              # right_top_cm / right_bottom_cm（胶顶 / 胶底两行的 x）
      "marker_lane": n,
      "bands": [{"mw", "y_cm"}],                      # marker 条带线，y 升序、MW 严格降序
      "low_confidence": bool,                         # 当前 ep-meta 的低置信标记（marker_confidence.ok = false）
@@ -19,8 +21,13 @@
 （doc_edit.current_names；占位 "?" 导出为 null）。不导出胶面图/画板/Figure/Profiles、
 ep-meta 的 photo/dpi/preset/crop、peak_auto 等内部状态 —— import 只动上面这些键，其余原样保留。
 
+`left_cm` / `right_cm` 是**胶顶那一行**（y = 0）的边界；梯形泳道把胶底那一行另存为 `*_bottom_cm`
+（四个键要么都给、要么都不给，矩形泳道就是不给），于是泳道是 left_top/left_bottom/right_top/right_bottom
+围成的四边形；两行的宽度各自 ≥ 0.02 cm，相邻泳道的胶顶边与胶底边各自连续，任何两条分隔线在胶面内相交
+都直接拒绝。
+
 导入先校验（schema/version、所有数字有限、胶面尺寸与目标文档一致、泳道连续、window、带序、
-sample 道号）—— 任何一处不对就**什么都不改**。通过后：
+sample 道号、分隔线不相交）—— 任何一处不对就**什么都不改**。通过后：
 - 按导入数据重建 lanes / window / marker band 线（数量变化时增删线），trim 标记、sample band 刻度；
   全部包在一个撤销组 `epcraft workbench import` 里（sync_exec）；
 - 把 ep-meta 的 lane_names / prev_centres_cm / bands 重定到导入后的泳道（现有 label lane n 直接改文字），
@@ -38,6 +45,7 @@ import sys
 
 from . import doc_edit
 from . import figure
+from . import profiles
 from . import gel_session
 from . import vc_file
 from . import workbench
@@ -94,10 +102,14 @@ def build_export(document, model=None):
     names = doc_edit.current_names(document, model)
     lanes = []
     for i, ln in enumerate(model["lanes"]):
-        lanes.append({"left_cm": round(float(ln["left_cm"]), 4),
-                      "right_cm": round(float(ln["right_cm"]), 4),
-                      "trimmed": bool(ln["trimmed"]),
-                      "name": _json_name(names[i] if i < len(names) else "")})
+        d = {"left_cm": round(float(ln["left_cm"]), 4),          # 胶顶那一行（y = 0）
+             "right_cm": round(float(ln["right_cm"]), 4),
+             "trimmed": bool(ln["trimmed"]),
+             "name": _json_name(names[i] if i < len(names) else "")}
+        if workbench.lane_is_quad(ln):                            # 梯形泳道：再带四个端点（可选键）
+            for k in profiles.QUAD_KEYS:
+                d[k] = round(float(ln[k]), 4)
+        lanes.append(d)
     meta = model.get("meta") or {}
     data = {
         "schema": SCHEMA,
@@ -116,7 +128,7 @@ def build_export(document, model=None):
     if vc_file.layer_by_name(document, "sample bands") is not None:
         ticks = []
         for x, y, _node in workbench.sample_ticks(document):
-            lane = workbench.lane_at(model, x)
+            lane = workbench.lane_at(model, x, y)
             if lane is not None and lane != model["marker_lane"]:
                 ticks.append({"lane": int(lane), "y_cm": round(float(y), 4)})
         data["sample_bands"] = sorted(ticks, key=lambda t: (t["lane"], t["y_cm"]))
@@ -190,6 +202,20 @@ def _raise(errors, what="Workbench 导出数据不合法（什么都没改）"):
     raise RuntimeError("%s：\n- %s" % (what, "\n- ".join(errors)))
 
 
+def _export_edges(lanes, y0_cm=0.0, y1_cm=None, height_cm=None):
+    """导出 lanes → n+1 条分隔线 [(y0 处的 x, y1 处的 x)]（相邻泳道共用一条；矩形泳道处处相同）。
+
+    y0 / y1 省略 = 胶顶 / 胶底两行（相交检查用）；画线时传积分窗的 top / bottom —— 斜线仍落在同一条
+    直线上，只是短一点，读回沿它自己的方向延伸回两行后端点值不变。"""
+    if not lanes:
+        return []
+    H = height_cm
+    y1 = (H if H is not None else 0.0) if y1_cm is None else y1_cm
+    def at(ln, k):
+        return (profiles.lane_bounds(ln, y0_cm, H)[k], profiles.lane_bounds(ln, y1, H)[k])
+    return [at(lanes[0], 0)] + [at(ln, 1) for ln in lanes]
+
+
 def _valid_peak_auto(meta):
     return isinstance(meta.get("peak_auto"), dict)
 
@@ -249,6 +275,22 @@ def validate_export(data, target_model):
                 continue
             left = _num(_require(raw, "left_cm", "lanes[%d]" % i, errs), "lanes[%d].left_cm" % i, errs)
             right = _num(_require(raw, "right_cm", "lanes[%d]" % i, errs), "lanes[%d].right_cm" % i, errs)
+            quad = {}
+            given = [k for k in profiles.QUAD_KEYS if k in raw]
+            if given and len(given) != len(profiles.QUAD_KEYS):
+                errs.append("lanes[%d] 的梯形端点要么四个都给（%s），要么都不给（矩形泳道）；现在给了 %s"
+                            % (i, " / ".join(profiles.QUAD_KEYS), " / ".join(given)))
+            for k in given:
+                quad[k] = _num(raw[k], "lanes[%d].%s" % (i, k), errs)
+            if len(given) == len(profiles.QUAD_KEYS) and all(quad[k] is not None for k in profiles.QUAD_KEYS):
+                for where, a, b in (("胶顶", quad["left_top_cm"], quad["right_top_cm"]),
+                                    ("胶底", quad["left_bottom_cm"], quad["right_bottom_cm"])):
+                    if b - a < MIN_LANE_CM:
+                        errs.append("泳道 %d 的%s边几乎重合（%.4f cm < %.4f）" % (i, where, b - a, MIN_LANE_CM))
+                if abs(quad["left_top_cm"] - left) > 1e-6 or abs(quad["right_top_cm"] - right) > 1e-6:
+                    errs.append("lanes[%d] 的 left_top_cm / right_top_cm 与 left_cm / right_cm 不一致"
+                                "（%.4f/%.4f vs %.4f/%.4f）" % (i, quad["left_top_cm"], quad["right_top_cm"],
+                                                               left, right))
             trimmed = raw.get("trimmed")
             if not isinstance(trimmed, bool):
                 errs.append("lanes[%d].trimmed 必须是 true/false（收到 %r）" % (i, trimmed))
@@ -257,19 +299,40 @@ def validate_export(data, target_model):
             if name is not _MISSING and name is not None and not isinstance(name, str):
                 errs.append("lanes[%d].name 必须是字符串或 null（收到 %r）" % (i, name))
                 name = None
-            if left is not None and right is not None and right - left < MIN_LANE_CM:
+            if not given and left is not None and right is not None and right - left < MIN_LANE_CM:
                 errs.append("泳道 %d 的两条边线几乎重合（%.4f cm < %.4f）" % (i, right - left, MIN_LANE_CM))
-            lanes.append({"left_cm": left, "right_cm": right, "trimmed": trimmed,
-                          "name": None if name is _MISSING or name is None else name,
-                          "name_given": name is not _MISSING})
+            lanes.append(dict({"left_cm": left, "right_cm": right, "trimmed": trimmed,
+                               "name": None if name is _MISSING or name is None else name,
+                               "name_given": name is not _MISSING},
+                              **({k: v for k, v in quad.items() if v is not None} if quad else {})))
         if lanes and all(ln["trimmed"] for ln in lanes):
             errs.append("所有泳道都在 trimmed 里 —— Figure 至少要留一条")
         for i in range(1, len(lanes)):
             a, b = lanes[i - 1], lanes[i]
-            if a["right_cm"] is not None and b["left_cm"] is not None \
-                    and abs(b["left_cm"] - a["right_cm"]) > 1e-4:
-                errs.append("泳道 %d 与泳道 %d 不连续：left %.4f != 上一道的 right %.4f"
-                            % (i, i + 1, b["left_cm"], a["right_cm"]))
+            quad_side = any(k in a or k in b for k in profiles.QUAD_KEYS)
+            if not quad_side:
+                if a["right_cm"] is not None and b["left_cm"] is not None \
+                        and abs(b["left_cm"] - a["right_cm"]) > 1e-4:
+                    errs.append("泳道 %d 与泳道 %d 不连续：left %.4f != 上一道的 right %.4f"
+                                % (i, i + 1, b["left_cm"], a["right_cm"]))
+                continue
+            for key, pkey, where in (("left_top_cm", "right_top_cm", "胶顶"),
+                                     ("left_bottom_cm", "right_bottom_cm", "胶底")):
+                cur = b.get(key, b["left_cm"])
+                prev = a.get(pkey, a["right_cm"])
+                if cur is not None and prev is not None and abs(cur - prev) > 1e-4:
+                    errs.append("泳道 %d 与泳道 %d 的%s边界不连续：%s %.4f != 上一道的 %s %.4f"
+                                % (i, i + 1, where, key, cur, pkey, prev))
+        if any(k in ln for ln in lanes for k in profiles.QUAD_KEYS):
+            # 分隔线相交：胶顶与胶底两行的排序不一致 = 某两条线在胶面内穿过去了
+            edges = _export_edges(lanes, height_cm=gh)      # 必须带胶面高：梯形泳道两行 x 不同
+            for i, j, y in workbench._edge_crossings(edges, gh if gh is not None else 0.0)[:5]:
+                if j == i + 1:
+                    errs.append("泳道 %d 的两条边线在胶面内相交（第 %d 与第 %d 条分隔线，y≈%.2f cm）"
+                                % (i, i, j, y))
+                else:
+                    errs.append("第 %d 与第 %d 条分隔线在胶面内相交（y≈%.2f cm）—— 它们框住的泳道交错了"
+                                % (i, j, y))
 
     marker_lane = _int(_require(data, "marker_lane", "导出", errs), "marker_lane", errs)
     if marker_lane is not None and not 1 <= marker_lane <= len(raw_lanes if isinstance(raw_lanes, list) else []):
@@ -390,34 +453,34 @@ def _valid_ticks(document, model):
     return sorted(out)
 
 
-def _tick_specs(lanes, ticks):
+def _tick_specs(lanes, ticks, height_cm=None):
     specs = []
     by_lane = {}
     for lane, y in ticks:
         by_lane.setdefault(lane, []).append(y)
     for lane in sorted(by_lane):
         ln = lanes[lane - 1]
-        cx = (ln["left_cm"] + ln["right_cm"]) / 2.0
         for k, y in enumerate(sorted(by_lane[lane]), 1):
+            cx = workbench.lane_centre_at(ln, y, height_cm)        # 刻度在它那一行的中点
             specs.append(_line_spec("sample bands", "peak %d.%d" % (lane, k),
                                     (cx - 0.08, y), (cx + 0.08, y), (0.1, 0.6, 0.1), workbench.LINE_W))
     return specs
 
 
-def _trim_specs(lanes):
+def _trim_specs(lanes, height_cm=None):
     specs = []
     for i, ln in enumerate(lanes, 1):
         if not ln["trimmed"]:
             continue
-        a, b = ln["left_cm"], ln["right_cm"]
+        a, b = workbench.lane_bounds(ln, 0.0, height_cm)          # trim 标记画在胶顶那行
         q = (b - a) / 4.0
         specs.append(_line_spec("trimmed", "trim", (a + q, -workbench.TRIM_Y_CM),
                                 (b - q, -workbench.TRIM_Y_CM), workbench.RGB["trimmed"], 1.5))
     return specs
 
 
-def _trim_equal(current, lanes, X, Y):
-    want = _trim_specs(lanes)
+def _trim_equal(current, lanes, X, Y, height_cm=None):
+    want = _trim_specs(lanes, height_cm)
     if len(current) != len(want):
         return False
     cur = sorted((vc_file.line_ends(n) for n in current), key=lambda e: min(p[0] for p in e))
@@ -428,18 +491,27 @@ def _trim_equal(current, lanes, X, Y):
     return True
 
 
-def _band_specs(lanes, marker_lane, bands):
+def _band_specs(lanes, marker_lane, bands, height_cm=None):
     ml = lanes[marker_lane - 1]
-    return [_line_spec("marker bands", "band %g" % b["mw"],
-                       (ml["left_cm"] - workbench.GRAB_CM, b["y_cm"]),
-                       (ml["right_cm"] + workbench.GRAB_CM, b["y_cm"]),
-                       workbench.RGB["band"], workbench.LINE_W)
-            for b in bands]
+    out = []
+    for b in bands:
+        y = b["y_cm"]
+        a, z = workbench.lane_bounds(ml, y, height_cm)            # band 线横跨它自己那一行
+        out.append(_line_spec("marker bands", "band %g" % b["mw"],
+                              (a - workbench.GRAB_CM, y), (z + workbench.GRAB_CM, y),
+                              workbench.RGB["band"], workbench.LINE_W))
+    return out
 
 
 def plan_import(document, model, data):
     """(ops, 新 ep-meta, 摘要行, 警告行)。纯函数；planning 完之后才允许碰文档。"""
     ops, lines, warns = [], [], []
+    # 分隔线相交 = 没法画成泳道：导出的数据先自检一次，错误的话在产生任何 op 之前就抛（什么都不改）
+    gh_import = data["gel"]["height_cm"]
+    crossings = workbench._edge_crossings(_export_edges(data["lanes"], height_cm=gh_import), gh_import)
+    if crossings:
+        raise RuntimeError("导入的泳道分隔线在胶面内相交（%s）—— 什么都没改；把这几条线拖直或删掉再来"
+                           % "，".join("第 %d 与第 %d 条 y≈%.2f cm" % (a, b, y) for a, b, y in crossings[:5]))
     gx, gy = vc_file.doc_origin(document)
     X = lambda cm: gx + cm * PT                             # noqa: E731
     Y = lambda cm: gy + cm * PT                             # noqa: E731
@@ -464,14 +536,15 @@ def plan_import(document, model, data):
 
     # ---- 泳道边线：按 x 排序；数量变化时多删少补
     lnodes = sorted(_line_nodes(document, "lanes"), key=lambda n: _mid(n)[0])
-    bounds = [lanes[0]["left_cm"]] + [ln["right_cm"] for ln in lanes]
-    targets = [((X(x), Y(top)), (X(x), Y(bottom))) for x in bounds]
+    # n+1 条分隔线：在积分窗的 top / bottom 两行各取一个 x（画出来落在泳道边的那条直线上）
+    seps = _export_edges(lanes, top, bottom, data["gel"]["height_cm"])
+    targets = [((X(xt), Y(top)), (X(xb), Y(bottom))) for xt, xb in seps]
     for n, (a, b) in zip(lnodes, targets):
         _reshape(n, a, b, ops)
     for n in lnodes[len(targets):]:
         ops.append({"op": "delete", "id": n["id"]})
-    for x in bounds[len(lnodes):]:
-        sp = _line_spec("lanes", "lane", (x, top), (x, bottom),
+    for xt, xb in seps[len(lnodes):]:
+        sp = _line_spec("lanes", "lane", (xt, top), (xb, bottom),
                         workbench.RGB["lane"], workbench.LINE_W)
         ops.append({"op": "create", "layer": "lanes", "spec": _spec_pt(sp, X, Y)})
     if len(lnodes) != len(targets):
@@ -481,7 +554,8 @@ def plan_import(document, model, data):
 
     # ---- marker 带线：位置或 MW 变了就整组重建（线很短，重建比逐条配对稳）
     bnodes = sorted(_line_nodes(document, "marker bands"), key=lambda n: _mid(n)[1])
-    want_b = _band_specs(lanes, marker_lane, bands)
+    GH = data["gel"]["height_cm"]
+    want_b = _band_specs(lanes, marker_lane, bands, GH)
     same_b = len(bnodes) == len(want_b)
     if same_b:
         for n, sp in zip(bnodes, want_b):
@@ -501,14 +575,14 @@ def plan_import(document, model, data):
     # ---- trim 标记：位置/集合变了就重建
     layer_trim = vc_file.layer_by_name(document, "trimmed")
     trim_nodes = _line_nodes(document, "trimmed")
-    if not _trim_equal(trim_nodes, lanes, X, Y):
+    if not _trim_equal(trim_nodes, lanes, X, Y, GH):
         if layer_trim is not None:
             for n in vc_file.lay_children(layer_trim):
                 ops.append({"op": "delete", "id": n["id"]})
-        if _trim_specs(lanes):
+        if _trim_specs(lanes, GH):
             if layer_trim is None:
                 ops.append(dict(workbench.layer_props("trimmed"), op="layer"))
-            for sp in _trim_specs(lanes):
+            for sp in _trim_specs(lanes, GH):
                 ops.append({"op": "create", "layer": "trimmed", "spec": _spec_pt(sp, X, Y)})
         lines.append("trim 标记：%s" % ([i for i, ln in enumerate(lanes, 1) if ln["trimmed"]] or "无"))
 
@@ -517,7 +591,7 @@ def plan_import(document, model, data):
     if sample is not None:
         desired = [(t["lane"], t["y_cm"]) for t in sample]
         current = _valid_ticks(document, model)
-        centres = [(ln["left_cm"] + ln["right_cm"]) / 2.0 for ln in lanes]
+        centres = [workbench.lane_centre_at(ln, 0.0, GH) for ln in lanes]      # 胶顶那行，与刻度落位同口径
         want = [(lane, y) for lane, y in desired]
         have = [(lane, y) for lane, y, _x in current]
         changed = sorted(want) != sorted(have) or any(
@@ -535,15 +609,15 @@ def plan_import(document, model, data):
                 for n in vc_file.lay_children(layer_sb):
                     if n["id"] not in foreign:
                         ops.append({"op": "delete", "id": n["id"]})
-            for sp in _tick_specs(lanes, desired):
+            for sp in _tick_specs(lanes, desired, GH):
                 ops.append({"op": "create", "layer": "sample bands", "spec": _spec_pt(sp, X, Y)})
             lines.append("样品带刻度：%d 条" % len(desired))
         if _valid_peak_auto(model.get("meta") or {}):
             smodel = {"gel": data["gel"], "window": {"top_cm": top, "bottom_cm": bottom},
                       "lanes": lanes, "bands": bands, "marker_lane": marker_lane,
                       "meta": dict(model.get("meta") or {})}
-            ticks = [((ln["left_cm"] + ln["right_cm"]) / 2.0, float(y), None)
-                     for lane, y in desired for ln in [lanes[lane - 1]]]
+            ticks = [(workbench.lane_centre_at(lanes[lane - 1], float(y), GH), float(y), None)
+                     for lane, y in desired]
             overrides, _w = gel_session.peak_override_state(smodel, ticks, reset_lanes=())
             data = dict(data, _peak_overrides=overrides)
 
@@ -573,7 +647,7 @@ def plan_import(document, model, data):
     meta_node, old_meta = vc_file.doc_meta(document)
     merged = dict(old_meta or {})
     merged["lane_names"] = names
-    merged["prev_centres_cm"] = [round((ln["left_cm"] + ln["right_cm"]) / 2.0, 4) for ln in lanes]
+    merged["prev_centres_cm"] = [round(workbench.lane_centre_at(ln, 0.0, GH), 4) for ln in lanes]
     merged["bands"] = [[float(b["mw"]), float(b["y_cm"])] for b in bands]
     if data["low_confidence"]:
         # 源导出是低置信：目标也标低置信；导入永远不“证明”标定，false 也不清除目标已有的标记

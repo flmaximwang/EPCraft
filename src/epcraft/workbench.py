@@ -6,12 +6,23 @@
 
     {"gel":    {"width_cm", "height_cm"},
      "window": {"top_cm", "bottom_cm"},                      全部泳道共用的积分窗
-     "lanes":  [{"left_cm", "right_cm", "trimmed"}],         按中心从左到右；第 i 条 = 泳道 i+1；
-                                                             相邻泳道首尾相接（泳道 i 的 right = 泳道 i+1 的 left）
+     "lanes":  [{"left_cm", "right_cm", "trimmed",          按中心从左到右；第 i 条 = 泳道 i+1；
+                 ← 梯形才有的四个端点 →}],                   相邻泳道首尾相接（泳道 i 的 right = 泳道 i+1 的 left）
      "bands":  [{"mw", "y_cm"}],                             marker 条带线，自上而下
      "marker_lane": n,                                       1 起；由条带线落在哪条泳道里决定
                                                              （0 条线时取 ep-meta 记的那个）
      "meta":   {...}}                                        ep-meta 文字对象里的运行元数据
+
+`left_cm` / `right_cm` 是泳道在**胶顶那一行（y = 0）**的边界。泳道通常是矩形（两条边都是竖线），
+这时它们就是全窗常数，泳道字典与旧版逐键相同。分隔线画斜了（梯形泳道，凝胶 smile / 拍摄透视 /
+加样孔与胶底不平行）时，字典再加四个端点键（cm，同一口径）：
+
+    {..., "left_top_cm", "left_bottom_cm", "right_top_cm", "right_bottom_cm"}
+
+`*_top_cm` = y = 0 处的 x，`*_bottom_cm` = y = gel.height_cm 处的 x，且 left_cm == left_top_cm、
+right_cm == right_top_cm。两条边线不得在胶面内相交（validate 报「第 i 与第 j 条分隔线…相交」）；
+矩形泳道不写这四个键 —— 旧文件、旧测试与旧输出都按原样成立。剖面逐行取该行自己的 L(y)..R(y)
+（profiles.sample_lane），Figure 的泳道剪切按四边形裁（以胶顶那行定宽度与拼缝，下边跟着倾斜）。
 
 文档里的绑定靠**图层**，不靠对象名（用户新画的线没有名字也算）：
     lanes 图层里的竖线 → 按 x 排序，相邻两条夹一条泳道（相邻泳道共用中间那条分隔线：n 道 = n+1 条线）；
@@ -20,7 +31,8 @@
     marker bands 图层里的横线 → 名字必须是 `band <MW>`；
     sample bands 图层里的线 → 样品带刻度（名字 `peak n.k`；读回时按中点 x 判泳道，名字不参与，spec §7.5）；
     gel 图层里顶层的 image `gel` → Workbench 上胶面的位置与比例（pt ↔ cm 就从它的 xf 来）。
-线不必完全横平竖直：竖线取两端 x 的中点，横线取两端 y 的中点。
+线不必完全横平竖直：竖线**保留两端**（两端 x 不同 = 梯形泳道的一条边，不是取中点压成竖线；
+只把线沿自身方向延长到胶顶 / 胶底两行），横线取两端 y 的中点。
 
 依赖 vc_file（文档读写）、mw_report（分子量数字与 MW 槽位展开）；from_image 另用 well_grid（泳道种子）与
 profiles（marker 行）。marker 带「出生即 MW」：第 k 条检出带 = 第 k 个 MW 槽（ep-bdt），没有配对步骤。
@@ -150,12 +162,78 @@ def from_image(png, gel_width_cm, gel_height_cm, lane_count, pitch_prior_cm, lan
 
 
 def _cells(xs, width_cm, trim, half_first, half_last):
-    """泳道中心 → 首尾相接的泳道：相邻两道的分隔线在两中心的中点；最外两条线在首/末道中心外 half_*。"""
+    """泳道中心 → 首尾相接的矩形泳道：相邻两道的分隔线在两中心的中点；最外两条线在首/末道中心外 half_*。"""
     n = len(xs)
     cuts = ([max(0.0, xs[0] - half_first)] + [(a + b) / 2.0 for a, b in zip(xs, xs[1:])]
             + [min(width_cm, xs[-1] + half_last)])
     return [{"left_cm": round(cuts[i], 4), "right_cm": round(cuts[i + 1], 4), "trimmed": (i + 1) in set(trim)}
             for i in range(n)]
+
+
+# ---------------------------------------------------------------- 梯形泳道的几何
+
+def _edge_x(ln, side, y_cm, height_cm):
+    """泳道某一侧在 y 处的 x（cm）。矩形泳道 = 常数 `left_cm` / `right_cm`；梯形按 y 线性插值。"""
+    x_t = float(ln["left_cm"] if side == "left" else ln["right_cm"])
+    x_b = float(ln.get(side + "_bottom_cm", x_t))
+    if abs(x_b - x_t) <= 0 or not height_cm:
+        return x_t
+    t = min(1.0, max(0.0, float(y_cm) / float(height_cm)))
+    return x_t + (x_b - x_t) * t
+
+
+def lane_bounds(ln, y_cm, height_cm=None):
+    """泳道在 y 处的两条边界 x（cm）→ (L, R)。矩形泳道与 y 无关；梯形按 `*_bottom_cm` 插值。
+
+    与 profiles.lane_bounds 同一口径；这里多一层是为了让建模 / 画线不依赖 profiles 的细节。
+    height_cm 省略时梯形泳道按 profiles 的口径报错（必须知道胶面高才能插值）。"""
+    return profiles.lane_bounds(ln, y_cm, height_cm)
+
+
+def lane_centre_at(ln, y_cm, height_cm=None):
+    """泳道在 y 处的中点 x（cm）；标签 / 刻度落位用（胶顶那行就是泳道中心）。"""
+    l, r = lane_bounds(ln, y_cm, height_cm)
+    return (l + r) / 2.0
+
+
+def lane_edges(model, y0_cm=0.0, y1_cm=None, height_cm=None):
+    """模型的 n+1 条分隔线 → [(y0 处的 x_cm, y1 处的 x_cm)]；下标 + 1 = 分隔线号。
+
+    y0 / y1 省略时是胶顶 / 胶底两行（相交检查用）。画线时传**积分类窗**的 top / bottom：
+    斜线仍是同一条直线，只是短一点，读回时沿它自己的方向延伸回两行，端点值不变；
+    而按胶面两行画会把线挪到窗外的位置，读回就偏一点。"""
+    lanes = model["lanes"]
+    if not lanes:
+        return []
+    H = height_cm if height_cm is not None else model.get("gel", {}).get("height_cm")
+    y1 = H if y1_cm is None else y1_cm
+    at = lambda ln, side: (_edge_x(ln, side, y0_cm, H), _edge_x(ln, side, y1, H))   # noqa: E731
+    return [at(lanes[0], "left")] + [at(ln, "right") for ln in lanes]
+
+
+def _edge_crossings(edges, height_cm):
+    """分隔线两两在胶面**内部**相交 → [(i, j, y_cm)]（i、j 是 1 起的线号，i < j；y 是交点所在的胶面行）。
+
+    两条线都是 x(y) 的线性函数，所以看它们在胶顶 / 胶底两行的差 d(0)、d(H) 就够了：
+    符号严格相反 = 在 (0, H) 之间穿过。端点处相碰（宽度趋 0）不算相交 —— 那是「边线几乎重合」的
+    宽度检查管的事，两条线在胶顶/胶底并到一起时逐条报，不会漏。"""
+    out = []
+    eps = 1e-9
+    for i in range(len(edges)):
+        for j in range(i + 1, len(edges)):
+            a0, a1 = edges[i]
+            b0, b1 = edges[j]
+            d0, d1 = b0 - a0, b1 - a1
+            if not ((d0 > eps and d1 < -eps) or (d0 < -eps and d1 > eps)):
+                continue
+            t = -d0 / (d1 - d0)
+            out.append((i + 1, j + 1, max(0.0, min(1.0, t)) * float(height_cm)))
+    return out
+
+
+def lane_is_quad(ln):
+    """这条泳道是不是梯形（带全了四个端点键）。"""
+    return profiles.is_quad(ln)
 
 
 def _assemble(gel, lanes, marker_rows_cm, lane_names, marker_labels, marker_lane, window, meta, how, gate=None):
@@ -276,24 +354,26 @@ def add_workbench(doc, layers, model, gel_key, gel_w_px, gel_h_px, x0, y0=0.0, p
         kids(layers["window"]).append(vc_file.line(doc, nm, (X(-GRAB_CM), y), (X(W + GRAB_CM), y),
                                                    RGB["window"], LINE_W))
     lanes = model["lanes"]
-    for x in [lanes[0]["left_cm"]] + [ln["right_cm"] for ln in lanes]:   # 相邻泳道共用一条分隔线
-        kids(layers["lanes"]).append(vc_file.line(doc, "lane", (X(x), Y(win["top_cm"])), (X(x), Y(win["bottom_cm"])),
-                                                  RGB["lane"], LINE_W))
+    edges = lane_edges(model, win["top_cm"], win["bottom_cm"], H)   # n+1 条分隔线（相邻泳道共用一条）
+    for x_t, x_b in edges:                             # 竖线照旧；斜线按两端画（梯形泳道的边）
+        kids(layers["lanes"]).append(vc_file.line(doc, "lane", (X(x_t), Y(win["top_cm"])),
+                                                  (X(x_b), Y(win["bottom_cm"])), RGB["lane"], LINE_W))
     for i, ln in enumerate(lanes, 1):
-        if ln["trimmed"]:
+        if ln["trimmed"]:                              # trim 标记落在胶顶那一行的边宽上（斜道也对齐）
             a, b = ln["left_cm"], ln["right_cm"]
             q = (b - a) / 4.0
             kids(layers["trimmed"]).append(vc_file.line(doc, "trim", (X(a + q), Y(-TRIM_Y_CM)), (X(b - q), Y(-TRIM_Y_CM)),
                                                         RGB["trimmed"], 1.5))
         if tags:
             kids(layers["analysis"]).append(vc_file.text(
-                doc, "tag %d" % i, X((ln["left_cm"] + ln["right_cm"]) / 2.0), gy - 4, str(i), size=6,
+                doc, "tag %d" % i, X(lane_centre_at(ln, 0.0, H)), gy - 4, str(i), size=6,
                 rgb=(0.35, 0.35, 0.35)))
     mk = model["lanes"][model["marker_lane"] - 1]
     for b in model["bands"]:
         y = Y(b["y_cm"])
+        xl, xr = lane_bounds(mk, b["y_cm"], H)         # 条带线按**它自己那一行**的泳道边界伸出去
         kids(layers["marker bands"]).append(vc_file.line(
-            doc, "band %s" % _fmt_mw(b["mw"]), (X(mk["left_cm"] - GRAB_CM), y), (X(mk["right_cm"] + GRAB_CM), y),
+            doc, "band %s" % _fmt_mw(b["mw"]), (X(xl - GRAB_CM), y), (X(xr + GRAB_CM), y),
             RGB["band"], LINE_W))
     by_lane = {}
     for lane, y_cm in peaks:
@@ -301,8 +381,8 @@ def add_workbench(doc, layers, model, gel_key, gel_w_px, gel_h_px, x0, y0=0.0, p
             by_lane.setdefault(int(lane), []).append(float(y_cm))
     for lane in sorted(by_lane):
         ln = model["lanes"][lane - 1]
-        cx = (ln["left_cm"] + ln["right_cm"]) / 2.0
         for k, y_cm in enumerate(sorted(by_lane[lane]), 1):
+            cx = lane_centre_at(ln, y_cm, H)             # 刻度在它那一行的泳道中点上
             kids(layers["sample bands"]).append(vc_file.line(
                 doc, "peak %d.%d" % (lane, k), (X(cx - 0.08), Y(y_cm)), (X(cx + 0.08), Y(y_cm)),
                 (0.1, 0.6, 0.1), LINE_W))
@@ -333,7 +413,10 @@ def from_document(document):
     cy = lambda pt: (pt - gy) / PT
 
     def lines(name):
-        """该图层里的线 → [(中点 x pt, 中点 y pt, 是否竖, 节点)]；非线对象记提示后跳过。"""
+        """该图层里的线 → [(x0, y0, x1, y1, 是否竖, 节点)]，坐标是胶面 cm。
+
+        两端都保留：泳道分隔线画斜了就是梯形泳道的一条边（x 随 y 线性变化），不能压成中点。
+        竖/横按「沿哪个轴更长」判（与旧版同一口径）；非线对象记提示后跳过。"""
         l = vc_file.layer_by_name(document, name)
         out = []
         for _top, n in vc_file.walk({"layers": [l]} if l else {"layers": []}):
@@ -343,17 +426,21 @@ def from_document(document):
                     notes.append("%s 图层里有一个不是直线的对象（id %s），忽略" % (name, n.get("id")))
                 continue
             (x0, y0), (x1, y1) = vc_file.line_ends(n)
-            out.append(((x0 + x1) / 2.0, (y0 + y1) / 2.0, abs(x1 - x0) <= abs(y1 - y0), n))
+            out.append((cx(x0), cy(y0), cx(x1), cy(y1), abs(x1 - x0) <= abs(y1 - y0), n))
         return out
+
+    def mid(t):
+        """一条线（lines() 的元组）的中点 x、y（cm）。"""
+        return (t[0] + t[2]) / 2.0, (t[1] + t[3]) / 2.0
 
     # 积分窗
     wl = lines("window")
-    if len(wl) != 2 or any(v for _x, _y, v, _n in wl):
+    if len(wl) != 2 or any(t[4] for t in wl):
         errs.append("window 图层应当恰好有两条横线（top、bottom），现在是 %d 条线%s"
-                    % (len(wl), "，其中有竖线" if any(v for *_r, v, _n in wl) else ""))
+                    % (len(wl), "，其中有竖线" if any(t[4] for t in wl) else ""))
         top = bottom = None
     else:
-        top, bottom = sorted(cy(y) for _x, y, _v, _n in wl)
+        top, bottom = sorted(mid(t)[1] for t in wl)
         if bottom - top < 0.05:
             errs.append("window 的 top 与 bottom 几乎重合（%.3f cm）—— 拉开它们" % (bottom - top))
         if top < 0 or bottom > H:
@@ -385,20 +472,22 @@ def from_document(document):
     meta.pop("draft", None)
 
     # 泳道
-    lanes = _shared_lanes(lines, cx, errs)
+    lanes = _shared_lanes(lines, H, errs)
 
     # marker 条带线
-    bands, band_x, band_nm = [], [], []
-    for x, y, vert, n in lines("marker bands"):
+    bands, band_x, band_y, band_nm = [], [], [], []
+    for x0, y0, x1, y1, vert, n in lines("marker bands"):
         m = _BAND_NAME.match(n.get("name") or "")
+        x, y = (x0 + x1) / 2.0, (y0 + y1) / 2.0
         if vert:
             errs.append("marker bands 图层里有竖线（id %s）—— 条带线应是横线" % n.get("id"))
         elif not m:
             errs.append("marker bands 图层里有一条线名叫 %r（id %s）—— 改名为「band <分子量>」，如 band 35"
                         % (n.get("name"), n.get("id")))
         else:
-            bands.append({"mw": float(m.group(1)), "y_cm": round(cy(y), 4)})
-            band_x.append(cx(x))
+            bands.append({"mw": float(m.group(1)), "y_cm": round(y, 4)})
+            band_x.append(x)
+            band_y.append(y)
             band_nm.append(n.get("name"))
     bands.sort(key=lambda b: b["y_cm"])
 
@@ -407,8 +496,9 @@ def from_document(document):
                         "bottom_cm": round(bottom, 4) if bottom is not None else None},
              "lanes": lanes, "bands": bands, "marker_lane": None, "meta": meta}
     if not errs and band_x:
-        where = [next((i for i, ln in enumerate(lanes, 1) if ln["left_cm"] <= x <= ln["right_cm"]), None)
-                 for x in band_x]
+        where = [next((i for i, ln in enumerate(lanes, 1)
+                       if lane_bounds(ln, by, H)[0] <= x <= lane_bounds(ln, by, H)[1]), None)
+                 for x, by in zip(band_x, band_y)]
         stray = [nm for nm, w in zip(band_nm, where) if w is None]
         hits = sorted({w for w in where if w is not None})
         if stray:
@@ -433,24 +523,48 @@ def from_document(document):
     return model, notes
 
 
-def _shared_lanes(lines, cx, errs):
-    """lanes 层的竖线按 x 排序、相邻两条夹一道；trimmed 层每条短线的中点落在哪道，哪道就 trim。"""
+def _shared_lanes(lines, H, errs):
+    """lanes 层的竖线 → 泳道：**相邻两条线夹一道**，两条线的两端决定这条泳道的四个角。
+
+    排序按**胶顶那一行**的 x（梯形泳道在胶顶的左右顺序就是用户看到的顺序）。线只沿自身方向延长到
+    y = 0 / y = H 两行（用户通常画在积分窗之间，延长后才是整条边）；两端 x 不同的线写进四个端点键，
+    两端相同的线（竖线）照旧只写 left_cm / right_cm —— 矩形泳道的字典与旧版逐键相同。
+    trim 标记按它所在那一行（不是中点平均后的 x）判道，梯形泳道斜着也一样落对。
+    """
     ls = lines("lanes")
-    horiz = [n for _x, _y, v, n in ls if not v]
+    horiz = [t for t in ls if not t[4]]
     if horiz:
         errs.append("lanes 图层里有 %d 条横线（id %s）—— 泳道分隔线应是竖线"
-                    % (len(horiz), [n["id"] for n in horiz]))
-    xs = sorted(cx(x) for x, _y, v, _n in ls if v)
-    if len(xs) < 2:
-        errs.append("lanes 图层里只有 %d 条竖线 —— 至少两条才夹得出一条泳道" % len(xs))
+                    % (len(horiz), [t[5]["id"] for t in horiz]))
+    edges = []
+    for t in ls:
+        if not t[4]:
+            continue
+        x0, y0, x1, y1 = t[0], t[1], t[2], t[3]
+        if abs(y1 - y0) <= 1e-12:                       # 退化成一个点的线：当竖线用它的 x
+            edges.append((x0, x0))
+            continue
+        k = (x1 - x0) / (y1 - y0)                        # x 随 y 的变化率（胶面 cm / cm）
+        edges.append((x0 - k * y0, x0 + k * (H - y0)))    # y = 0 / y = H 两行上的 x
+    if len(edges) < 2:
+        errs.append("lanes 图层里只有 %d 条竖线 —— 至少两条才夹得出一条泳道" % len(edges))
         return []
-    lanes = [{"left_cm": round(a, 4), "right_cm": round(b, 4), "trimmed": False} for a, b in zip(xs, xs[1:])]
-    for x, _y, vert, n in lines("trimmed"):
+    seps = sorted(((round(a, 4), round(b, 4)) for a, b in edges), key=lambda e: (e[0], e[1]))
+    lanes = []
+    for a, b in zip(seps, seps[1:]):
+        ln = {"left_cm": a[0], "right_cm": b[0], "trimmed": False}
+        if a[1] != a[0] or b[1] != b[0]:                 # 至少一条边是斜的 → 梯形泳道
+            ln.update(left_top_cm=a[0], left_bottom_cm=a[1],
+                      right_top_cm=b[0], right_bottom_cm=b[1])
+        lanes.append(ln)
+    for t in lines("trimmed"):
+        x0, y0, x1, y1, vert, n = t
         if vert:
             errs.append("trimmed 图层里有竖线（id %s）—— 泳道分隔线都留在 lanes 里；要拿掉一条泳道，"
                         "在 trimmed 里画一条短横线落在那条泳道里" % n.get("id"))
             continue
-        hit = next((ln for ln in lanes if ln["left_cm"] < cx(x) < ln["right_cm"]), None)
+        xm, ym = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+        hit = next((ln for ln in lanes if lane_bounds(ln, ym, H)[0] < xm < lane_bounds(ln, ym, H)[1]), None)
         if hit is None:
             errs.append("trimmed 图层里的线（id %s）中点不在任何泳道里 —— 把它拖进要拿掉的那条泳道上方"
                         % n.get("id"))
@@ -459,11 +573,15 @@ def _shared_lanes(lines, cx, errs):
     return lanes
 
 
-def lane_at(model, x_cm):
-    """中点 x（cm）落在哪条泳道（1 起）：闭区间、从左往右第一条；道外 → None。
+def lane_at(model, x_cm, y_cm=None):
+    """点 (x, y) 落在哪条泳道（1 起）：闭区间、从左往右第一条；道外 → None。y 省略 = 胶顶那一行。
 
-    与 from_document 判 marker 条带线同一口径；样品带刻度按它归道（spec §7.5，名字不参与）。"""
-    return next((i for i, ln in enumerate(model["lanes"], 1) if ln["left_cm"] <= x_cm <= ln["right_cm"]), None)
+    与 from_document 判 marker 条带线同一口径；样品带刻度按它归道（spec §7.5，名字不参与）。
+    梯形泳道按该行自己的 L(y)..R(y) 判（刻度 / 条带线在胶面下半时不会因斜边判错道）。"""
+    H = model.get("gel", {}).get("height_cm")
+    return next((i for i, ln in enumerate(model["lanes"], 1)
+                 if (lambda lr: lr[0] <= x_cm <= lr[1])(
+                     lane_bounds(ln, 0.0 if y_cm is None else y_cm, H))), None)
 
 
 def sample_ticks(document):
@@ -487,22 +605,67 @@ def sample_ticks(document):
     return out
 
 
+def _quad_w(ln, where):
+    """泳道在胶顶 / 胶底那一行（where = 上 / 下）的宽度 cm。矩形泳道两行相同。"""
+    if not lane_is_quad(ln):
+        return ln["right_cm"] - ln["left_cm"]
+    if where == "上":
+        return ln["right_cm"] - ln["left_cm"]
+    return float(ln["right_bottom_cm"]) - float(ln["left_bottom_cm"])
+
+
 def validate(model, structural_only=False):
-    """模型的不变式（spec §4.3）→ 错误列表；空 = 合法。structural_only 时跳过依赖 marker 泳道的检查。"""
+    """模型的不变式（spec §4.3）→ 错误列表；空 = 合法。structural_only 时跳过依赖 marker 泳道的检查。
+
+    泳道可以是矩形（两条边竖）也可以是梯形（边斜，四个端点键）。检查顺序：
+    每条泳道的上/下边宽度、整条在胶面外；分隔线两两相交（最多列 5 对）；相邻泳道胶顶、胶底边连续。
+    矩形泳道的消息与旧版逐字相同（旧测试与用户的报错记忆都不变）。"""
     errs = []
     lanes = model["lanes"]
     if not lanes:
         errs.append("一条泳道都没有")
     W = model["gel"]["width_cm"]
+    H = model["gel"]["height_cm"]
     for i, ln in enumerate(lanes, 1):
-        if ln["right_cm"] - ln["left_cm"] < 0.02:
-            errs.append("泳道 %d 的两条边线几乎重合（%.3f cm）—— 删掉多出来的那条线" % (i, ln["right_cm"] - ln["left_cm"]))
-        if ln["right_cm"] <= 0 or ln["left_cm"] >= W:
-            errs.append("泳道 %d（%.2f–%.2f cm）整个在胶面外" % (i, ln["left_cm"], ln["right_cm"]))
+        if not lane_is_quad(ln):
+            w_top = ln["right_cm"] - ln["left_cm"]
+            if w_top < 0.02:
+                errs.append("泳道 %d 的两条边线几乎重合（%.3f cm）—— 删掉多出来的那条线" % (i, w_top))
+            if ln["right_cm"] <= 0 or ln["left_cm"] >= W:
+                errs.append("泳道 %d（%.2f–%.2f cm）整个在胶面外" % (i, ln["left_cm"], ln["right_cm"]))
+            continue
+        l_top, r_top = ln["left_cm"], ln["right_cm"]
+        l_bot, r_bot = ln["left_bottom_cm"], ln["right_bottom_cm"]
+        for where, w in (("上", r_top - l_top), ("下", r_bot - l_bot)):
+            if w < 0.02:
+                errs.append("泳道 %d 的%s边几乎重合（%.3f cm）—— 删掉多出来的那条线" % (i, where, w))
+        if max(r_top, r_bot) <= 0 or min(l_top, l_bot) >= W:
+            errs.append("泳道 %d（胶顶 %.2f–%.2f cm，胶底 %.2f–%.2f cm）整个在胶面外"
+                        % (i, l_top, r_top, l_bot, r_bot))
+    for a, b, y in _edge_crossings(lane_edges(model), H)[:5]:
+        if b == a + 1:
+            errs.append("泳道 %d 的两条边线在胶面内相交（第 %d 与第 %d 条分隔线，y≈%.2f cm）—— "
+                        "删掉多出来的那条线" % (a, a, b, y))
+        else:
+            errs.append("第 %d 与第 %d 条分隔线在胶面内相交（y≈%.2f cm）—— 它们框住的泳道交错了：拖直或删掉其中一条"
+                        % (a, b, y))
+    extra = len(_edge_crossings(lane_edges(model), H)) - 5
+    if extra > 0:
+        errs.append("分隔线相交的地方还有 %d 对，只列前 5 对" % extra)
     for i in range(1, len(lanes)):
-        if lanes[i]["left_cm"] < lanes[i - 1]["right_cm"] - 1e-6:
-            errs.append("泳道 %d 与泳道 %d 重叠（%.2f > %.2f cm）—— 两条泳道的边线交错了"
-                        % (i, i + 1, lanes[i - 1]["right_cm"], lanes[i]["left_cm"]))
+        a, b = lanes[i - 1], lanes[i]
+        if not (lane_is_quad(a) or lane_is_quad(b)):
+            if b["left_cm"] < a["right_cm"] - 1e-6:
+                errs.append("泳道 %d 与泳道 %d 重叠（%.2f > %.2f cm）—— 两条泳道的边线交错了"
+                            % (i, i + 1, a["right_cm"], b["left_cm"]))
+            continue
+        for key, pkey, where in (("left_top_cm", "right_top_cm", "胶顶"),
+                                 ("left_bottom_cm", "right_bottom_cm", "胶底")):
+            prev = float(a.get(pkey, a["right_cm"]))
+            cur = float(b.get(key, b["left_cm"]))
+            if abs(cur - prev) > 1e-6:
+                errs.append("泳道 %d 与泳道 %d 的%s边界不连续：%s %.4f != 上一道的 %s %.4f"
+                            % (i, i + 1, where, key, cur, pkey, prev))
     win = model["window"]
     if win.get("top_cm") is not None and win["top_cm"] >= win["bottom_cm"]:
         errs.append("window 的 top 在 bottom 下面")
@@ -537,8 +700,14 @@ def match_lanes(prev_centres, new_centres, tol=None):
     return [i if i < len(prev) else None for i in range(len(new))]
 
 
-def centres(model):
-    return [round((ln["left_cm"] + ln["right_cm"]) / 2.0, 4) for ln in model["lanes"]]
+def centres(model, y_cm=0.0, height_cm=None):
+    """泳道中心 x（cm）列表：默认取**胶顶那一行**（y = 0），与旧版 `(left+right)/2` 逐位相同。
+
+    y_cm 给出来时按该行的 L(y)..R(y) 取中点（梯形泳道的刻度 / 落位用）；height_cm 默认取模型的胶面高。"""
+    H = height_cm
+    if H is None and "gel" in model:
+        H = model["gel"]["height_cm"]
+    return [round(lane_centre_at(ln, y_cm, H), 4) for ln in model["lanes"]]
 
 
 def lane_names_after(model, prev_centres, prev_names):

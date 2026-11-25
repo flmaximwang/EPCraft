@@ -63,12 +63,15 @@ def _runs(keep):
     return runs
 
 
-def strips(keep, lanes_x_cm, gel_width_cm):
-    """保留的原始号 → 每段 {lanes, src_x0_cm, src_x1_cm}（未裁切胶面的 cm）。
+def strips(keep, lanes_x_cm, gel_width_cm, lanes_x_bottom_cm=None):
+    """保留的原始号 → 每段 {lanes, src_x0_cm, src_x1_cm[, src_x0_bottom_cm, src_x1_bottom_cm]}。
 
     边界一律取**相邻泳道中心的中点**（不是带边、不是固定半间距）：
         左 = 与左边那条（未保留）泳道中心的中点；第 1 条 → 0
         右 = 与右边那条（未保留）泳道中心的中点；最后一条 → gel_width_cm
+    `lanes_x_cm` 是**胶顶那一行**的泳道中心（版式按它排，拼缝也按它算 —— 用户看到的顺序就是这一行）。
+    泳道是梯形时再给 `lanes_x_bottom_cm`（胶底那一行的中心）：每段多写两个 `src_*_bottom_cm`，
+    Figure 按这四个端点在源图里取四边形（未裁切胶面的 cm）。省略 = 矩形泳道，输出与旧版逐键相同。
     """
     if not keep:
         raise RuntimeError("stage 4：keep 为空，没有可裁的泳道")
@@ -79,6 +82,9 @@ def strips(keep, lanes_x_cm, gel_width_cm):
     if ks[0] < 1 or ks[-1] > n:
         raise RuntimeError("stage 4：keep 越界（1–%d）：%s" % (n, ks))
     x = [float(v) for v in lanes_x_cm]
+    xb = [float(v) for v in lanes_x_bottom_cm] if lanes_x_bottom_cm is not None else None
+    if xb is not None and len(xb) != n:
+        raise RuntimeError("stage 4：胶底那一行的泳道中心有 %d 个，胶顶有 %d 个" % (len(xb), n))
     width = float(gel_width_cm)
     out = []
     for run in _runs(ks):
@@ -88,9 +94,15 @@ def strips(keep, lanes_x_cm, gel_width_cm):
         if x1 <= x0:
             raise RuntimeError("stage 4：第 %d–%d 条算出来的段宽 <= 0（%.4f..%.4f cm）"
                                % (first, last, x0, x1))
-        out.append({"lanes": list(run),
-                    "src_x0_cm": round(x0, 6),
-                    "src_x1_cm": round(x1, 6)})
+        seg = {"lanes": list(run), "src_x0_cm": round(x0, 6), "src_x1_cm": round(x1, 6)}
+        if xb is not None:                                   # 梯形：胶底那行的同口径边界
+            b0 = 0.0 if first == 1 else (xb[first - 2] + xb[first - 1]) / 2.0
+            b1 = width if last == n else (xb[last - 1] + xb[last]) / 2.0
+            if b1 <= b0:
+                raise RuntimeError("stage 4：第 %d–%d 条在胶底算出来的段宽 <= 0（%.4f..%.4f cm）"
+                                   % (first, last, b0, b1))
+            seg.update(src_x0_bottom_cm=round(b0, 6), src_x1_bottom_cm=round(b1, 6))
+        out.append(seg)
     return out
 
 

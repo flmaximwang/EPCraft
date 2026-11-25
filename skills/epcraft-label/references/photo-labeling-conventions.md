@@ -160,13 +160,16 @@ marker 标签表、**上一次的泳道中心**（给标签匹配用）、上一
 
 `sync` 读活文档（`document.json`，不需要先存盘），按**图层**绑定，不靠对象名（用户新画的线没名字也算）：
 
-- `lanes` 层的竖线按中点 x 排序，**相邻两条之间就是一条泳道**（相邻泳道共用中间那条线），从左到右编号 1…n；
-  要劈开一条泳道就在中间加一条线，要合并两条就删掉中间那条。
+- `lanes` 层的竖线按**胶顶那一行的 x** 排序，**相邻两条之间就是一条泳道**（相邻泳道共用中间那条线），从左到右编号 1…n；
+  要劈开一条泳道就在中间加一条线，要合并两条就删掉中间那条。线画斜了泳道就是**梯形**：两条分隔线各自
+  沿自己的方向延伸到胶顶 / 胶底，泳道 = 四边形（`left_top_cm` / `left_bottom_cm` / `right_top_cm` /
+  `right_bottom_cm`，`left_cm` / `right_cm` 仍是胶顶那行的值）；剖面每行按那一行的 L(y)..R(y) 积分，
+  Figure 按四边形裁，标签落位用胶顶那行的中心。两条分隔线在胶面内相交 → 报错点名是哪一对，什么都不改。
 - `trimmed` 层里每条线的中点 x 落在哪条泳道里，那条泳道就不进 Figure；同一道放几条都算一次。删掉标记 = 恢复。
 - `window` 层恰好两条横线 → 上 = `top`、下 = `bottom`。超出胶面只提示、按胶面裁。
 - `marker bands` 层的横线名字必须是 `band <MW>`（数字可带小数）。
 - marker 泳道 = **[L, R] 包含全部 band 线中点**的那一条（不存序号，增删泳道后照样找得到）。
-- 线不必横平竖直：竖线取两端 x 的中点，横线取两端 y 的中点。
+- 线不必横平竖直：竖线两端都保留（斜线 = 梯形泳道的一条边，不再压成中点），横线取两端 y 的中点。
 - 位置换算靠 Workbench 那张 `gel` 图的 `xf`；它被非等比缩放过 / 找不到 → 只能重新 render（`gel` 层本来是锁的）。
 
 读不通时**什么都不改**，一次列出全部要改的地方（`Workbench 有 N 处要改（什么都没动）`）：
@@ -177,6 +180,9 @@ marker 标签表、**上一次的泳道中心**（给标签匹配用）、上一
 | `lanes` 图层里有横线 —— 泳道分隔线应是竖线 | 横线画错层了 |
 | `trimmed` 图层里有竖线 | 按旧习惯把泳道线挪进了 `trimmed`；挪回 `lanes`，改在 `trimmed` 里画一条短横线落在那条泳道里 |
 | `trimmed` 图层里的线中点不在任何泳道里 | trim 标记落在最外两条分隔线之外（或正好压在分隔线上）；拖进要拿掉的那条泳道 |
+| 泳道 i 的胶顶 / 胶底边几乎重合 | 梯形泳道有一端被两条分隔线夹成零宽（线画斜了）；拉开那一端 |
+| 泳道 i 的两条边线在胶面内相交 / 第 i 与第 j 条分隔线在胶面内相交 | 两条分隔线交叉了（泳道交错）；拖直或删掉多出来的那条 |
+| 泳道 i 与泳道 j 的胶顶 / 胶底边界不连续 | 相邻两道共用的那条线在某一端被拖开了；让两道的端点对齐 |
 | 泳道 i 的两条边线几乎重合 / 整个在胶面外 | 两条分隔线叠在一起（多复制了一条）；删掉多的那条 |
 | window 应当恰好有两条横线 / top 与 bottom 几乎重合（<0.05 cm）/ top 在 bottom 下面 | 积分窗被删了一条、多了一条或拖反了 |
 | 一条线名叫 'xxx' —— 改名为「band <分子量>」 | band 线名不是 `band 35` 这种格式（含复制出来的无名线） |
@@ -300,6 +306,8 @@ marker 标签表、**上一次的泳道中心**（给标签匹配用）、上一
 **Figure**：
 
 - **保留段**：没 trim 的泳道里，连续的成一段；段边界 = 与相邻（被 trim 的）泳道中心的**中点**，两端到胶边。
+  梯形泳道相接的段是一个**四边形**（上 / 下边各按胶顶 / 胶底那行的边界裁，不是矩形），拼缝仍按原规则留白；
+  梯形程度为 0 时与矩形版逐像素一致。
   段与段之间留 **0.15 cm 白缝**（拼缝披露；没有额外的线）。不拉伸、不上下位移、不调色。
 - **泳道名**：`label lane n` 用**原泳道号**（留下的第 8 道还是 `label lane 8`），Arial 8 pt；
   **按墨迹框摆**：框的底边在胶顶上方 4 pt、框的中线对准泳道中心。角度 0° 时就是「水平居中、基线离胶顶 4 pt」；
@@ -318,6 +326,8 @@ marker 标签表、**上一次的泳道中心**（给标签匹配用）、上一
 - `stack`：每道一行横向曲线，横轴 = 积分窗内的 y，上方标 MW 刻度；每行右侧注满幅灰度级。
 - `strips`：每道一条竖向曲线，纵轴与胶同比例（1 cm = 1 cm），按泳道顺序并排，左边一列 MW 刻度。
 - 曲线画 `ink`；满幅 = max(曲线最高点, 本胶最强样品道的 1/4, 10 × 该道噪声)（空道不会被放大成像有带）；marker 道按自己的最高点画。
+- 梯形泳道的曲线照旧：每一行按该行的 L(y)..R(y) 取平均灰（泳道说明与横轴不变）；只有 `fig.mw.json` 的
+  `lanes[]` 多带四个梯形端点、`notes` 里多一句「泳道 n 是梯形：胶顶 … → 胶底 …」。
   叫出的带有标记，marker 道带标定点。
 
 ## 9. `sync`
@@ -576,7 +586,10 @@ epcraft workbench import fig.vectorcraft --input workbench.json [--no-sync] [--d
   "low_confidence": true,
   "lanes": [
     {"left_cm": 0.1, "right_cm": 0.5, "trimmed": false, "name": "M"},
-    {"left_cm": 0.5, "right_cm": 0.9, "trimmed": false, "name": "WT"}
+    {"left_cm": 0.5, "right_cm": 0.9, "trimmed": false, "name": "WT",
+     "left_top_cm": 0.5, "left_bottom_cm": 0.5, "right_top_cm": 0.9, "right_bottom_cm": 0.95},
+    {"left_cm": 0.9, "right_cm": 1.4, "trimmed": false, "name": "S1",
+     "left_top_cm": 0.9, "left_bottom_cm": 0.95, "right_top_cm": 1.4, "right_bottom_cm": 1.5}
   ],
   "bands": [
     {"mw": 100, "y_cm": 0.8},
@@ -595,7 +608,7 @@ epcraft workbench import fig.vectorcraft --input workbench.json [--no-sync] [--d
 | `window.top_cm` / `bottom_cm` | 所有泳道共用的积分窗；`top < bottom`，都在 `[0, gel.height_cm]` 内。 |
 | `marker_lane` | 1 起，`1 … len(lanes)`。 |
 | `low_confidence` | 低置信标记（字段更名，语义不变）。导出带来源值；导入只在来源为 `true` 时把目标标为低置信，来源为 `false` **不会清掉**目标已有的标记——导入永远不「认证」标定。 |
-| `lanes[]` | 从左到右；相邻泳道共用边界（`lanes[i].left_cm == lanes[i-1].right_cm`，容差 1e-4）；`left/right_cm` 每道宽 ≥ 0.02 cm；至少一条未 trim。`trimmed` 必填布尔；`name` 可省略（省略 = 保留目标文档该道现有的名字），`null` = 占位的 `?`，`""` = 空白道。 |
+| `lanes[]` | 从左到右；相邻泳道共用边界（`lanes[i].left_cm == lanes[i-1].right_cm`，容差 1e-4）；`left/right_cm` 是**胶顶那行**的边界、每道宽 ≥ 0.02 cm；至少一条未 trim。`trimmed` 必填布尔；`name` 可省略（省略 = 保留目标文档该道现有的名字），`null` = 占位的 `?`，`""` = 空白道。**梯形泳道**另带 `left_top_cm` / `left_bottom_cm` / `right_top_cm` / `right_bottom_cm`（四个键要么全给、要么全不给；老文件没有 = 矩形），胶底边也各 ≥ 0.02 cm，相邻泳道的胶顶边、胶底边各自连续（容差 1e-4）。 |
 | `bands[]` | marker 带线，自上而下；`mw > 0`，`y_cm` 严格递增、`mw` 严格递减，不能有重复 y。`mw` 就是 `band <MW>` 线上的数字（§5）。**0 / 1 / 2 条也合法**：标定点少时样品 MW 估计不出（0/1 条）或按两点插值（2 条），照常往返（§10a）。 |
 | `sample_bands[]` | **可选**；导出只在文档有 `sample bands` 图层时出现。每条 `{lane, y_cm}`，`lane` 是 1 起的非 marker 泳道，重复的 y 会去重。省略 = 导入不动刻度；给了就按它重建刻度。 |
 
@@ -607,7 +620,7 @@ epcraft workbench import fig.vectorcraft --input workbench.json [--no-sync] [--d
 
 - 顶层必须是 JSON 对象；`schema` / `version` 精确匹配 v1；必须有 `schema`、`version`、`gel`、`window`、`lanes`、`bands`、`marker_lane`。未知键忽略。
 - 所有数字必须是有限的 JSON number（布尔、NaN、Infinity 都拒绝）。
-- `gel` 尺寸 > 0，且与目标文档相差 ≤ 0.01 cm；`window` 见上；`lanes` 非空、几何连续、至少一条保留；`marker_lane` 在范围内；`bands` 见上（0/1/2 条也接受）；`sample_bands` 的泳道在范围内且不是 marker 道。
+- `gel` 尺寸 > 0，且与目标文档相差 ≤ 0.01 cm；`window` 见上；`lanes` 非空、几何连续（胶顶边与胶底边各自连续）、至少一条保留；梯形端点四个键必须齐（否则报「要么四个都给…」）；任何两条分隔线在胶面内相交都拒绝（在产生任何 op 之前）；`marker_lane` 在范围内；`bands` 见上（0/1/2 条也接受）；`sample_bands` 的泳道在范围内且不是 marker 道。
 - 活文档本身必须读得通（`workbench.from_document`）；读不通就拒绝，绝不在坏文档上「半修」。
 - 有 `sample_bands` **且与文档现有刻度不同**、而文档没有 `peak_auto`（无法把它换算成 override、默认 sync 复现不了）→ 拒绝，什么都不改；刻度没变则允许通过。
 

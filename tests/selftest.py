@@ -833,7 +833,7 @@ def selftest():
     for n in by_x[2:4]:                                  # 泳道 3 的两条分隔线（也是泳道 2 的右线、泳道 4 的左线）
         for a_ in n["kind"]["path"]["subpaths"][0]["anchors"]:
             a_["p"][0] += 0.2 * vc_file.PT_PER_CM
-        n["kind"]["path"]["subpaths"][0]["anchors"][1]["p"][0] += 0.6     # 下端斜 0.6 pt：读中点
+        n["kind"]["path"]["subpaths"][0]["anchors"][1]["p"][0] += 0.6     # 下端斜 0.6 pt：两端都保留
     mark = json.loads(json.dumps(vc_file.lay_children(L["trimmed"])[0]))   # 泳道 2 → trimmed
     mark["id"] = 91000
     dx = (mdl4["lanes"][1]["left_cm"] + mdl4["lanes"][1]["right_cm"]) / 2 * vc_file.PT_PER_CM + gx \
@@ -856,10 +856,18 @@ def selftest():
     got, notes = workbench.from_document(d)
     assert len(got["lanes"]) == 16, len(got["lanes"])
     assert [i for i, ln in enumerate(got["lanes"], 1) if ln["trimmed"]] == [2, 15, 16], got["lanes"]
-    c3 = (got["lanes"][2]["left_cm"] + got["lanes"][2]["right_cm"]) / 2
+    c3 = (got["lanes"][2]["left_cm"] + got["lanes"][2]["right_cm"]) / 2   # 胶顶那行的中心
     c3_0 = (mdl4["lanes"][2]["left_cm"] + mdl4["lanes"][2]["right_cm"]) / 2
-    want = c3_0 + 0.2 + 0.3 / vc_file.PT_PER_CM          # 两条线下端各斜 0.6 pt → 中点各多 0.3 pt
+    want = c3_0 + 0.2                                    # 斜的是下端，胶顶那行不动（旧版读中点会多 0.3 pt）
     assert abs(c3 - want) < 2e-3, (c3, want)
+    # 下端斜了 0.6 pt，两端都留着 → 泳道是梯形：两条边各自沿自己的线延伸到胶底，
+    # 宽度不变（两条线平行平移），胶底边界比胶顶的多出同一个小量。
+    l3 = got["lanes"][2]
+    assert l3["left_cm"] == l3["left_top_cm"] and l3["right_cm"] == l3["right_top_cm"]
+    assert l3["left_bottom_cm"] > l3["left_top_cm"] and l3["right_bottom_cm"] > l3["right_top_cm"]
+    assert abs((l3["right_bottom_cm"] - l3["left_bottom_cm"])
+               - (l3["right_top_cm"] - l3["left_top_cm"])) < 1e-3      # 平行斜线 → 上下同宽
+    assert got["lanes"][1]["right_bottom_cm"] == l3["left_bottom_cm"]   # 共用的那条线，胶底也共用
     assert got["lanes"][1]["right_cm"] == got["lanes"][2]["left_cm"]           # 共用的那条线
     assert abs(got["lanes"][6]["right_cm"] - x_new) < 1e-3 and abs(got["lanes"][7]["left_cm"] - x_new) < 1e-3
     assert [b["mw"] for b in got["bands"]] == [250.0, 50.0, 10.0]
