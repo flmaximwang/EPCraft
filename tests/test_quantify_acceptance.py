@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""selftest_quantify_acceptance — independent acceptance suite for ep-bqv.5 (`quantify`).
+"""test_quantify_acceptance — independent acceptance suite for ep-bqv.5 (`quantify`).
 
 Ticket: ep-bqv.5 "quantify: area to protein mass with out-of-range refusal".
 Contract: docs/specs/ep-craft-densitometry.md §2.7, §2.8, §3.3, §4.6, §5, §7 items 9-11, plus the
@@ -110,8 +110,8 @@ instead of as-typed) catches all 20.  Nothing in this file was tuned to either i
 every assertion cites the spec or the ruling, and every expected number is computed from the
 fixture.
 
-Run: `PYTHONPATH=src python3 -m tests.selftest_quantify_acceptance`
-(`run()` prints `selftest_quantify_acceptance N/N 通过` and returns the number of checks).
+Run: `PYTHONPATH=src python3 -m tests.test_quantify_acceptance`
+(`run()` prints `test_quantify_acceptance N/N 通过` and returns the number of checks).
 """
 import contextlib
 import inspect
@@ -124,7 +124,7 @@ import tempfile
 
 from epcraft import densitometry
 from epcraft import gel_photo
-from . import selftest_densitometry
+from . import test_densitometry
 
 QUANT_KIND = "ep-craft-densitometry-quant"
 
@@ -1118,7 +1118,7 @@ def check_chain_identity_end_to_end():
     direction-neutral form): every standard's mass is its own measured area (identity fit), so
     each in-range sample band must come back equal to its measured area; the out-of-range lane
     gets no numbers; a band-free lane does not break the run."""
-    report = selftest_densitometry._synthetic_report([
+    report = test_densitometry._synthetic_report([
         {"label": "M", "marker": True, "bands": [(1.0, 20.0, 0.03)]},
         {"label": "S1", "bands": [(2.0, 40.0, 0.04)]},
         {"label": "S2", "bands": [(2.0, 80.0, 0.04)]},
@@ -1987,7 +1987,7 @@ def run():
             "quantify 目前仍是占位实现（在范围内的质量没有算出来）：%s" % (str(e) or "NotImplementedError"))
     for check in CHECKS:
         check()
-    print("selftest_quantify_acceptance %d/%d 通过" % (len(CHECKS), len(CHECKS)))
+    print("test_quantify_acceptance %d/%d 通过" % (len(CHECKS), len(CHECKS)))
     return len(CHECKS)
 
 

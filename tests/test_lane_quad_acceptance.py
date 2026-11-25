@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""selftest_lane_quad_acceptance — independent acceptance suite for ep-t27 (trapezoid lanes).
+"""test_lane_quad_acceptance — independent acceptance suite for ep-t27 (trapezoid lanes).
 
 Written from the ticket and the conventions, not from the implementation: every expected number
 below is re-derived here (separator interpolation, midpoint-of-centres seams, pixel-centre
@@ -43,7 +43,7 @@ What is asserted
     empty. A model whose trapezoid degree is 0 (four keys present, both rows equal) produces the
     same report and the same bytes as the plain rectangle.
 
-Run:  PYTHONPATH=src python -m tests.selftest_lane_quad_acceptance
+Run:  PYTHONPATH=src python -m tests.test_lane_quad_acceptance
 """
 import base64
 import copy
@@ -997,7 +997,7 @@ def run():
     """Run the acceptance suite; returns the number of passed checks."""
     for check in CHECKS:
         check()
-    print("selftest_lane_quad_acceptance %d/%d 通过" % (len(CHECKS), len(CHECKS)))
+    print("test_lane_quad_acceptance %d/%d 通过" % (len(CHECKS), len(CHECKS)))
     return len(CHECKS)
 
 

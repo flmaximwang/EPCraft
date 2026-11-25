@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""selftest_dens_plot — independent acceptance suite for the matplotlib `plot-bands`.
+"""test_dens_plot — independent acceptance suite for the matplotlib `plot-bands`.
 
 The renderer is a black box: every check calls the public
 `dens_plot.plot_bands(dens, out, baseline="both", lanes=None, cols=2, width=1440, *, groups=None)`
@@ -28,8 +28,8 @@ What is asserted is the scientific content of the picture:
 Matplotlib is an optional `[plot]` extra; the gateway / base selftest decides whether the
 suites run at all, so this module does not silently skip.
 
-Run:  PYTHONPATH=src python3 -m tests.selftest_dens_plot
-`run()` returns the number of passed checks and prints `selftest_dens_plot N/N 通过`.
+Run:  PYTHONPATH=src python3 -m tests.test_dens_plot
+`run()` returns the number of passed checks and prints `test_dens_plot N/N 通过`.
 """
 import contextlib
 import inspect
@@ -561,8 +561,8 @@ _LANE_SPECS = [
 
 def _dens():
     """Synthetic measured dens with known bands, areas, flags and one non-ASCII label."""
-    from . import selftest_densitometry
-    report = selftest_densitometry._synthetic_report(lanes=_LANE_SPECS)
+    from . import test_densitometry
+    report = test_densitometry._synthetic_report(lanes=_LANE_SPECS)
     dens = densitometry.measure(report)
     for lane in dens["lanes"]:
         if lane["lane"] == 1:
@@ -1558,7 +1558,7 @@ def run():
     _plot()
     for check in CHECKS:
         check()
-    print("selftest_dens_plot %d/%d 通过" % (len(CHECKS), len(CHECKS)))
+    print("test_dens_plot %d/%d 通过" % (len(CHECKS), len(CHECKS)))
     return len(CHECKS)
 
 

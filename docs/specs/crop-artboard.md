@@ -1,6 +1,6 @@
-# Spec: ep-craft — Crop artboard (adjust the crop frame in VectorCraft)
+# Spec: Crop Artboard (Adjust the Crop Frame in VectorCraft)
 
-Status: agreed · Scope: `skills/ep-craft` · Written 2026-10-23 · Builds on `docs/specs/ep-craft-vectorcraft.md`
+Status: implemented · Scope: `src/epcraft` + `skills/epcraft-label` · Written 2026-10-23 · Builds on `docs/specs/vectorcraft.md`
 
 ## 1. Problem
 
@@ -118,4 +118,4 @@ Brightness/contrast, perspective (keystone) correction, a frame with a non-prese
 
 ## 10. Tests
 
-`selftest` (no app): geometry round trip; `read_frame` on synthetic documents (moved, rotated, scaled, distorted, two rects, missing photo); `crop_face` byte-equal to the pre-refactor `gel_face` path; JPEG `add_image` + rectangle clone; `build_document` with a crop spec writes artboard 3 + layers; `plan_sync`/`sync_exec` with the fake port: re-crop emits relink → embed first in the group, unchanged frame emits nothing, old-doc backfill emits the creation sequence. Manual (app): §5 done-when; rotate the frame 1°, sync → gel straightened, one undo step, second sync 0 ops; an old document gains the artboard.
+`tests` (no app): geometry round trip; `read_frame` on synthetic documents (moved, rotated, scaled, distorted, two rects, missing photo); `crop_face` byte-equal to the pre-refactor `gel_face` path; JPEG `add_image` + rectangle clone; `build_document` with a crop spec writes artboard 3 + layers; `plan_sync`/`sync_exec` with the fake port: re-crop emits relink → embed first in the group, unchanged frame emits nothing, old-doc backfill emits the creation sequence. Manual (app): §5 done-when; rotate the frame 1°, sync → gel straightened, one undo step, second sync 0 ops; an old document gains the artboard.

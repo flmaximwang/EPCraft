@@ -1,6 +1,6 @@
-# Spec: ep-craft — Densitometry (quantify protein from an SDS-PAGE gel)
+# Spec: Densitometry (Quantify Protein from an SDS-PAGE Gel)
 
-Status: agreed · Scope: `src/ep_craft` + `skills/ep-craft` · Written 2026-11-23 · Updated 2026-11-24 (ep-bqv.7 errata) · Builds on `docs/specs/ep-craft-gel-prior.md`, `docs/specs/ep-craft-crop-artboard.md`
+Status: implemented · Scope: `src/epcraft` + `skills/epcraft-quantify` · Written 2026-11-23 · Updated 2026-11-24 (ep-bqv.7 errata) · Builds on `docs/specs/gel-prior.md`, `docs/specs/crop-artboard.md`
 
 ## 1. Problem
 
@@ -14,7 +14,7 @@ measure ──► dens.json ──► curve ──► curve.json ──► quant
               ├─► plot-bands (PNG)     └─► plot-curve (PNG) ◄─────┘
 ```
 
-No VectorCraft involvement: everything reads `fig.mw.json` (already on disk after every `render` / `sync`) and writes JSON / PNG. `measure` never launches the app, so the whole chain is offline and testable in `selftest`.
+No VectorCraft involvement: everything reads `fig.mw.json` (already on disk after every `render` / `sync`) and writes JSON / PNG. `measure` never launches the app, so the whole chain is offline and testable in `tests/`.
 
 ## 2. Decisions
 
@@ -27,12 +27,12 @@ No VectorCraft involvement: everything reads `fig.mw.json` (already on disk afte
 7. **Replicates are averaged, never silently merged.** Standard entries with the same mass become one point (`n`, `sd`, `cv_pct`, `lanes`); the curve is fitted on the points. `--drop LANE` excludes a lane (outlier) and keeps it as `used: false` in the JSON, so the plot shows what was dropped.
 8. **Outside the standard range = no number.** A band whose area falls below the smallest / above the largest standard volume gets `mass: null` + `out_of_range: true` + a note; the lane's `mass_total` / `conc` are then `null` too, with `out_of_range_bands` naming them. Same rule as molecular weight in report v2 (`mw_kda: null` + `extrapolated`) — a plausible-looking number outside the curve is the failure mode we are avoiding.
 9. **Standard syntax stays on the command line** — `--std "2=20,3=10,4=5"` (lane=mass, lane's strongest band), `"3:2=10"` (2nd band from the top), `"4:*=5"` (whole lane total), mass in `--unit` (default `ug`). No extra spec file: the whole chain is meant to be runnable in one line, and the resolved points land in `curve.json` where they can be inspected and re-used.
-10. **Plots are standalone PNGs drawn with ImageMagick MVG**, not VectorCraft artboards. Drawing an artboard would need the control port, a document mutation and an undo group for a picture that is *about* the document; MVG + `-draw @file` already works here (verified: `-size 600x400 xc:white -font … -draw @file -depth 8`), and it keeps `plot-*` offline and pixel-testable in `selftest`. Text is **English ASCII only** (`Arial.ttf` through `text_layout.pick_font()`), `µg` → `ug`, because the CJK font is not guaranteed on Linux.
-11. **Everything is a pure function over dicts.** `densitometry.py` has no I/O beyond `json.load` / `json.dump` and no `magick` call; `dens_plot.py` has no math. This keeps the selftests hermetic (synthetic report → analytically known areas) and lets the math be reviewed without the renderer.
+10. **Plots are standalone PNGs**, not VectorCraft artboards (originally ImageMagick MVG in `ep-bqv`, later migrated to optional Matplotlib `[plot]` in `ep-2rb`). Drawing an artboard would need the control port, a document mutation and an undo group for a picture that is *about* the document; standalone rendering keeps `plot-*` offline and pixel-testable in `tests`. Text is **English ASCII only** (`Arial.ttf` through `text_layout.pick_font()`), `µg` → `ug`, because the CJK font is not guaranteed on Linux.
+11. **Everything is a pure function over dicts.** `densitometry/` has no I/O beyond `json.load` / `json.dump` and no renderer call; `plotting/` has no math. This keeps the tests hermetic (synthetic report → analytically known areas) and lets the math be reviewed without the renderer.
 12. **`measure` skips the marker lane and trimmed lanes** — the ladder is not a sample, and a trimmed lane was removed from the Figure on purpose. `--lanes 1-5,9,12` (1-based, same grammar as `lane_select.parse_keep`) overrides that for a specific run; `--include-marker` / `--include-trimmed` override it per class. Both overrides are recorded in `params.lanes` so the JSON says what was measured.
 13. **Not an artboard, not a new report version.** `fig.mw.json` is untouched; `dens.json` / `curve.json` / `quant.json` are new files next to it with their own `kind`. Nothing in the existing `sync` path reads them.
 
-## 3. Commands (`ep-craft densitometry …`, short alias `dens`)
+## 3. Commands (`epcraft densitometry …`, short alias `dens`)
 
 The group is registered as `densitometry` with `aliases=["dens"]`, and both names go into
 `gel_photo.CANVAS_COMMANDS` (the alias must also select the canvas parser).
@@ -40,7 +40,7 @@ The group is registered as `densitometry` with `aliases=["dens"]`, and both name
 ### 3.1 `measure`
 
 ```
-ep-craft densitometry measure REPORT [--out dens.json] [--flank-cm 0.15] [--min-ink 0.5]
+epcraft densitometry measure REPORT [--out dens.json] [--flank-cm 0.15] [--min-ink 0.5]
                                     [--lanes 2-15] [--include-marker] [--include-trimmed]
 ```
 
@@ -49,7 +49,7 @@ ep-craft densitometry measure REPORT [--out dens.json] [--flank-cm 0.15] [--min-
 ### 3.2 `curve`
 
 ```
-ep-craft densitometry curve --dens dens.json --std "2=20,3=10,4=5" [--out curve.json]
+epcraft densitometry curve --dens dens.json --std "2=20,3=10,4=5" [--out curve.json]
                             [--baseline flank|global] [--fit linear|power] [--unit ug]
                             [--drop 4] [--drop 5]
 ```
@@ -59,7 +59,7 @@ ep-craft densitometry curve --dens dens.json --std "2=20,3=10,4=5" [--out curve.
 ### 3.3 `quantify`
 
 ```
-ep-craft densitometry quantify --dens dens.json --curve curve.json [--out quant.json]
+epcraft densitometry quantify --dens dens.json --curve curve.json [--out quant.json]
                                [--load "9=2,10=2"]      # µL loaded, per lane
 ```
 
@@ -68,9 +68,9 @@ ep-craft densitometry quantify --dens dens.json --curve curve.json [--out quant.
 ### 3.4 `plot-bands`, `plot-curve`
 
 ```
-ep-craft densitometry plot-bands --dens dens.json [--out dens.png] [--lanes 2-15]
+epcraft densitometry plot-bands --dens dens.json [--out dens.png] [--lanes 2-15]
                                  [--baseline flank|global|both] [--cols 3] [--width 2400]
-ep-craft densitometry plot-curve --curve curve.json [--quant quant.json] [--out curve.png]
+epcraft densitometry plot-curve --curve curve.json [--quant quant.json] [--out curve.png]
                                  [--width 1600]
 ```
 
@@ -98,7 +98,7 @@ format_quant(quant) -> str
 write_json(obj, path)                                   # UTF-8, ensure_ascii=False, indent=1, trailing newline
 ```
 
-Helpers (also public, so selftest and the plot can use them):
+Helpers (also public, so tests and the plot can use them):
 
 ```python
 walk_window(y, ink, y_band, y_up, y_dn, min_ink, smooth_cm) -> (y0, y1)   # see §4.2
@@ -240,24 +240,23 @@ Both build an MVG script in a `tempfile` file, call `magick -size WxH xc:white -
 
 ## 6. Files
 
-| File | New? | Role |
-|---|---|---|
-| `src/ep_craft/densitometry.py` | new | math: `measure` / `build_curve` / `quantify` / parsing / formatting |
-| `src/ep_craft/dens_plot.py` | new | MVG renderers → PNG |
-| `src/ep_craft/densitometry_cli.py` | new | `densitometry` parser + handlers (argparse only, no math) |
-| `src/ep_craft/selftest_densitometry.py` | new | math suite (synthetic reports with analytically known areas) |
-| `src/ep_craft/selftest_dens_plot.py` | new | pixel tests on the two PNGs |
-| `src/ep_craft/canvas_cli.py` | edit | `add_commands`: register the group |
-| `src/ep_craft/gel_photo.py` | edit | `CANVAS_COMMANDS` gains `densitometry` and `dens` |
-| `src/ep_craft/selftest_cli.py` | edit | parser shape + one-line error boundary for the new commands |
-| `src/ep_craft/selftest.py` | edit | call the two new suites |
-| `skills/ep-craft/SKILL.md`, `README.md` | edit | command table, workflow step, "Not covered" |
-| `skills/ep-craft/references/photo-labeling-conventions.md` | edit | new §14 + module map |
-| `skills/ep-craft/test-prompts.json` | edit | the "no quantification" case gets a real answer |
+| File | Role |
+|---|---|
+| `src/epcraft/densitometry/` | math: `measure` / `build_curve` / `quantify` / parsing / formatting |
+| `src/epcraft/plotting/` | optional Matplotlib `[plot]` renderers → PNG |
+| `src/epcraft/densitometry_cli.py` | `densitometry` parser + handlers (argparse only, no math) |
+| `tests/test_densitometry.py` | math suite (synthetic reports with analytically known areas) |
+| `tests/test_dens_plot.py` | pixel tests on the two PNGs |
+| `src/epcraft/canvas_cli.py` | `add_commands`: register the group |
+| `src/epcraft/gel_photo.py` | `CANVAS_COMMANDS` gains `densitometry` and `dens` |
+| `tests/test_cli.py` | parser shape + one-line error boundary for the new commands |
+| `tests/test_core.py` / `tests/__main__.py` | call the test suites |
+| `skills/epcraft-quantify/SKILL.md`, `README.md` | command table, workflow step, "Not covered" |
+| `skills/epcraft-quantify/references/quantification-conventions.md` | quantification workflow, baseline/fit policy, JSON keys |
 
-## 7. Selftest (analytic, no user files)
+## 7. Tests (analytic, no user files)
 
-Synthetic report v2 built in memory (`_synthetic_report(...)` inside `selftest_densitometry.py`): uniform `y`, `dy = 0.01 cm`, `gray = 200 + slope·y − Σ A_k·exp(−½((y−c_k)/σ_k)²) + deterministic texture`.
+Synthetic report v2 built in memory (`_synthetic_report(...)` inside `tests/test_densitometry.py`): uniform `y`, `dy = 0.01 cm`, `gray = 200 + slope·y − Σ A_k·exp(−½((y−c_k)/σ_k)²) + deterministic texture`.
 
 1. Single Gaussian band, flat background: `area_flank` ≈ `A·σ·√(2π)` within 2 %; `area_global` within 6 % (the top-hat dip is real). The synthetic case is sized so the ink at the window edge is still above `min_ink` (σ = 0.06 cm, `A` = 30) — otherwise the assertion measures the threshold, not the baseline.
 2. Sloping background (40 gray levels over the profile): flank within 2 %, global off by ≥ 10 % — asserts *why* flank exists.
@@ -271,14 +270,14 @@ Synthetic report v2 built in memory (`_synthetic_report(...)` inside `selftest_d
 10. JSON round trip: `write_json` → `load_report`-style read of `dens`/`curve`/`quant` keeps every field; UTF-8, no `\u` escapes.
 11. Idempotence: `measure` twice → byte-identical JSON (no timestamps); `curve` twice → identical.
 
-`selftest_dens_plot.py`: build a 6-band synthetic `dens` and a `curve`, render to a scratch dir, then assert (a) PNG exists with the requested `size`, (b) it is not blank (≥ 2 % of pixels differ from white), (c) sampling the panel's shaded window rows finds the fill colour and sampling rows outside the window finds white/background, (d) `plot-curve` draws the fitted line across the axes (a column inside the range has non-white pixels at the line's row), (e) an `out` path that is a directory or has no `.png` suffix raises `RuntimeError`/`ValueError`, (f) no `.mvg` temp file survives (glob the scratch dir).
+`tests/test_dens_plot.py`: build a 6-band synthetic `dens` and a `curve`, render to a scratch dir, then assert (a) PNG exists with the requested `size`, (b) it is not blank (≥ 2 % of pixels differ from white), (c) sampling the panel's shaded window rows finds the fill colour and sampling rows outside the window finds white/background, (d) `plot-curve` draws the fitted line across the axes (a column inside the range has non-white pixels at the line's row), (e) an `out` path that is a directory or has no `.png` suffix raises `RuntimeError`/`ValueError`, (f) no temp file survives (glob the scratch dir).
 
 ## 8. Docs
 
-- `SKILL.md`: new step between *Profiles* and *Figure export* — "quantify (optional)"; command list; `Not covered` loses "band quantification" and keeps "brightness/exposure correction"; checkpoint lines for the out-of-range and monotonicity errors.
-- `README.md`: the command table gains the five rows; the three-file output note stays (densitometry writes siblings, opt-in).
-- `references/photo-labeling-conventions.md`: new §14 *Densitometry* — baseline choice (why flank is the default, what to look for in `plot-bands`), the windowing rule, the area unit, both fits, out-of-range policy, JSON keys; §12 module map gains the three modules.
-- `test-prompts.json`: the "outside the skill" probe becomes "run `densitometry measure` → `curve` → `quantify`, judge with `plot-bands` / `plot-curve`".
+- `skills/epcraft-quantify/SKILL.md`: quantification workflow (`measure` → `curve` → `quantify`, `plot-bands` / `plot-curve`), checkpoint lines for out-of-range and monotonicity errors.
+- `README.md`: command table and three-file label output note (densitometry writes siblings, opt-in).
+- `skills/epcraft-quantify/references/quantification-conventions.md`: baseline choice (why flank is the default, what to look for in `plot-bands`), the windowing rule, the area unit, both fits, out-of-range policy, JSON keys.
+- `skills/epcraft-quantify/test-prompts.json`: trigger and non-trigger prompts for the quantification workflow.
 
 ## 9. Out of scope
 
@@ -292,4 +291,4 @@ Synthetic report v2 built in memory (`_synthetic_report(...)` inside `selftest_d
 
 1. **§4.7 replicate error bars (settled, `ep-bqv.7`)**: `curve.points[].sd` is the sample SD of replicate **areas** (`volume`, `gray·cm`), not mass. Standard points with `n > 1` therefore carry horizontal **x-error bars** (`±sd` along the area axis, clipped to the main axes, with caps) and no y-error bars. Points with `n = 1` and dropped points carry no bar. Error bars on sample points are out of scope for this epic.
 2. **§4.6 fit direction**: `quantify` evaluates the stored `fit_params` forward (`mass = intercept + slope · area` for `linear`, `mass = scale · area^exponent` for `power`), consistent with §2.6, §5, and §7.8–7.9. Where §4.6 informally referred to the "inverse of the fit", the forward area → mass evaluation is authoritative.
-3. **§7 synthetic Gaussian tolerances**: Under the specified 0.30 cm top-hat baseline, 0.03 cm smoothing, 0.15 cm flank ramp, and midpoint clamp (§§2.3–2.4, 4.2–4.3), a single Gaussian at σ = 0.06 cm, A = 30 integrates to approximately −3.1 % (`area_flank`) and −42.4 % (`area_global`), and two equal Gaussians 0.06 cm apart integrate to approximately −33.3 % each due to midpoint truncation. The algorithm is kept as specified and `selftest_densitometry` assertions are calibrated to those measured bounds (flank within 2 % at σ = 0.03 cm, within 5 % at σ = 0.06 cm; global visibly depressed; close pair asserts the midpoint clamp).
+3. **§7 synthetic Gaussian tolerances**: Under the specified 0.30 cm top-hat baseline, 0.03 cm smoothing, 0.15 cm flank ramp, and midpoint clamp (§§2.3–2.4, 4.2–4.3), a single Gaussian at σ = 0.06 cm, A = 30 integrates to approximately −3.1 % (`area_flank`) and −42.4 % (`area_global`), and two equal Gaussians 0.06 cm apart integrate to approximately −33.3 % each due to midpoint truncation. The algorithm is kept as specified and `tests/test_densitometry.py` assertions are calibrated to those measured bounds (flank within 2 % at σ = 0.03 cm, within 5 % at σ = 0.06 cm; global visibly depressed; close pair asserts the midpoint clamp).

@@ -1,6 +1,6 @@
-# Spec: ep-craft — gel preset as a mandatory prior
+# Spec: Gel Preset as a Mandatory Prior
 
-Status: draft · Scope: `skills/ep-craft` · Written 2026-10-20
+Status: implemented · Scope: `src/epcraft` + `skills/epcraft-label` · Written 2026-10-20
 
 ## 1. Problem
 
@@ -81,7 +81,7 @@ Not stored: anything needed to map back to the photo.
 
 - No preset → both commands exit non-zero with the message `gel preset required (--gel-size FILE)`.
 - Reference photo `IMG_1464 (1).jpeg` with the 15-lane preset: 15 lanes, none dropped, centres within 3 analysis px of today's measured ones; MW report unchanged within 1 kDa.
-- Synthetic gels in `selftest`: existing 5-lane case (faint lane 3, vertical streak) passes with a 5-lane preset; new cases: empty lane, off-centre photo, preset height 8 % larger than the detected box (area follows the preset, a warning is printed; 3 % stays silent); a slab with irregular teeth standing above it (the box top lands on the slab, not inside the teeth).
+- Synthetic gels in `tests/test_core.py`: existing 5-lane case (faint lane 3, vertical streak) passes with a 5-lane preset; new cases: empty lane, off-centre photo, preset height 8 % larger than the detected box (area follows the preset, a warning is printed; 3 % stays silent); a slab with irregular teeth standing above it (the box top lands on the slab, not inside the teeth).
 - A stage never imports from a later stage (checked by a test that greps imports).
 - The record contains no key named like `rect`, `bbox`, `angle` or `scale` and no number needing the original photo; a test checks the key set.
 - Lane selection: `--keep-lanes 3-5` on the reference photo gives one strip with width `3 × pitch` within 1 %, no gap; `--keep-lanes 1,2,8-9` gives two strips, a gap of `splice_gap_cm`, original labels 1,2,8,9, and `crop.strips` matching; a selection without a marker lane and no policy exits non-zero with the message; the MW result for kept lanes equals the full-gel result for the same lanes.

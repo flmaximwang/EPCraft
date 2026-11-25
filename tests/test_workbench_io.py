@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""selftest_workbench_io：Workbench export/import 的纯数据自检（不开 VectorCraft、不读用户文件）。
+"""test_workbench_io：Workbench export/import 的纯数据回归测试（不开 VectorCraft、不读用户文件）。
 
 覆盖：导出字段/活标签名、schema 与有限数字校验、胶面尺寸绑定、泳道计数变化、window/band/trim/
 sample band 的真实几何 roundtrip、lane 名重定、低置信标记跨文档传播，以及旧文档缺 peak_auto 时
@@ -281,15 +281,15 @@ TESTS = (test_export_shape, test_validate_rules, test_unmodified_roundtrip_is_no
          test_import_file_is_valid_json_only)
 
 
-def selftest():
-    """→ 通过的用例数；任何断言失败都抛出去（gel_photo selftest 聚合入口靠异常判失败）。"""
+def run():
+    """→ 通过的用例数；任何断言失败都抛出去（tests 聚合入口靠异常判失败）。"""
     passed = 0
     for fn in TESTS:
         fn()
         passed += 1
-    print("Workbench IO selftest: %d/%d passed" % (passed, len(TESTS)))
+    print("Workbench IO tests: %d/%d passed" % (passed, len(TESTS)))
     return passed
 
 
 if __name__ == "__main__":
-    selftest()
+    run()

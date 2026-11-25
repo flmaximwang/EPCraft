@@ -1,13 +1,13 @@
 """Run the full EPCraft regression suite from a checkout."""
 
-from . import selftest, selftest_cli, selftest_workbench_io, selftest_workflow
+from . import test_cli, test_core, test_workbench_io, test_workflow
 
 
 def main():
-    selftest.selftest()
-    selftest_cli.selftest()
-    selftest_workbench_io.selftest()
-    selftest_workflow.selftest()
+    test_core.run()
+    test_cli.run()
+    test_workbench_io.run()
+    test_workflow.run()
 
 
 if __name__ == "__main__":

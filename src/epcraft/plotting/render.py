@@ -58,7 +58,7 @@ TRACE_TICK_FONT = 16
 TRACE_AXIS_FONT = 17
 TRACE_PANEL_FONT = 17
 
-# plot-curve's palette, retained as module constants: the acceptance selftest samples them.
+# plot-curve's palette, retained as module constants: the acceptance tests sample them.
 POINT_RGB = (37, 78, 150)
 POINT_STROKE_RGB = (17, 45, 104)
 DROP_RGB = (196, 88, 42)

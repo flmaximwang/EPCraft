@@ -301,4 +301,4 @@ def run():
 
 
 if __name__ == "__main__":
-    print("selftest_crop %d 项通过" % run())
+    print("test_crop %d 项通过" % run())

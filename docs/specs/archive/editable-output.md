@@ -1,8 +1,8 @@
-> **Superseded by `docs/specs/ep-craft-vectorcraft.md` (2026-10-22).** The scene file, SVG writer, HTML editor and `export` described here were removed in V6; kept for history only.
+> **Superseded by `docs/specs/vectorcraft.md` (2026-10-22).** The scene file, SVG writer, HTML editor and `export` described here were removed in V6; kept for history only.
 
-# Spec: ep-craft — editable output (scene file, SVG, HTML editor)
+# Spec: Editable Output (Scene File, SVG, HTML Editor)
 
-Status: draft · Scope: `skills/ep-craft` · Written 2026-10-20 · Builds on `docs/specs/ep-craft-gel-prior.md`
+Status: superseded · Scope: `skills/ep-craft` (historical) · Written 2026-10-20 · Built on `docs/specs/gel-prior.md`
 
 ## 1. Problem
 

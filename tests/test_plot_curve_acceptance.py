@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""selftest_plot_curve_acceptance — independent acceptance suite for the matplotlib `plot-curve`.
+"""test_plot_curve_acceptance — independent acceptance suite for the matplotlib `plot-curve`.
 
 The renderer is a black box: every check calls the public `dens_plot.plot_curve(curve, out,
 quant=None, width=1020)` (or the public `dens plot-curve` CLI), captures the Matplotlib Figure
@@ -26,9 +26,9 @@ What is asserted is the scientific content of the picture:
 Matplotlib is an optional `[plot]` extra; the gateway / base selftest decides whether the
 suites run at all, so this module does not silently skip.
 
-Run:  PYTHONPATH=src python3 -m tests.selftest_plot_curve_acceptance
+Run:  PYTHONPATH=src python3 -m tests.test_plot_curve_acceptance
 `run()` returns the number of passed checks and prints
-`selftest_plot_curve_acceptance N/N 通过`.
+`test_plot_curve_acceptance N/N 通过`.
 """
 import contextlib
 import io
@@ -1439,8 +1439,8 @@ def check_nonenglish_sample_labels():
 
 def check_chain_synthetic():
     """measure → curve → plot-curve on a synthetic report keeps the numbers on the picture."""
-    from . import selftest_densitometry
-    report = selftest_densitometry._synthetic_report(
+    from . import test_densitometry
+    report = test_densitometry._synthetic_report(
         lanes=[{"label": "S1", "bands": [(1.2, 30, .05)]},
                {"label": "S2", "bands": [(1.2, 24, .05)]},
                {"label": "S3", "bands": [(1.2, 18, .05)]},
@@ -1502,7 +1502,7 @@ def run():
     _plot()
     for check in CHECKS:
         check()
-    print("selftest_plot_curve_acceptance %d/%d 通过" % (len(CHECKS), len(CHECKS)))
+    print("test_plot_curve_acceptance %d/%d 通过" % (len(CHECKS), len(CHECKS)))
     return len(CHECKS)
 
 

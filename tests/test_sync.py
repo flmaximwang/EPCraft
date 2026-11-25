@@ -665,10 +665,10 @@ def _crop_read():
             # 14) 旧文档（没有 Crop 画板、meta 没有 crop；胶面图是修错位之前、没有 +repage 的旧版裁的）：
             #     照片在、默认参数重裁 ≈ 文档里那张 → backfill op + 新 meta.crop（frame_px = 旧图真正裁到的那块）；
             #     文档里的图对不上 / 照片不在 → 一条提示、没有 op。
-            from . import selftest_crop
+            from . import test_crop
             assert abs(st["angle"]) > 0.5, st["angle"]           # 照片要是歪的，错位才测得出来
             keep = blobs["K"]
-            blobs["K"] = embedded = selftest_crop._old_crop(photo, st["angle"], st["gel_box"], width_cm,
+            blobs["K"] = embedded = test_crop._old_crop(photo, st["angle"], st["gel_box"], width_cm,
                                                             hpx * 2.54 / dpi, dpi)
             sx, sy = crop.legacy_page_shift(st["angle"], st["size0"], st["size1"])
             assert abs(sx) + abs(sy) > 1.0, (sx, sy)
@@ -708,4 +708,4 @@ def _crop_read():
 
 
 if __name__ == "__main__":
-    print("selftest_sync %d 项通过" % run())
+    print("test_sync %d 项通过" % run())

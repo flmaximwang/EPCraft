@@ -5,7 +5,7 @@ import os
 import tempfile
 
 from epcraft import gel_photo
-from .selftest_cli import _FakeClient, _patched, _run
+from .test_cli import _FakeClient, _patched, _run
 from epcraft import canvas_cli
 
 
@@ -139,14 +139,14 @@ def test_workflow_refresh_figure_pixels():
     assert stages._stale_gel_segs(document, {}) == [], "fresh segments should be kept"
 
 
-def selftest():
+def run():
     tests = [test_workflow_parser, test_workflow_export, test_workflow_init,
              test_workflow_stage_isolation, test_workflow_refresh_figure_pixels]
     for test in tests:
         test()
-    print("selftest_workflow %d/%d passed" % (len(tests), len(tests)))
+    print("test_workflow %d/%d passed" % (len(tests), len(tests)))
     return len(tests)
 
 
 if __name__ == "__main__":
-    selftest()
+    run()

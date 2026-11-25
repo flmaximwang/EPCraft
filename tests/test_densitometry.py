@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""selftest_densitometry — analytic checks for the densitometry math (spec §7 items 1-4, 6-8, 10, 11).
+"""test_densitometry — analytic checks for the densitometry math (spec §7 items 1-4, 6-8, 10, 11).
 
-Every report used here is built in memory by `_synthetic_report` (exported: selftest_cli reuses it
+Every report used here is built in memory by `_synthetic_report` (exported: test_cli reuses it
 for the end-to-end CLI run), so no user file is read and no ImageMagick is called.  The gray /
 baseline arrays follow the real pipeline: `profiles.ink_trace` builds the top-hat baseline, so the
 global-baseline numbers below are what a real report would give (the top-hat dips under a band).
 
-`run()` returns the number of passed checks and prints one `selftest_densitometry N/N 通过` line.
+`run()` returns the number of passed checks and prints one `test_densitometry N/N 通过` line.
 """
 import ast
 import json
@@ -1261,7 +1261,7 @@ def run():
               check_format_curve]
     for check in checks:
         check()
-    print("selftest_densitometry %d/%d 通过" % (len(checks), len(checks)))
+    print("test_densitometry %d/%d 通过" % (len(checks), len(checks)))
     return len(checks)
 
 

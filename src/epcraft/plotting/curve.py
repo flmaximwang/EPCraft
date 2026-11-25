@@ -302,7 +302,7 @@ def _sample_bar(axes, sample, box):
 
 
 def curve_layout(curve, quant=None, width=1020):
-    """Geometry of the plot-curve canvas — shared by `plot_curve` and its selftests."""
+    """Geometry of the plot-curve canvas — shared by `plot_curve` and its tests."""
     fit, fn, eqn, r2 = _check_curve(curve)
     try:
         w = int(width)

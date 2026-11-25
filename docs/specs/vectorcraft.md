@@ -1,6 +1,6 @@
-# Spec: ep-craft — VectorCraft as the editing surface
+# Spec: VectorCraft as the Editing Surface
 
-Status: draft, 2026-10-22. Supersedes `docs/specs/ep-craft-editable-output.md` (the HTML editor, SVG writer and `export` go away). Builds on `docs/specs/ep-craft-gel-prior.md` (gel preset, frozen stages, record coordinates).
+Status: implemented · Scope: `src/epcraft` + `skills/epcraft-label` · Written 2026-10-22. Supersedes `docs/specs/archive/editable-output.md` (the HTML editor, SVG writer and `export` were removed). Builds on `docs/specs/gel-prior.md` (gel preset, frozen stages, record coordinates).
 
 ## 0. Why
 
@@ -193,11 +193,11 @@ Only stage 1 (the gel face) still comes from the old pipeline. The Workbench is 
 ## 9. Commands
 
 ```bash
-python3 scripts/gel_photo.py render IMG.jpeg --gel-size data/gel_size.json --markers data/markers.json --preset N \
+epcraft render IMG.jpeg --gel-size data/gel_size.json --markers data/markers.json --preset N \
     --lanes lanes.json [--trim-lanes 1,2] [--dpi 300] [--port 7797] --out fig.vectorcraft
-python3 scripts/gel_photo.py sync fig.vectorcraft [--port 7797] [--dpi 300] [--reset-peaks [N ...]]
-python3 scripts/gel_photo.py probe IMG.jpeg ...    # prints the detection; no files
-python3 scripts/gel_photo.py doctor                # also checks VectorCraft.app and its version
+epcraft sync fig.vectorcraft [--port 7797] [--dpi 300] [--reset-peaks [N ...]]
+epcraft probe IMG.jpeg ...    # prints the detection; no files
+epcraft doctor                # also checks VectorCraft.app and its version
 ```
 
 - `render` writes the document, opens it in VectorCraft, exports `fig.png` and writes `fig.mw.json`. It prints which instance and port the user should keep open.
@@ -213,10 +213,10 @@ python3 scripts/gel_photo.py doctor                # also checks VectorCraft.app
 
 - On the reference photo and the five DGC photos, `render` writes exactly three files. The document opens in VectorCraft 0.14 without dialogs and shows three artboards and the layers in §4.2.
 - `fig.png` has the Figure artboard's physical size within 0.01 cm, and pHYs equals `--dpi`.
-- **Round trip, scripted (selftest, no app):** build a Workbench model → move lane 3's lines by +0.2 cm, delete `band 35`, add one separator line, put one trim mark in `trimmed` → `plan_sync()` gives the expected ops (label moves/creates/deletes, figure segments, MW refit), and leaves user text and style alone.
+- **Round trip, scripted (`tests/test_core.py`, no app):** build a Workbench model → move lane 3's lines by +0.2 cm, delete `band 35`, add one separator line, put one trim mark in `trimmed` → `plan_sync()` gives the expected ops (label moves/creates/deletes, figure segments, MW refit), and leaves user text and style alone.
 - **Round trip, live (manual checklist, recorded in the ticket):** in VectorCraft, drag a lane line, rename a lane label and change its colour, delete a band line → `sync` → the label stays renamed and coloured but re-centres; the MW report and curves change; `fig.png` matches the window.
 - `sync` run twice in a row changes nothing the second time.
-- **Sample band editing (scripted, selftest):** delete one tick in lane 15, draw one in lane 12, drag one → the lane's `peak_overrides` gains `suppress`/`add` like §7.5 says; a rebuilt report drops the deleted band, lists the drawn one with `manual: true` and an MW from its y; lanes without edits still change when the detector inputs change; a second `plan_sync()` on the result is empty.
+- **Sample band editing (scripted, `tests/test_core.py`):** delete one tick in lane 15, draw one in lane 12, drag one → the lane's `peak_overrides` gains `suppress`/`add` like §7.5 says; a rebuilt report drops the deleted band, lists the drawn one with `manual: true` and an MW from its y; lanes without edits still change when the detector inputs change; a second `plan_sync()` on the result is empty.
 - **Sample band editing (live, IMG_1586):** delete the 55.2 kDa call in lane 15 → it is gone from `fig.mw.json`, the terminal table and the MW table; draw a tick where the lane 12 faint band was missed → it appears; both survive a sync that moves an untouched lane.
 - IMG_1496 seeds the marker in lane 1 (V8).
 - `fig.mw.json` profiles have one sample per gel-image row within the window; `gray` matches an independent mean over the same pixels.

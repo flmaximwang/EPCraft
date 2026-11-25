@@ -55,5 +55,5 @@ def cmd_doctor(args):
         print("matplotlib: unavailable (optional) — install 'epcraft[plot]' for densitometry PNGs")
     else:
         print("matplotlib: %s (densitometry plots)" % matplotlib.__version__)
-    print("selftest: 跑 `python3 -m epcraft selftest`（仓库里先设 PYTHONPATH=src；安装后直接跑）验算法（不读用户文件、不开 app）")
+    print("selftest: 跑 `epcraft selftest`（或 `PYTHONPATH=src python3 -m epcraft selftest`）做离线冒烟检查；仓库回归测试跑 `PYTHONPATH=src python3 -m tests`")
     return 1 if bad else 0

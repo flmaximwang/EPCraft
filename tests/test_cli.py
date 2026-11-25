@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""selftest_cli：公开 `epcraft` 命令层自检 —— 不启动 VectorCraft、不读用户文件。
+"""test_cli：公开 `epcraft` 命令层测试 —— 不启动 VectorCraft、不读用户文件。
 
 覆盖：新旧两套 parser 的形状、四个组共用 sync / edit、缺 action 的组报 usage、
 launch 的 connect/open、figure export 的画板选择与输出保护、workbench export/import
 的参数转交，以及 main 的一行错误边界（RuntimeError / OSError / ValueError → 2）。
 
-运行：PYTHONPATH=src python3 -m tests.selftest_cli（在仓库根目录）
+运行：PYTHONPATH=src python3 -m tests.test_cli（在仓库根目录）
 """
 import contextlib
 import io
@@ -344,16 +344,16 @@ def test_densitometry_cli():
     """`densitometry measure` end to end on a synthetic report: the printed table, the written
     dens.json, both aliases, and every refusal path (stale report, --out onto an input, missing
     output dir, bad --lanes) as one `[!] …` stderr line with exit 2."""
-    from . import selftest_densitometry
+    from . import test_densitometry
 
     with tempfile.TemporaryDirectory() as td:
-        rep = selftest_densitometry._synthetic_report([
+        rep = test_densitometry._synthetic_report([
             {"label": "M", "marker": True, "bands": [(1.0, 20.0, 0.03)]},
             {"label": "S1", "bands": [(3.0, 30.0, 0.03), (4.0, 25.0, 0.05)]},
             {"label": None, "bands": []},
         ])
         report = os.path.join(td, "fig.mw.json")
-        selftest_densitometry.densitometry.write_json(rep, report)
+        test_densitometry.densitometry.write_json(rep, report)
         out = os.path.join(td, "fig.dens.json")
 
         rc, stdout, stderr = _run(["densitometry", "measure", report])
@@ -365,7 +365,7 @@ def test_densitometry_cli():
         assert lines[2] == "泳道 3：0 带，面积 0.0 / 0.0 gray·cm", lines[2]
         assert lines[-1] == "[i] 写出 %s" % out, lines[-1]
         assert os.path.isfile(out), out
-        dens = selftest_densitometry.densitometry.load_json(out, "ep-craft-densitometry")
+        dens = test_densitometry.densitometry.load_json(out, "ep-craft-densitometry")
         assert dens["source"]["report"] == report, dens["source"]
         assert [ln["lane"] for ln in dens["lanes"]] == [2, 3], dens["lanes"]
         assert dens["params"]["lanes"] == "all sample lanes, trimmed and marker excluded", dens["params"]["lanes"]
@@ -423,7 +423,7 @@ def test_densitometry_curve_cli():
     """`densitometry curve` end to end: the parser (defaults, repeatable --drop), the printed §5
     table, the curve.json written to the default `fig.curve.json` (chain suffix swapped, ruling
     R12), both aliases, and every refusal path as one `[!] …` stderr line with exit 2."""
-    from . import selftest_densitometry
+    from . import test_densitometry
 
     ap = gel_photo.build_parser(canvas=True)
     a = ap.parse_args(["dens", "curve", "--dens", "fig.dens.json", "--std", "2=20"])
@@ -437,14 +437,14 @@ def test_densitometry_curve_cli():
     assert (a.baseline, a.fit, a.unit, a.out) == ("global", "power", "ng", "c.json")
 
     with tempfile.TemporaryDirectory() as td:
-        rep = selftest_densitometry._synthetic_report([
+        rep = test_densitometry._synthetic_report([
             {"label": "M", "marker": True, "bands": [(1.0, 20.0, 0.03)]},
             {"label": "S1", "bands": [(3.0, 30.0, 0.04)]},
             {"label": "S2", "bands": [(3.0, 60.0, 0.04), (4.5, 20.0, 0.04)]},
             {"label": "S3", "bands": [(3.0, 120.0, 0.04)]},
         ])
         report = os.path.join(td, "fig.mw.json")
-        selftest_densitometry.densitometry.write_json(rep, report)
+        test_densitometry.densitometry.write_json(rep, report)
         rc, stdout, stderr = _run(["dens", "measure", report])
         assert rc == 0 and stderr == "", stderr
         dens = os.path.join(td, "fig.dens.json")
@@ -465,7 +465,7 @@ def test_densitometry_curve_cli():
         assert lines[4] == "[i] 写出 %s" % out, lines[4]
         assert len(lines) == 5, lines
         assert os.path.isfile(out), out
-        curve = selftest_densitometry.densitometry.load_json(out, "ep-craft-densitometry-curve")
+        curve = test_densitometry.densitometry.load_json(out, "ep-craft-densitometry-curve")
         assert curve["version"] == 1 and curve["kind"] == "ep-craft-densitometry-curve"
         assert curve["unit"] == "ug" and curve["baseline"] == "flank" and curve["fit"] == "linear"
         assert curve["source"] == {"dens": dens, "std": "2=24,3=48,4=96", "drop": []}, curve["source"]
@@ -514,7 +514,7 @@ def test_densitometry_curve_cli():
         rc, stdout, stderr = _run(["dens", "curve", "--dens", dens, "--std", "2:*=20,3:*=40,4:*=80",
                                    "--out", os.path.join(td, "whole.curve.json")])
         assert rc == 0 and stderr == "", stderr
-        whole = selftest_densitometry.densitometry.load_json(os.path.join(td, "whole.curve.json"),
+        whole = test_densitometry.densitometry.load_json(os.path.join(td, "whole.curve.json"),
                                                             "ep-craft-densitometry-curve")
         assert abs(whole["points"][1]["volume"] - 8.0) < 0.01, whole["points"][1]
 
@@ -523,7 +523,7 @@ def test_densitometry_curve_cli():
                                    "--baseline", "global", "--out", os.path.join(td, "g.json")])
         assert rc == 0 and stderr == "", stderr
         assert "基线 global" in stdout, stdout
-        global_curve = selftest_densitometry.densitometry.load_json(os.path.join(td, "g.json"),
+        global_curve = test_densitometry.densitometry.load_json(os.path.join(td, "g.json"),
                                                                     "ep-craft-densitometry-curve")
         assert global_curve["baseline"] == "global", global_curve
         assert abs(global_curve["fit_params"]["slope"] - 11.544) < 1e-3, global_curve["fit_params"]
@@ -532,7 +532,7 @@ def test_densitometry_curve_cli():
         assert rc == 0 and stderr == "", stderr
         assert stdout.splitlines()[0].startswith("[标曲] 基线 flank，拟合 power（ng）：mass = "), stdout
         assert stdout.splitlines()[0].endswith("·area^1，r² 1.0000，3 点"), stdout   # 2 dp 方程
-        power = selftest_densitometry.densitometry.load_json(os.path.join(td, "p.json"),
+        power = test_densitometry.densitometry.load_json(os.path.join(td, "p.json"),
                                                              "ep-craft-densitometry-curve")
         assert power["fit_params"]["space"] == "log10" and power["unit"] == "ng", power
 
@@ -545,7 +545,7 @@ def test_densitometry_curve_cli():
         assert dlines[1] == "  96 ug   面积 12（n=1）  （已弃用）", dlines[1]
         assert dlines[-2] == "  注：只有 2 个标准点，r² 不足以说明形状", dlines
         assert dlines[-1].startswith("[i] 写出 "), dlines[-1]
-        dropped = selftest_densitometry.densitometry.load_json(os.path.join(td, "d.json"),
+        dropped = test_densitometry.densitometry.load_json(os.path.join(td, "d.json"),
                                                                "ep-craft-densitometry-curve")
         assert dropped["source"]["drop"] == [4] and dropped["points"][-1]["used"] is False
         assert dropped["fit_params"]["n"] == 2
@@ -632,15 +632,15 @@ def test_public_entry():
 
 # ---------------------------------------------------------------- 入口
 
-def selftest():
+def run():
     tests = [test_parser_hierarchy, test_legacy_parser_unchanged, test_shared_sync_and_edit_dispatch,
              test_error_boundary, test_launch, test_figure_export, test_workbench_io_delegation,
              test_densitometry_cli, test_densitometry_curve_cli, test_public_entry]
     for t in tests:
         t()
-    print("selftest_cli %d/%d 通过" % (len(tests), len(tests)))
+    print("test_cli %d/%d 通过" % (len(tests), len(tests)))
     return len(tests)
 
 
 if __name__ == "__main__":
-    selftest()
+    run()

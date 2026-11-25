@@ -6,7 +6,7 @@
     targets()        模型 + 报告 + 当前标签文字 → 全部 agent 管的对象的规格（spec dict 列表）+ 画板矩形
     build_document() render：新文档，Workbench（用户改的线）+ targets() 的全部对象，一次写成
     plan_sync()      sync：活文档（document.json）+ 新模型 → 最少的操作列表（ops）
-    apply_ops_json() 把 ops 落到文档 JSON 上（selftest 用来验 plan_sync；离线也能用）
+    apply_ops_json() 把 ops 落到文档 JSON 上（tests 用来验 plan_sync；离线也能用）
 V7 再把同一套 ops 翻成控制口命令。render 与 sync 因此不会各算各的。
 
 所有权（spec §4.4，plan_sync 的硬规则）：

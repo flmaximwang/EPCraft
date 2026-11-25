@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""selftest：不读用户文件的算法自检。"""
+"""test_core：不读用户文件的核心算法与文档回归测试。"""
 import ast
 import base64
 import contextlib
@@ -94,7 +94,7 @@ def test_import_direction():
     return bad
 
 
-def selftest():
+def run():
     import tempfile
     ok = 0
 
@@ -1427,37 +1427,37 @@ def selftest():
 
     # 75+) 活文档执行器（V7，sync_exec；假控制口，不开 app）：每种 op 的命令序列、锁定层先解锁后锁回、
     #      新对象起名、剪切组、失败 → 撤销组 cancel 并抛原错、收尾恢复当前层与默认颜色。
-    from . import selftest_sync
-    ok += selftest_sync.run()
-    from . import selftest_crop
-    ok += selftest_crop.run()
+    from . import test_sync
+    ok += test_sync.run()
+    from . import test_crop
+    ok += test_crop.run()
 
     # 77+) 定量链第一段（densitometry；纯数学，假报告）：flank / global 双基线面积、窗口走墨量与
     #     相邻带中点夹紧、flank 斜坡与 fallback、饱和/平顶标记、--lanes 语法、JSON 往返与幂等。
-    from . import selftest_densitometry
-    ok += selftest_densitometry.run()
+    from . import test_densitometry
+    ok += test_densitometry.run()
 
     # 77++) Check the headless band and curve renderers when the plotting extra is installed.
     from importlib.util import find_spec
     if find_spec("matplotlib") is None:
-        print("Densitometry plot selftests skipped — install 'epcraft[plot]' to run them")
+        print("Densitometry plot tests skipped — install 'epcraft[plot]' to run them")
     else:
-        from . import selftest_dens_plot, selftest_plot_curve_acceptance
-        ok += selftest_dens_plot.run()
-        ok += selftest_plot_curve_acceptance.run()
+        from . import test_dens_plot, test_plot_curve_acceptance
+        ok += test_dens_plot.run()
+        ok += test_plot_curve_acceptance.run()
 
     # 77++++) Quantify acceptance: areas to masses with the stored fit, the out-of-range and
     #      non-positive-mass refusals, --load, lane shares, the terminal block and the CLI. Written
     #      independently from the spec and the ticket.
-    from . import selftest_quantify_acceptance
-    ok += selftest_quantify_acceptance.run()
+    from . import test_quantify_acceptance
+    ok += test_quantify_acceptance.run()
 
     # 77+++) Lane-quad acceptance (ep-t27): independent suite for trapezoid lanes — read-back keeps
     #      both ends of a slanted separator, per-row integration, true quad clips with the old seam
     #      rule, crossing refusal, backwards-compatible Workbench IO, fig.mw.json quad lanes, and the
     #      rectangular-output regression captured from the pre-change implementation.
-    from . import selftest_lane_quad_acceptance
-    ok += selftest_lane_quad_acceptance.run()
+    from . import test_lane_quad_acceptance
+    ok += test_lane_quad_acceptance.run()
 
     # 78) 标签角度（V9）：角度是逆时针度（90 = 从下往上读），写进点文字的 xf（绕锚点）；读回同值；
     #     旋转后按**墨迹框**摆位与量页边（竖排的泳道名框底离胶顶 4 pt、框中线=泳道中心，页顶留白
@@ -2378,7 +2378,7 @@ def selftest():
             assert all("25" not in n["name"] for n in band_labels), band_labels
     ok += 1
 
-    print("selftest %d/%d 通过" % (ok, ok))
+    print("test_core %d/%d 通过" % (ok, ok))
     return 0
 
 

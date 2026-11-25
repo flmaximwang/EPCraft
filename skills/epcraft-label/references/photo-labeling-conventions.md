@@ -624,7 +624,7 @@ epcraft workbench import fig.vectorcraft --input workbench.json [--no-sync] [--d
 - 活文档本身必须读得通（`workbench.from_document`）；读不通就拒绝，绝不在坏文档上「半修」。
 - 有 `sample_bands` **且与文档现有刻度不同**、而文档没有 `peak_auto`（无法把它换算成 override、默认 sync 复现不了）→ 拒绝，什么都不改；刻度没变则允许通过。
 
-通过后：来源 `low_confidence: true` 时把目标也标成低置信；按导入的几何生成与 `plan_sync` 同一套 op；重写 `ep-meta.prev_centres_cm` / `lane_names`，使随后默认的 `sync` 不会把导入的泳道名改回去；把导入的 `sample_bands` 相对当前 `peak_auto` 换算成 `peak_overrides`，让默认 `sync` 复现这些刻度；然后按上面的撤销组落盘 / sync。导入一份未改过的导出是 0 个改动（`selftest_workbench_io` 覆盖）。
+通过后：来源 `low_confidence: true` 时把目标也标成低置信；按导入的几何生成与 `plan_sync` 同一套 op；重写 `ep-meta.prev_centres_cm` / `lane_names`，使随后默认的 `sync` 不会把导入的泳道名改回去；把导入的 `sample_bands` 相对当前 `peak_auto` 换算成 `peak_overrides`，让默认 `sync` 复现这些刻度；然后按上面的撤销组落盘 / sync。导入一份未改过的导出是 0 个改动（`test_workbench_io` 覆盖）。
 
 ### 13c. 与其它文件的关系
 
