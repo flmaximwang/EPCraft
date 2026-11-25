@@ -1,6 +1,6 @@
 # Spec: ep-craft — Crop artboard (adjust the crop frame in VectorCraft)
 
-Status: agreed · Scope: `skills/ep-craft` · Written 2026-10-23 · Builds on `specs/ep-craft-vectorcraft.md`
+Status: agreed · Scope: `skills/ep-craft` · Written 2026-10-23 · Builds on `docs/specs/ep-craft-vectorcraft.md`
 
 ## 1. Problem
 

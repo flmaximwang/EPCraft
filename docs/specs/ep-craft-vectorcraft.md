@@ -1,6 +1,6 @@
 # Spec: ep-craft — VectorCraft as the editing surface
 
-Status: draft, 2026-10-22. Supersedes `specs/ep-craft-editable-output.md` (the HTML editor, SVG writer and `export` go away). Builds on `specs/ep-craft-gel-prior.md` (gel preset, frozen stages, record coordinates).
+Status: draft, 2026-10-22. Supersedes `docs/specs/ep-craft-editable-output.md` (the HTML editor, SVG writer and `export` go away). Builds on `docs/specs/ep-craft-gel-prior.md` (gel preset, frozen stages, record coordinates).
 
 ## 0. Why
 

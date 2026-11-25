@@ -1,6 +1,6 @@
 # Spec: ep-craft — 裁切框写成「0° 矩形 + 旋转」，让检查器显示真实角度
 
-Status: implemented 2026-10-31 · Scope: `skills/ep-craft` · Written 2026-10-31 · Builds on `specs/ep-craft-crop-artboard.md`
+Status: implemented 2026-10-31 · Scope: `skills/ep-craft` · Written 2026-10-31 · Builds on `docs/specs/ep-craft-crop-artboard.md`
 
 ## 1. 问题
 
@@ -34,7 +34,7 @@ Status: implemented 2026-10-31 · Scope: `skills/ep-craft` · Written 2026-10-31
 2. **`vc_file.rect()` 不再以「深拷贝模板剪切组 + patch `xf`」作为输出真值。** 模板可以继续用作字段形状的参照，但角度必须是 app 认识的那个字段/那条命令产出的。
 3. **几何不变。** 输出节点仍须是四角 TL TR BR BL、`live.shape == "rectangle"`、`live.w/h` = 两边长、`h/w` = 预设比例。改的只是表示方式；`fig.png` 应与改前逐像素相同。
 4. **读回仍以锚点为准。** `rect_corners` / `crop.read_frame` 继续只读路径锚点，不依赖旋转字段——这样无论 app 用哪种表示存盘，裁切都读得回来。
-5. **`render` 仍然不依赖 app。** `specs/ep-craft-vectorcraft.md` 决策 2：Python 直接写 `.vectorcraft`，app 只负责导出。所以首选**在写文件时就产出 app 认的字段**；只有在测量证明该字段无法由文件写入时才退到「render 打开文档后补一步旋转」。
+5. **`render` 仍然不依赖 app。** `docs/specs/ep-craft-vectorcraft.md` 决策 2：Python 直接写 `.vectorcraft`，app 只负责导出。所以首选**在写文件时就产出 app 认的字段**；只有在测量证明该字段无法由文件写入时才退到「render 打开文档后补一步旋转」。
 6. **标签同名问题已另票处理（ep-vz7，2026-10-31 完成）。** 泳道标签的旋转走 `text.create` + `object.rotate`，0.19 实测果然也带节点层 `bbox_angle:90`；`vc_file.text()` 照同一口径补写，检查器不再报 0°。实测与结论在 `references/vectorcraft.md` §1。
 
 ## 3. 实测（VectorCraft 0.19.0，2026-10-31，控制口 7797）

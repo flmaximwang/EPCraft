@@ -3,7 +3,7 @@
 """selftest_quantify_acceptance — independent acceptance suite for ep-bqv.5 (`quantify`).
 
 Ticket: ep-bqv.5 "quantify: area to protein mass with out-of-range refusal".
-Contract: specs/ep-craft-densitometry.md §2.7, §2.8, §3.3, §4.6, §5, §7 items 9-11, plus the
+Contract: docs/specs/ep-craft-densitometry.md §2.7, §2.8, §3.3, §4.6, §5, §7 items 9-11, plus the
 ticket's acceptance criteria.  This suite is deliberately SEPARATE from the implementation
 change's own selftests: it uses only the public API (`densitometry.quantify`,
 `densitometry.format_quant`, `densitometry.write_json`, `densitometry.load_json`), the public CLI

@@ -4,7 +4,7 @@ densitometry — the offline math of the densitometry chain.
     report v2 (fig.mw.json) ──► measure() ──► dens.json ──► build_curve() ──► curve.json
                                                       └──► quantify() ──► quant.json
 
-Everything is a pure function over dicts (spec `specs/ep-craft-densitometry.md` §2.1-§2.9,
+Everything is a pure function over dicts (spec `docs/specs/ep-craft-densitometry.md` §2.1-§2.9,
 §4.1-§4.6): no VectorCraft, no ImageMagick, no I/O beyond json.load / json.dump.  The CLI owns
 argparse and paths (`densitometry_cli.py`); the plots own matplotlib (`dens_plot.py`).
 
