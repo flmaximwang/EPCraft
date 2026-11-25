@@ -9,6 +9,9 @@ bands — plot-bands: local band-peak traces of a dens.json (spec §4.7).
     Single-lane tiles show all bands in the lane palette and shade each signed integration
     window. Group tiles overlay the selected ``(lane, band)`` traces and mark the window
     endpoints. A third tuple item supplies a concentration for the group's coolwarm scale.
+    A member naming a lane without detected bands (a blank standard lane, §4.5) is drawn on
+    that lane's own profile through the window the group's measured members share, and its
+    legend row reads ``(blank)`` — it has no local peak to name.
 
 The renderer is importable without matplotlib: the Figure classes are loaded lazily by
 ``plot_bands`` itself, and ``band_layout`` only computes geometry.  Output validation (a
@@ -217,6 +220,60 @@ def _rows(lane, window):
 # ---------------------------------------------------------------- group normalisation
 
 
+def _blank_band(dens, lane, lane_no, measured, baseline):
+    """The virtual band a blank group member is traced with (§4.7, §4.5).
+
+    A blank standard lane has no detected band, so `measure` wrote no window, ramp or area.  The
+    member inherits the average window of the group's measured members (per baseline, clamped to
+    the blank lane's own profile) and its ink is rebuilt on the blank lane's own profile with the
+    same flank / global definitions `measure` uses.  The returned dict carries every key
+    `_window`, `_area`, `_ramp_at` and `_trace_for` read, so a blank draws like any other trace.
+    """
+    y, gray, base = densitometry._profile_arrays(lane, lane_no)
+    windows = {}
+    for which, key in (("flank", "window_flank"), ("global", "window_global")):
+        spans = []
+        for other in measured:
+            band = other.get("band") if isinstance(other.get("band"), dict) else {}
+            win = band.get(key)
+            try:
+                spans.append((float(win[0]), float(win[1])))
+            except (TypeError, ValueError, IndexError):
+                continue
+        if not spans:
+            spans = [windows.get("global") or (float(y[0]), float(y[-1]))]
+        mean_c = sum(0.5 * (a + b) for a, b in spans) / len(spans)
+        mean_w = sum(abs(b - a) for a, b in spans) / len(spans)
+        lo, hi = float(y[0]), float(y[-1])
+        y0 = min(hi, max(lo, mean_c - 0.5 * mean_w))
+        y1 = min(hi, max(lo, mean_c + 0.5 * mean_w))
+        if y1 < y0:
+            y0, y1 = y1, y0
+        windows[which] = (y0, y1)
+    y0f, y1f = windows["flank"]
+    y0g, y1g = windows["global"]
+    flank_cm = float((dens.get("params") or {}).get("flank_cm") or densitometry.FLANK_CM)
+    left, right = densitometry._flank_levels(y, gray, y0f, y1f, y[0], y[-1], flank_cm, base)
+    ramp = densitometry._ramp_dict(left, right)
+    ink_f = [densitometry._ramp_at(ramp, value) - g for value, g in zip(y, gray)]
+    ink_g = [b - g for b, g in zip(base, gray)]
+    return {
+        "index": None,
+        "blank": True,
+        "y_cm": round(0.5 * (y0f + y1f), 4),
+        "mw_kda": None,
+        "strongest": False,
+        "window_flank": [round(y0f, 4), round(y1f, 4)],
+        "window_global": [round(y0g, 4), round(y1g, 4)],
+        "area_flank": round(densitometry.area_of(y, ink_f, y0f, y1f), 3),
+        "area_global": round(densitometry.area_of(y, ink_g, y0g, y1g), 3),
+        "ramp": ramp,
+        "clipped": False,
+        "flat_top": False,
+        "notes": ["blank"],
+    }
+
+
 def _pick_band(lane, lane_no, band_index, baseline, group_name):
     """Resolve ``None`` to the strongest band for `baseline`; validate an explicit index."""
     bands = _bands(lane)
@@ -312,13 +369,29 @@ def _normalize_groups(dens, groups, baseline, lanes):
             if lane is None:
                 raise ValueError("group %r 要求泳道 %d，但 dens 只有 %s"
                                  % (name, lane_no, ", ".join(str(n) for n in by_no) or "无"))
-            idx, band = _pick_band(lane, lane_no, raw_band, baseline, name)
+            if raw_band is None and not _bands(lane):
+                # A blank standard lane (§4.5): no detected band and no band selector.  It is a
+                # real member — its own profile is integrated inside the window its measured
+                # peers in this group provide — so the virtual band is filled in after the loop.
+                idx, band, blank = None, None, True
+            else:
+                idx, band = _pick_band(lane, lane_no, raw_band, baseline, name)
+                blank = False
             key = (lane_no, idx)
             if key in seen:
+                if blank:
+                    raise ValueError("group %r 重复选择了泳道 %d 的空白标准道" % (name, lane_no))
                 raise ValueError("group %r 重复选择了泳道 %d 的带 %d" % (name, lane_no, idx))
             seen.add(key)
             members.append({"lane": lane_no, "lane_dict": lane, "band": band,
-                            "index": idx, "concentration": conc})
+                            "index": idx, "concentration": conc, "blank": blank})
+        if all(m["blank"] for m in members):
+            raise ValueError("group %r 的成员全是空白标准道（没有检出带），没有可画的峰" % name)
+        measured = [m for m in members if not m["blank"]]
+        for member in members:
+            if member["blank"]:
+                member["band"] = _blank_band(dens, member["lane_dict"], member["lane"],
+                                             measured, baseline)
         with_conc = sum(1 for m in members if m["concentration"] is not None)
         if with_conc and with_conc != len(members):
             raise ValueError("group %r 的浓度必须全部给出或全部省略（%d/%d 个成员有值）"
@@ -465,7 +538,12 @@ def _band_legend_row(member, display, baseline):
     lane_no = int(member["lane"])
     index = member.get("index")
     lane_band = str(lane_no) if index is None else "%d.%d" % (lane_no, int(index))
-    label = display if display and display != "Lane %d" % lane_no else "Lane %d" % lane_no
+    if member.get("blank"):
+        label = "(blank)"
+    elif display and display != "Lane %d" % lane_no:
+        label = display
+    else:
+        label = "Lane %d" % lane_no
     band = member.get("band") or {}
     mw = band.get("mw_kda")
     mw_text = "-" if mw is None else "%.1f" % float(mw)
@@ -492,8 +570,11 @@ def _band_legend_row(member, display, baseline):
 def _legend_text(member, display, baseline):
     """One legend line: lane, band, English label, MW, area and notable flags."""
     trace = member["traces"]["flank" if baseline in ("flank", "both") else "global"]
-    text = "Lane %d b%d" % (member["lane"], member["index"])
-    if display:
+    if member.get("blank"):
+        text = "Lane %d (blank)" % member["lane"]
+    else:
+        text = "Lane %d b%d" % (member["lane"], member["index"])
+    if display and not member.get("blank"):
         text += " (%s)" % display
     if trace.get("mw") is not None:
         text += " · %.1f kDa" % trace["mw"]
@@ -512,7 +593,7 @@ def _legend_text(member, display, baseline):
         flags.append("flat top")
     if flags:
         text += " · " + ", ".join(flags)
-    if trace.get("notes"):
+    if trace.get("notes") and not member.get("blank"):
         text += " · " + trace["notes"][0]
     return text
 

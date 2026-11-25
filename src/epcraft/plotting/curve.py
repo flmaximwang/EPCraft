@@ -1,11 +1,16 @@
 """
 curve — plot-curve: the standard curve, residuals and samples (spec §4.5/§4.7).
 
-``plot_curve(curve, out, quant=None, width=1020)``
+``plot_curve(curve, out, quant=None, width=1020, *, selected_bands=None)``
     The standard curve (and optional sample markers) with a residual strip that shares the
     area axis.  Replicate bars are horizontal on the area axis because ``curve.points[].sd``
     is the sample SD of replicate areas. Out-of-range samples are marked on the dashed
-    extrapolation at their measured areas.
+    extrapolation at their measured areas.  ``selected_bands`` (an iterable of
+    ``(lane, band)`` pairs) keeps only those sample bands — the unified ``dens plot`` passes
+    the groups it drew so the two pictures agree; ``None`` draws every band of ``quant``.
+
+A standard point whose mass is 0 is a blank standard lane (§4.5): it is drawn at its own
+(near-zero) area, and it carries no relative residual, so the residual strip skips it.
 
 The renderer is importable without matplotlib: the Figure classes are loaded lazily by
 ``plot_curve`` itself, and ``curve_layout`` only computes geometry.  Output validation and
@@ -169,6 +174,68 @@ def _quant_lanes(quant):
     return out
 
 
+def _selected_pairs(selected_bands):
+    """Normalise `selected_bands` → a set of (lane, band) pairs; `None` means every band.
+
+    The CLI passes the ``(lane, band)`` pairs whose local peaks were drawn on the band plot, so
+    the curve picture can show exactly those samples.  A missing band index is `None` (a blank
+    standard lane has no band at all).
+    """
+    if selected_bands is None:
+        return None
+    try:
+        pairs = list(selected_bands)
+    except TypeError:
+        raise ValueError("selected_bands 必须是 (lane, band) 对的序列（收到 %r）"
+                         % (selected_bands,))
+    out = set()
+    for pair in pairs:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            raise ValueError("selected_bands 的每一项必须是 (lane, band)（收到 %r）" % (pair,))
+        lane, band = pair
+        if isinstance(lane, bool):
+            raise ValueError("selected_bands 的泳道号必须是整数（收到 %r）" % (lane,))
+        try:
+            lane_no = int(lane)
+        except (TypeError, ValueError):
+            raise ValueError("selected_bands 的泳道号必须是整数（收到 %r）" % (lane,))
+        if band is None:
+            index = None
+        else:
+            if isinstance(band, bool):
+                raise ValueError("selected_bands 的带号必须是整数或 None（收到 %r）" % (band,))
+            try:
+                index = int(band)
+            except (TypeError, ValueError):
+                raise ValueError("selected_bands 的带号必须是整数或 None（收到 %r）" % (band,))
+        out.add((lane_no, index))
+    return out
+
+
+def _select_quant(quants, selected):
+    """Keep only the selected bands of a `_quant_lanes` result (lanes left empty are dropped)."""
+    if selected is None:
+        return quants
+    out = []
+    for lane, bands in quants:
+        no = int(lane["lane"])
+        keep = []
+        for band in bands:
+            idx = band["index"]
+            if isinstance(idx, bool) or idx is None:
+                key = None
+            else:
+                try:
+                    key = int(idx)
+                except (TypeError, ValueError):
+                    key = None
+            if (no, key) in selected:
+                keep.append(band)
+        if keep:
+            out.append((lane, keep))
+    return out
+
+
 def _used_range(curve, rng):
     """(volume_min, volume_max) of the used standard points: the curve's range, else derived."""
     try:
@@ -301,8 +368,12 @@ def _sample_bar(axes, sample, box):
     return centre_mass, sd
 
 
-def curve_layout(curve, quant=None, width=1020):
-    """Geometry of the plot-curve canvas — shared by `plot_curve` and its tests."""
+def curve_layout(curve, quant=None, width=1020, *, selected_bands=None):
+    """Geometry of the plot-curve canvas — shared by `plot_curve` and its tests.
+
+    `selected_bands` limits the sample markers to those `(lane, band)` pairs (the bands a
+    `dens plot` overlay drew); `None` keeps every band of the quant.
+    """
     fit, fn, eqn, r2 = _check_curve(curve)
     try:
         w = int(width)
@@ -310,7 +381,8 @@ def curve_layout(curve, quant=None, width=1020):
         raise ValueError("width 必须是整数（收到 %r）" % (width,))
     if w < 600:
         raise ValueError("width 必须 ≥ 600 像素（收到 %d）" % w)
-    quants = _quant_lanes(quant) if quant is not None else []
+    quants = _select_quant(_quant_lanes(quant), _selected_pairs(selected_bands)) \
+        if quant is not None else []
     rng = curve.get("range") if isinstance(curve.get("range"), dict) else {}
     vmin, vmax = _used_range(curve, rng)
 
@@ -330,10 +402,16 @@ def curve_layout(curve, quant=None, width=1020):
             if not isinstance(res, dict):
                 raise RuntimeError("curve 的 residuals 里有不是对象的条目")
             try:
-                residuals.append({"volume": float(res["volume"]),
-                                  "rel_pct": float(res["rel_pct"])})
+                volume = float(res["volume"])
             except (KeyError, TypeError, ValueError):
                 raise RuntimeError("curve 的残差缺少数字 volume / rel_pct（收到 %r）" % (res,))
+            if "rel_pct" in res and res["rel_pct"] is None:
+                continue          # a blank standard (mass 0) has no relative residual (§4.5)
+            try:
+                rel_pct = float(res["rel_pct"])
+            except (KeyError, TypeError, ValueError):
+                raise RuntimeError("curve 的残差缺少数字 volume / rel_pct（收到 %r）" % (res,))
+            residuals.append({"volume": volume, "rel_pct": rel_pct})
 
     samples = []
     for lane, bands in quants:
@@ -819,17 +897,22 @@ def _draw_curve_resid(fig, geo, main_ax):
     ax.set_xlim(geo["x_range"])
 
 
-def plot_curve(curve, out, quant=None, width=1020):
+def plot_curve(curve, out, quant=None, width=1020, *, selected_bands=None):
     """Render curve.json — and quant.json's sample markers when given — as a PNG (§4.7).
+
+    `selected_bands` (an iterable of ``(lane, band)`` pairs, keyword-only) limits the sample
+    markers and their label warnings to the bands a `dens plot` overlay actually drew; `None`
+    keeps the whole quant, so the old behaviour is unchanged.
 
     Returns the actual pixel size written.  Missing matplotlib becomes one RuntimeError with
     the ``epcraft[plot]`` install hint, and no output directory is ever created implicitly.
     """
     Figure, FigureCanvasAgg = _load_mpl()
     target = _check_out(out)
-    geo = curve_layout(curve, quant=quant, width=width)
+    geo = curve_layout(curve, quant=quant, width=width, selected_bands=selected_bands)
     if quant is not None:
-        _warn_quant_lane_labels(_quant_lanes(quant))
+        _warn_quant_lane_labels(_select_quant(_quant_lanes(quant),
+                                              _selected_pairs(selected_bands)))
     fig = Figure(figsize=(geo["width"] / float(DPI), geo["height"] / float(DPI)), dpi=DPI)
     FigureCanvasAgg(fig)
     fig.patch.set_facecolor("white")

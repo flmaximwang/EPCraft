@@ -17,6 +17,7 @@ Every step reads the previous step's file, so the chain can be inspected one ste
 ```bash
 epcraft densitometry measure fig.mw.json                   # areas, both baselines
 epcraft densitometry curve --dens fig.dens.json --std "2=20,3=10,4=5"
+epcraft densitometry plot --dens fig.dens.json --curve fig.curve.json   # both PNGs at once
 epcraft densitometry quantify --dens fig.dens.json --curve fig.curve.json [--load "9=2,10=2"]
 epcraft densitometry plot-bands --dens fig.dens.json [--baseline flank|global|both]
 epcraft densitometry plot-curve --curve fig.curve.json [--quant fig.quant.json]
@@ -83,13 +84,16 @@ Both are limits of the algorithm as specified, not bugs to work around: a window
 
 ## 4. Reading `fig.bands.png` / `fig.curve.png`
 
-Both commands render standalone PNGs with headless Matplotlib. Install `epcraft[plot]` for these commands. Figure text is English. A lane name with non-ASCII characters appears as `Lane N`, and the CLI identifies the affected lane in a warning.
+`plot` is the command to use: it renders the band overlay and the curve of one document in a single run, groups the standards from the fit itself (a blank standard lane reads `2 (blank)`) and adds one tile per `--group`. `plot-bands` and `plot-curve` render one of the two pictures on its own, which is what to reach for when only one is wanted or when troubleshooting. All three write headless Matplotlib PNGs. Install `epcraft[plot]` for these commands. Figure text is English. A lane name with non-ASCII characters appears as `Lane N`, and the CLI identifies the affected lane in a warning.
 
 `plot-bands` plots the local trace around each peak against the true migration distance in cm. The vertical axis is the selected baseline minus the measured gray profile. The zero line is common to every trace in a panel, so offsets and slopes in the original baselines do not shift the overlays. Signal amplitudes stay in their original gray units. Single-lane panels shade the signed signal inside each stored window. Group overlays show the peak and window endpoints in the trace color. The table reports each stored area in gray·cm. With `--baseline both`, Flank and Global show the same profile rows for each peak. Each panel marks its own integration endpoints.
 
-By default, the figure groups peaks by lane and includes all bands in the selected lanes. To overlay standard peaks or compare different dilutions of one sample within the same panel, name the groups explicitly.
+By default, the figure groups peaks by lane and includes all bands in the selected lanes. `plot` already draws a `Standards` group named and coloured from the fit (one member per fitted point, `2 (blank)` for a blank standard lane), so its `--group` flags are for the sample series; `plot-bands` has no curve to read, so there the standards group is yours to name.
 
 ```bash
+epcraft dens plot --dens fig.dens.json --curve fig.curve.json \
+    --group 'Sample A (relative)=5:1@1,6:2@0.5,7:1@0.25'
+
 epcraft dens plot-bands --dens fig.dens.json \
     --group 'Standards (mg/mL)=2@0.25,3@0.5,4@1' \
     --group 'Sample A (relative)=5:1@1,6:2@0.5,7:1@0.25'
@@ -103,7 +107,7 @@ Use `lane[:band][@concentration]` for each entry, with band indices counted from
 
 ## 5. Two fits, standard-lane grammar, replicates and drops
 
-Standard lanes are given on the command line only (`--std`), never in a config file: `2=20,3=10,4=5` is `lane=mass`. Without an index the lane's **strongest band** (`strongest`) is used, `3:2=10` is the second band from the top (1-based), and `4:*=5` is the whole lane's total area. The mass unit is `--unit` (default `ug`); it is written to `curve.json`'s `unit` and does not change any number. The lanes named in `--std` must exist in the dens and must not be marker lanes; a lane given twice, a band index out of range and a non-positive mass each produce a one-line error and exit 2.
+Standard lanes are given on the command line only (`--std`), never in a config file: `2=20,3=10,4=5` is `lane=mass`. Without an index the lane's **strongest band** (`strongest`) is used, `3:2=10` is the second band from the top (1-based), and `4:*=5` is the whole lane's total area. The mass unit is `--unit` (default `ug`); it is written to `curve.json`'s `unit` and does not change any number. The lanes named in `--std` must exist in the dens and must not be marker lanes; a lane given twice, a band index out of range and a negative or non-finite mass each produce a one-line error and exit 2.
 
 The two fits (`--fit`):
 
@@ -117,6 +121,8 @@ Parameters are stored to 4 decimals. The statistics are ordinary least squares o
 The statistics exist only when the fit has residual degrees of freedom. With `n <= 2` (two standard points, or two `used` points after replicates collapse) every one of them is `null` and the curve still succeeds — a two-point line is still a line, it just has nothing left over to estimate its own scatter from. Nothing here is ever stored as `NaN` or as a negative SD, and a value that is `null` means "not measurable from this calibration", never "zero".
 
 The curve reads **area → mass**: linear `mass = intercept + slope · area`, power `mass = scale · area^exponent` (`scale = 10^c`). That is the direction `format_curve` prints, the direction `fit_params` is defined in, and the direction `quantify` evaluates (§8); `points[].volume` is the area and `points[].mass` the mass throughout. `quantify` converts areas to masses with the **stored** parameters and never refits, so recomputing the same equation by hand reproduces what is in `quant.json`.
+
+**Blank standard lanes.** `lane=0` makes that lane the zero point of the calibration: mass `0`, no band selected. Such a lane normally has no detected bands at all (an empty well, or one the detector found nothing in), so there is no peak to integrate; `curve` integrates the lane on **its own profile** through a window borrowed from the measured single-band standards of the same `--std` list — the mean centre and the mean width of their `window_<baseline>`, clamped to the blank lane's own `y_cm` range. Both baselines are computed that way (global: `baseline − gray`; flank: the ramp between the flank levels outside the borrowed window), so the number is a real integration of that lane, not a zero filled in by hand. Two things it costs: at least one measured single-band standard (`lane=…` or `lane:N=…`, not `lane:*=…`) must be in the same list to lend the window — a list that is all blank or all whole-lane points is refused with that reason — and the blank point gets **no relative residual** (`rel_pct: null`, printed `—`, no dot in the residual strip), because a residual on zero mass would divide by zero. `--fit power` refuses a blank point outright (`log10(0)` is undefined), so blank standards imply `--fit linear`. Mass 0 is reserved for a lane with no detected bands: a `lane=0` entry whose lane *does* show bands is refused (`curve` names the lane and its band count), because a real peak carrying zero mass would pull the line towards the origin. To keep such a lane in the fit, give it its mass like any other standard, or leave it out.
 
 **Replicates**: standard lanes with the same mass collapse into one point (keeping `n`, `sd`, `cv_pct`, `lanes`, `entries`), and the fit works on points, not lanes. `sd` is the standard deviation of the **area** (the spread of areas between replicate lanes), not of mass; `cv_pct = sd / mean area × 100`. A `cv_pct > 15` goes into `notes`.
 

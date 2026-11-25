@@ -190,7 +190,8 @@ def _add_curve(actions):
     p.add_argument("--dens", required=True, help="dens.json written by `measure`")
     p.add_argument("--std", required=True,
                    help="standard lanes, e.g. 2=20,3:2=10,4:*=5 (lane[:band]=mass; default the "
-                        "lane's strongest band, :* the whole-lane total)")
+                        "lane's strongest band, :* the whole-lane total, mass 0 a blank standard "
+                        "lane — linear fit only)")
     p.add_argument("--out", help="curve.json path (default: fig.dens.json → fig.curve.json)")
     p.add_argument("--baseline", choices=list(densitometry.BASELINES), default="flank",
                    help="baseline column that drives the curve (default %(default)s)")
@@ -340,6 +341,155 @@ def _add_plot_curve(actions):
     p.set_defaults(func=cmd_plot_curve)
 
 
+# ---------------------------------------------------------------- plot (unified, ticket ep-4xa)
+
+def _standards_members(curve):
+    """The Standards group of `plot`, built from the points the fit actually used (ticket ep-4xa).
+
+    Each used point's `entries` names the lanes and bands behind it, so the overlay shows exactly
+    those standards; a dropped point (`used: false`) stays out.  `:*` entries are drawn as the
+    lane's strongest band — there is no local peak to overlay otherwise.
+    """
+    members, seen = [], set()
+    for point in curve.get("points") or []:
+        if not isinstance(point, dict) or point.get("used", True) is False:
+            continue
+        try:
+            mass = float(point["mass"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        for entry in point.get("entries") or []:
+            if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+                continue
+            try:
+                lane = int(entry[0])
+            except (TypeError, ValueError):
+                continue
+            raw_band = entry[1]
+            try:
+                band = None if raw_band in (None, "*") else int(raw_band)
+            except (TypeError, ValueError):
+                continue
+            key = (lane, band)
+            if key in seen:
+                continue
+            seen.add(key)
+            members.append((lane, band, mass))
+    return members
+
+
+def _standards_title(curve):
+    """'Standards (ug)' — the unit only when it is printable ASCII (group names must be)."""
+    unit = curve.get("unit")
+    text = unit.strip() if isinstance(unit, str) else ""
+    if text and text.isascii() and text.isprintable():
+        return "Standards (%s)" % text
+    return "Standards"
+
+
+def _selected_bands(dens, groups, baseline):
+    """The (lane, band) pairs the user groups drew, for `plot-curve`'s sample markers.
+
+    `band is None` resolves to the same band `plot-bands` picks (largest area on the plotted
+    baseline, ties to the lower index) or to `None` for a blank standard lane, which has no band.
+    """
+    key = "area_flank" if baseline in ("flank", "both") else "area_global"
+    by_no = {}
+    for lane in dens.get("lanes") or []:
+        if isinstance(lane, dict) and isinstance(lane.get("lane"), int) \
+                and not isinstance(lane.get("lane"), bool):
+            by_no[int(lane["lane"])] = lane
+    selected = []
+    for _name, members in groups:
+        for member in members:
+            lane_no, band = int(member[0]), member[1]
+            lane = by_no.get(lane_no)
+            if lane is None:
+                continue                       # plot_bands already refused an unknown lane
+            bands = [b for b in (lane.get("bands") or []) if isinstance(b, dict)]
+            if band is not None:
+                pair = (lane_no, int(band))
+            elif not bands:
+                pair = (lane_no, None)         # a blank standard lane has no band to mark
+            else:
+                best = None
+                for entry in bands:
+                    idx = entry.get("index")
+                    if not isinstance(idx, int) or isinstance(idx, bool):
+                        continue
+                    try:
+                        area = float(entry.get(key))
+                    except (TypeError, ValueError):
+                        area = 0.0
+                    rank = (area, -idx)
+                    if best is None or rank > best[0]:
+                        best = (rank, idx)
+                pair = (lane_no, best[1] if best else None)
+            if pair not in selected:
+                selected.append(pair)
+    return selected
+
+
+def cmd_plot(args):
+    """dens.json + curve.json (+ quant.json) → the band overlay AND the curve in one run."""
+    from . import dens_plot
+
+    dens_path = os.path.abspath(args.dens)
+    curve_path = os.path.abspath(args.curve)
+    dens = densitometry.load_json(dens_path, densitometry.KIND)
+    curve = densitometry.load_json(curve_path, dens_plot.CURVE_KIND)
+    quant = None
+    quant_path = None
+    if args.quant is not None:
+        quant_path = os.path.abspath(args.quant)
+        quant = densitometry.load_json(quant_path, dens_plot.QUANT_KIND)
+    bands_out = _bands_path(dens_path, args.bands_out)
+    curve_out = _curve_png_path(curve_path, args.curve_out)
+    if os.path.realpath(bands_out) == os.path.realpath(curve_out):
+        raise ValueError("--bands-out 与 --curve-out 不能是同一个文件（%s）" % bands_out)
+    sources = (dens_path, curve_path, quant_path)
+    _refuse_overwrite(bands_out, sources)
+    _refuse_overwrite(curve_out, sources)
+    standards = (_standards_title(curve), _standards_members(curve))
+    user_groups = [_parse_plot_group(text) for text in args.group] if args.group else []
+    bands_w, bands_h = dens_plot.plot_bands(dens, bands_out, baseline=args.baseline,
+                                            cols=args.cols, width=args.width,
+                                            groups=[standards] + user_groups)
+    selected = None
+    if user_groups and quant is not None:
+        selected = _selected_bands(dens, user_groups, args.baseline)
+    curve_w, curve_h = dens_plot.plot_curve(curve, curve_out, quant=quant,
+                                            width=args.curve_width, selected_bands=selected)
+    print("[i] dens %s：%d 组 → %s（%dx%d 像素，baseline %s）"
+          % (dens_path, 1 + len(user_groups), bands_out, bands_w, bands_h, args.baseline))
+    print("[i] curve %s → %s（%dx%d 像素，fit %s）"
+          % (curve_path, curve_out, curve_w, curve_h, curve.get("fit")))
+    return 0
+
+
+def _add_plot(actions):
+    """`plot` — the band overlay and the curve of one document in a single command."""
+    p = actions.add_parser("plot",
+                           help="Render the band overlay and the standard curve in one run")
+    p.add_argument("--dens", required=True, help="dens.json written by `measure`")
+    p.add_argument("--curve", required=True, help="curve.json written by `curve`")
+    p.add_argument("--quant", help="quant.json written by `quantify`: adds the sample squares")
+    p.add_argument("--group", action="append", metavar="NAME=LANE[:BAND][@CONC],…",
+                   help="extra overlay next to the automatic Standards group (repeatable); omit "
+                        ":band to select by area; a lane with no detected band is a blank standard")
+    p.add_argument("--baseline", choices=["flank", "global", "both"], default="both",
+                   help="baseline correction to display (default %(default)s)")
+    p.add_argument("--cols", type=int, default=2,
+                   help="columns in the band grid (default %(default)s)")
+    p.add_argument("--width", type=int, default=1440,
+                   help="band image width in pixels (default %(default)s)")
+    p.add_argument("--curve-width", type=int, default=1020,
+                   help="curve image width in pixels (default %(default)s)")
+    p.add_argument("--bands-out", help="band PNG (default: <dens stem>.bands.png)")
+    p.add_argument("--curve-out", help="curve PNG (default: <curve stem>.curve.png)")
+    p.set_defaults(func=cmd_plot)
+
+
 # ---------------------------------------------------------------- quantify
 
 def _quant_out_path(curve, out):
@@ -408,6 +558,7 @@ def add_commands(sub):
     actions = group.add_subparsers(dest="action", required=True)
     _add_measure(actions)
     _add_curve(actions)
+    _add_plot(actions)
     _add_plot_bands(actions)
     _add_plot_curve(actions)
     _add_quantify(actions)

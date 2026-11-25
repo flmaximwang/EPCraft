@@ -65,16 +65,22 @@ epcraft densitometry quantify --dens dens.json --curve curve.json [--out quant.j
 
 `--out` default `<curve stem>.quant.json`. Prints the sample table (§5) and the JSON path.
 
-### 3.4 `plot-bands`, `plot-curve`
+### 3.4 `plot`, `plot-bands`, `plot-curve`
 
 ```
+epcraft densitometry plot --dens dens.json --curve curve.json [--quant quant.json]
+                          [--group NAME=LANE[:BAND][@CONC],…] [--baseline flank|global|both]
+                          [--cols 2] [--width 1440] [--curve-width 1020]
+                          [--bands-out bands.png] [--curve-out curve.png]
 epcraft densitometry plot-bands --dens dens.json [--out dens.png] [--lanes 2-15]
                                  [--baseline flank|global|both] [--cols 3] [--width 2400]
 epcraft densitometry plot-curve --curve curve.json [--quant quant.json] [--out curve.png]
                                  [--width 1600]
 ```
 
-Defaults: `plot-bands` → `<dens stem>.bands.png`, `baseline both`, `cols 3`; `plot-curve` → `<curve stem>.curve.png`. `--quant` is optional and only adds the sample markers.
+`plot` is the command to run: one invocation writes both pictures. It always draws a `Standards` group built from the curve's used points — a blank standard lane (mass 0, §4.5) shows there as `(blank)` — and one tile per repeated `--group`; with `--quant`, the curve marks the sample bands those groups drew. `plot-bands` and `plot-curve` render one of the two pictures on its own for standalone use or troubleshooting, and take the same `--group` / `--quant` grammar.
+
+Defaults: `plot` → `<dens stem>.bands.png` + `<curve stem>.curve.png`, `baseline both`, `cols 2`; `plot-bands` → `<dens stem>.bands.png`, `baseline both`, `cols 3`; `plot-curve` → `<curve stem>.curve.png`. `--quant` is optional and only adds the sample markers.
 
 ## 4. Contracts
 
@@ -178,6 +184,7 @@ flank_ramp(y, gray, y0, y1, y_up, y_dn, flank_cm, baseline) -> {"left": [y_c, g]
 - `entries` keeps the original `(lane, band)` per replicate so a later stage (or the user) can trace a point back. `band` is the 1-based `index`, `"*"` for a whole-lane total, or `null` for the lane's strongest band.
 - `used: false` = dropped by `--drop`. Dropped points stay in the JSON and in the plot.
 - `--fit linear` needs ≥ 2 used points with distinct volumes; `--fit power` needs all `volume > 0` and `mass > 0`. Slope ≤ 0 (linear) or `exponent <= 0` (power) → `RuntimeError`("标准点不单调…"), with a hint to run `plot-bands`.
+- `mass 0` is the zero point of a linear fit and is legal only for a **blank standard lane**: a lane with no detected bands. It inherits the average `window_<baseline>` of the measured single-band standards in the same `--std` list, is integrated on its own profile (both baselines), and carries `rel_pct: null` (no residual dot). A lane that does show bands may not take mass 0 (`RuntimeError`), and `--fit power` refuses the point outright (`log10(0)`).
 - `notes` collects: `n < 3` ("只有 %d 个标准点，r² 不足以说明形状"), top-point residual < −10% ("最高标准点比线性低 %.0f%%，可能已饱和；试 --fit power 或 --drop 它"), replicate `cv_pct > 15`.
 
 ### 4.6 `quant.json` (`kind: "ep-craft-densitometry-quant"`)

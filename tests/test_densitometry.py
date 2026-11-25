@@ -839,6 +839,9 @@ def check_curve_parse_std():
     assert std == [(2, None, 20.0), (3, 2, 10.0), (4, "*", 5.0)], std
     assert densitometry.parse_std(" 2 = 1e1 , 3:1=2.5 ") == [(2, None, 10.0), (3, 1, 2.5)]
     assert densitometry.parse_std("5:*=0.5") == [(5, "*", 0.5)]
+    # §4.5: mass 0 is a blank standard lane (a lane with no bands), not a bad number
+    assert densitometry.parse_std("2=0") == [(2, None, 0.0)]
+    assert densitometry.parse_std("2=0,3:*=0") == [(2, None, 0.0), (3, "*", 0.0)]
     # a lane may not be named twice: its mass would be ambiguous
     for bad, want in (
             ("", "空"),
@@ -851,7 +854,6 @@ def check_curve_parse_std():
             ("2:x=20", "1、2"),
             ("2:=20", "冒号后面是空的"),
             ("2=abc", "不是数字"),
-            ("2=0", "正数"),
             ("2=-5", "正数"),
             ("2=nan", "正数"),
             ("2=20,2=20", "出现了两次")):
@@ -1093,7 +1095,8 @@ def check_curve_refusals():
         (dens, [(1, None, 22), (9, None, 42)], "不在 dens 里"),
         (dens, [(1, 2, 22), (2, None, 42)], "只有 1 个带"),
         (dens, [(1, None, 22), (2, None, 42), (3, None, 82), (3, None, 82)], "出现了两次"),
-        (dens, [(1, None, 0), (2, None, 42)], "正数"),
+        # mass 0 只属于没有带的空白标准道（§4.5）；泳道 1 有 1 条带，所以是拒绝
+        (dens, [(1, None, 0), (2, None, 42)], "空白"),
         (dens, [(1, None, 22)], "至少需要 2 个"),
         (_curve_dens([[2.0], [2.0], [2.0]]), [(1, None, 22), (2, None, 42), (3, None, 82)],
          "面积不同"),

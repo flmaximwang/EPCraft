@@ -42,12 +42,12 @@ formatters).  Patching `epcraft.densitometry.measure` still reaches the CLI, bec
 this module's attribute at call time.
 """
 
-from .bands import area_of, flank_ramp, smooth, walk_window
+from .bands import _flank_levels, _ramp_at, _ramp_dict, area_of, flank_ramp, smooth, walk_window
 from .contracts import (BASELINES, CURVE_KIND, CURVE_SUFFIX, DOC_SUFFIX, FITS, FLANK_CM, FUZZ,
                         KIND, MAX_DY_SPREAD, MIN_INK, NO_SCATTER_NOTE, QUANT_KIND, QUANT_SUFFIX,
                         REPORT_PATH_KEY, REPORT_SUFFIX, SKIP_NOTE, SMOOTH_CM, UNITS, VERSION,
                         WINDOW_TEXT)
-from .curve import _linfit, build_curve, format_curve, parse_std
+from .curve import _linfit, _profile_arrays, build_curve, format_curve, parse_std
 from .json_io import load_json, load_report, report_path, write_json
 from .lanes import parse_lanes
 from .layout import _dwidth
@@ -61,5 +61,5 @@ __all__ = [
     "area_of", "build_curve", "flank_ramp", "format_curve", "format_quant", "load_json",
     "load_report", "measure", "parse_lanes", "parse_load", "parse_std", "quantify", "report_path",
     "smooth", "walk_window", "write_json",
-    "_dwidth", "_linfit",
+    "_dwidth", "_flank_levels", "_linfit", "_profile_arrays", "_ramp_at", "_ramp_dict",
 ]

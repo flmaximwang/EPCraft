@@ -25,10 +25,17 @@ no ImageMagick/MVG):
     window. Group tiles overlay the selected ``(lane, band)`` traces and mark the window
     endpoints. A third tuple item supplies a concentration for the group's coolwarm scale.
 
-``plot_curve(curve, out, quant=None, width=1020)``
+``plot_curve(curve, out, quant=None, width=1020, *, selected_bands=None)``
     The standard curve (and optional sample markers) with a residual strip that shares the
     area axis.  Replicate bars are horizontal on the area axis because ``curve.points[].sd``
-    is the sample SD of replicate areas, not of masses.
+    is the sample SD of replicate areas, not of masses.  ``selected_bands`` restricts the
+    sample markers to the given ``(lane, band)`` pairs; the default ``None`` draws them all.
+
+``epcraft dens plot`` (``epcraft.densitometry_cli``) renders both pictures in one run and is
+the command the quantify workflow tells users to run: it builds a ``Standards`` group from
+the used ``curve.points`` (a blank standard lane, §4.5, appears there as ``(blank)``) and
+adds one named group per ``--group``.  ``plot_bands`` / ``plot_curve`` stay available on
+their own for troubleshooting and for callers that only need one picture.
 
 Only ``matplotlib`` is optional.  It is imported lazily inside the two plot functions, so
 ``import epcraft.dens_plot`` and the non-plot CLI commands keep working without the extra;

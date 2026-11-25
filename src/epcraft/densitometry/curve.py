@@ -16,7 +16,8 @@ never a refit.
 import math
 import re
 
-from .contracts import BASELINES, CURVE_KIND, FITS, FUZZ, VERSION
+from .bands import _flank_levels, _ramp_at, _ramp_dict, area_of
+from .contracts import BASELINES, CURVE_KIND, FITS, FLANK_CM, FUZZ, VERSION
 from .values import _area_of, _num, _num_or_none, _runs
 from .layout import _dwidth, _fmt_eq, _fmt_fixed, _fmt_signed, _fmt_trim, _pad_left, _pad_right
 
@@ -24,11 +25,11 @@ def parse_std(text):
     """'2=20,3:2=10,4:*=5' → [(2, None, 20.0), (3, 2, 10.0), (4, '*', 5.0)] (§2.9).
 
     LANE[[:INDEX]|[:*]]=MASS, comma separated: no suffix = the lane's strongest band (`None`),
-    `:i` = the i-th band from the top (1-based `index`), `:*` = the whole-lane total.  MASS is a
-    positive number (decimal or scientific) and whitespace around a token is tolerated.  Every bad
-    input is one RuntimeError naming `--std` and the offending token: empty text, a token without
-    `=`, a lane / index that is not a positive integer, a mass that is not a positive number, and
-    the same lane named twice.
+    `:i` = the i-th band from the top (1-based `index`), `:*` = the whole-lane total.  MASS is 0
+    (a blank standard lane, §4.5) or a positive number (decimal or scientific) and whitespace
+    around a token is tolerated.  Every bad input is one RuntimeError naming `--std` and the
+    offending token: empty text, a token without `=`, a lane / index that is not a positive
+    integer, a negative or non-finite mass, and the same lane named twice.
     """
     raw_text = "" if text is None else str(text)
     if not raw_text.strip():
@@ -66,8 +67,9 @@ def parse_std(text):
             mass = float(mass_text.strip())
         except (TypeError, ValueError):
             raise RuntimeError("--std 里 %r 的质量不是数字：%r" % (token, mass_text.strip()))
-        if not math.isfinite(mass) or mass <= 0.0:
-            raise RuntimeError("--std 里 %r 的质量必须是正数" % token)
+        if not math.isfinite(mass) or mass < 0.0:
+            raise RuntimeError("--std 里 %r 的质量必须是 0（空白标准道）或正数（收到 %r）"
+                               % (token, mass_text.strip()))
         if lane in seen:
             raise RuntimeError("--std 里泳道 %d 出现了两次（一个泳道只能给一个质量）" % lane)
         seen.add(lane)
@@ -95,21 +97,23 @@ def _curve_lanes(dens):
         by_no[no] = lane
     return by_no
 
-def _std_area(lane, lane_no, band, baseline):
-    """One `--std` entry → its area on the chosen baseline (§4.5 `entries` keeps `band` as typed).
+def _std_band(lane, lane_no, band):
+    """One `--std` band selector → (1-based index, band dict): None = the lane's strongest band.
 
-    `band` is None (the lane's strongest band, resolved here), "*" (the whole-lane total) or a
-    1-based index; the returned area is always a single band's `area_<baseline>` or, for "*", the
-    lane's `area_<baseline>` — never a sum computed here.
+    A lane with no detected bands has no band to name.  `--std` either takes the whole lane with
+    `:*` or marks the lane blank with mass 0 and no band selector (§4.5); an explicit band index
+    on such a lane is refused with a message that says so.
     """
     bands = lane.get("bands") or []
     if not isinstance(bands, list):
         raise RuntimeError("泳道 %d 的 bands 不是列表" % lane_no)
-    if band == "*":
-        return _area_of(lane, lane_no, "整条泳道", baseline)
     if not bands:
-        raise RuntimeError("标准道泳道 %d 没有带（--std 写成 %d:*=质量 取整条泳道）"
-                           % (lane_no, lane_no))
+        if band is None:
+            raise RuntimeError("标准道泳道 %d 没有带（--std 写成 %d:*=质量 取整条泳道）"
+                               % (lane_no, lane_no))
+        raise RuntimeError("标准道泳道 %d 没有带，不能选第 %s 个带（--std 写成 %d=0 当空白标准道，"
+                           "或 %d:*=质量 取整条泳道）"
+                           % (lane_no, band, lane_no, lane_no))
     if band is None:
         index = next((i for i, b in enumerate(bands, 1)
                       if isinstance(b, dict) and b.get("strongest")), None)
@@ -126,7 +130,81 @@ def _std_area(lane, lane_no, band, baseline):
     band_dict = bands[index - 1]
     if not isinstance(band_dict, dict):
         raise RuntimeError("泳道 %d 的第 %d 个带不是对象" % (lane_no, index))
+    return index, band_dict
+
+
+def _std_area(lane, lane_no, band, baseline):
+    """One `--std` entry → its area on the chosen baseline (§4.5 `entries` keeps `band` as typed).
+
+    `band` is None (the lane's strongest band, resolved here), "*" (the whole-lane total) or a
+    1-based index; the returned area is always a single band's `area_<baseline>` or, for "*", the
+    lane's `area_<baseline>` — never a sum computed here.  A blank standard lane (no detected
+    bands, mass 0) is integrated by `_blank_area` before this is called.
+    """
+    bands = lane.get("bands") or []
+    if not isinstance(bands, list):
+        raise RuntimeError("泳道 %d 的 bands 不是列表" % lane_no)
+    if band == "*":
+        return _area_of(lane, lane_no, "整条泳道", baseline)
+    index, band_dict = _std_band(lane, lane_no, band)
     return _area_of(band_dict, lane_no, "第 %d 个带" % index, baseline)
+
+
+def _profile_arrays(lane, lane_no):
+    """(y_cm, gray, baseline_global) of one dens lane as float lists (the §4.1 profile)."""
+    prof = lane.get("profile")
+    if not isinstance(prof, dict):
+        raise RuntimeError("泳道 %d 没有 profile（dens.json 由 measure 生成）" % lane_no)
+    try:
+        y = [float(v) for v in prof["y_cm"]]
+        gray = [float(v) for v in prof["gray"]]
+        base = [float(v) for v in prof["baseline_global"]]
+    except (KeyError, TypeError, ValueError):
+        raise RuntimeError("泳道 %d 的 profile 缺少数字 y_cm / gray / baseline_global" % lane_no)
+    if not y or len(y) != len(gray) or len(y) != len(base):
+        raise RuntimeError("泳道 %d 的 profile 三条数组长度不一致（%d / %d / %d）"
+                           % (lane_no, len(y), len(gray), len(base)))
+    return y, gray, base
+
+
+def _blank_window(windows, y):
+    """The window a blank standard lane inherits, clamped to its own profile (§4.5).
+
+    `windows` are the `window_<baseline>` pairs of the measured single-band standards: the blank
+    lane has no peak to walk, so it is integrated where those standards' bands sit — at their
+    average centre and average width.  Returns (y0, y1) inside [y[0], y[-1]].
+    """
+    if not windows:
+        raise RuntimeError("curve：空白标准道需要至少一个非空白的单带标准道来提供窗口")
+    mean_c = sum(0.5 * (a + b) for a, b in windows) / len(windows)
+    mean_w = sum(abs(b - a) for a, b in windows) / len(windows)
+    lo, hi = float(y[0]), float(y[-1])
+    y0 = min(hi, max(lo, mean_c - 0.5 * mean_w))
+    y1 = min(hi, max(lo, mean_c + 0.5 * mean_w))
+    if y1 < y0:
+        y0, y1 = y1, y0
+    return y0, y1
+
+
+def _blank_area(dens, lane, lane_no, windows, baseline):
+    """A blank standard lane's area: its own profile integrated inside the inherited window.
+
+    The lane has no detected bands, so `measure` wrote neither a window nor an area for it.  The
+    ink is built on the blank lane's own profile with the same flank / global definition `measure`
+    uses (`_flank_levels` + `_ramp_dict` for flank, the profile's `baseline_global` for global), so
+    the number is comparable with the real standard bands and the blank point can anchor the curve
+    at mass 0 (§4.5).
+    """
+    y, gray, base = _profile_arrays(lane, lane_no)
+    y0, y1 = _blank_window(windows, y)
+    if baseline == "flank":
+        flank_cm = float((dens.get("params") or {}).get("flank_cm") or FLANK_CM)
+        left, right = _flank_levels(y, gray, y0, y1, y[0], y[-1], flank_cm, base)
+        ramp = _ramp_dict(left, right)
+        ink = [_ramp_at(ramp, value) - g for value, g in zip(y, gray)]
+    else:
+        ink = [b - g for b, g in zip(base, gray)]
+    return area_of(y, ink, y0, y1)
 
 
 def _linfit(xs, ys):
@@ -227,7 +305,7 @@ def build_curve(dens, std, unit="ug", fit="linear", baseline="flank", drop=(),
     if not isinstance(std, (list, tuple)) or not std:
         raise RuntimeError("curve：--std 是空的（没有标准道就没有曲线）")
     by_no = _curve_lanes(dens)
-    entries, std_lanes = [], set()
+    entries, std_lanes, specs = [], set(), []
     for item in std:
         if not isinstance(item, (list, tuple)) or len(item) != 3:
             raise RuntimeError("curve：标准道条目不是 (lane, band, mass)：%r" % (item,))
@@ -250,11 +328,51 @@ def build_curve(dens, std, unit="ug", fit="linear", baseline="flank", drop=(),
             mass = float(mass_value)
         except (TypeError, ValueError):
             raise RuntimeError("curve：泳道 %d 的质量不是数字（收到 %r）" % (no, mass_value))
-        if not math.isfinite(mass) or mass <= 0.0:
-            raise RuntimeError("curve：泳道 %d 的质量必须是正数（收到 %r）" % (no, mass_value))
-        area = _std_area(lane, no, band, baseline)
+        if not math.isfinite(mass) or mass < 0.0:
+            raise RuntimeError("curve：泳道 %d 的质量必须是 0（空白标准道）或正数（收到 %r）"
+                               % (no, mass_value))
+        # A blank standard lane (§4.5): mass 0 on a lane with no detected bands.  `measure` stored
+        # neither a window nor an area for it, so it is integrated below on its own profile inside
+        # the window its measured peers provide.  A lane that does show bands is not blank — a
+        # band there would be a real peak carrying mass 0, which bends the line towards the origin.
+        lane_bands = lane.get("bands")
+        if mass == 0.0 and lane_bands:
+            if not isinstance(lane_bands, list):
+                raise RuntimeError("泳道 %d 的 bands 不是列表" % no)
+            raise RuntimeError("curve：泳道 %d 的质量是 0，但这条泳道检出了 %d 条带；质量 0 只能给"
+                               "没有带的标准道（空白标准道），这条泳道要按普通标准道给质量"
+                               % (no, len(lane_bands)))
+        blank = mass == 0.0 and band is None and not lane_bands
+        specs.append({"lane": no, "band": band, "mass": mass,
+                      "lane_dict": lane, "blank": blank})
         std_lanes.add(no)
-        entries.append({"lane": no, "band": band, "mass": mass, "volume": area})
+
+    # The blank lanes inherit the average window of the measured single-band standards, on the
+    # same baseline the curve is fitted on (their own peaks do not exist to walk).
+    windows = []
+    blank_nos = [s["lane"] for s in specs if s["blank"]]
+    if blank_nos:
+        for spec in specs:
+            if spec["blank"] or spec["band"] == "*":
+                continue
+            index, src_band = _std_band(spec["lane_dict"], spec["lane"], spec["band"])
+            win = src_band.get("window_" + baseline)
+            try:
+                windows.append((float(win[0]), float(win[1])))
+            except (TypeError, ValueError, IndexError):
+                raise RuntimeError("curve：标准道泳道 %d 的带 %d 没有 window_%s（dens.json 由 measure "
+                                   "生成）" % (spec["lane"], index, baseline))
+        if not windows:
+            raise RuntimeError("curve：空白标准道（泳道 %s）需要至少一个非空白的单带标准道提供窗口；"
+                               "--std 里只有空白道或整道点" % _runs(blank_nos))
+
+    for spec in specs:
+        if spec["blank"]:
+            area = _blank_area(dens, spec["lane_dict"], spec["lane"], windows, baseline)
+        else:
+            area = _std_area(spec["lane_dict"], spec["lane"], spec["band"], baseline)
+        entries.append({"lane": spec["lane"], "band": spec["band"],
+                        "mass": spec["mass"], "volume": area})
 
     unknown = [no for no in dropped if no not in std_lanes]
     if unknown:
@@ -287,9 +405,9 @@ def build_curve(dens, std, unit="ug", fit="linear", baseline="flank", drop=(),
     if not used:
         raise RuntimeError("curve：--drop 把所有标准点都弃用了（至少留 2 个能拟合的点）")
     _require_two_points(used, fit)
-    for point in used:
-        if point["mass"] <= 0.0:                     # rel_pct divides by it; parse_std refuses it
-            raise RuntimeError("curve：标准点的质量必须 > 0（收到 %r）" % (point["mass"],))
+    # A blank standard point (mass 0) is legal and anchors the line at zero; the relative
+    # residual is undefined for it, so the residual loop below writes `rel_pct: null`.  Only a
+    # power fit needs strictly positive masses, checked in its own branch.
 
     if fit == "linear":
         line = _linfit([p["volume"] for p in used], [p["mass"] for p in used])
@@ -311,6 +429,11 @@ def build_curve(dens, std, unit="ug", fit="linear", baseline="flank", drop=(),
                       "sxx": _num_or_none(line["sxx"], 4) if stats_ok else None,
                       "mean_x": _num_or_none(line["mx"], 4) if stats_ok else None}
     else:
+        for point in used:
+            if point["mass"] <= 0.0:
+                raise RuntimeError("curve：power 拟合要求标准点质量 > 0（泳道 %s 的质量是 %g）；"
+                                   "质量 0 的空白标准道只能用 --fit linear"
+                                   % ("/".join(str(v) for v in point["lanes"]), point["mass"]))
         for point in used:
             if point["volume"] <= 0.0:
                 raise RuntimeError("curve：power 拟合要求面积 > 0（泳道 %s 的面积是 %.3f）"
@@ -348,6 +471,12 @@ def build_curve(dens, std, unit="ug", fit="linear", baseline="flank", drop=(),
             predicted = intercept + slope * point["volume"]
         else:
             predicted = (10.0 ** log_c) * point["volume"] ** exponent
+        if point["mass"] == 0.0:
+            # A blank standard has no relative residual: `rel_pct` divides by its mass (§4.5).
+            raw_rel.append(None)
+            residuals.append({"mass": shown["mass"], "volume": shown["volume"],
+                              "predicted_mass": _num(predicted, 3), "rel_pct": None})
+            continue
         rel = (predicted - point["mass"]) / point["mass"] * 100.0     # note thresholds use this
         raw_rel.append(rel)
         residuals.append({"mass": shown["mass"], "volume": shown["volume"],
@@ -362,7 +491,7 @@ def build_curve(dens, std, unit="ug", fit="linear", baseline="flank", drop=(),
     notes = []
     if len(shown_used) < 3:
         notes.append("只有 %d 个标准点，r² 不足以说明形状" % len(shown_used))
-    if fit == "linear" and raw_rel and raw_rel[-1] < -10.0:
+    if fit == "linear" and raw_rel and raw_rel[-1] is not None and raw_rel[-1] < -10.0:
         notes.append("最高标准点比线性低 %.0f%%，可能已饱和；试 --fit power 或 --drop 它"
                      % (-raw_rel[-1]))
     for point, shown in zip(raw, points):
@@ -426,8 +555,12 @@ def format_curve(curve):
             else "（n=%d）" % n
         if point.get("used"):
             residual = residual_at.get(id(point))
-            column = ("残差 %s%%" % _fmt_signed(residual.get("rel_pct"), 1)
-                      if residual else "残差 ?")
+            if not residual:
+                column = "残差 ?"
+            elif residual.get("rel_pct") is None:  # a blank standard (mass 0) has no residual
+                column = "残差 —"
+            else:
+                column = "残差 %s%%" % _fmt_signed(residual.get("rel_pct"), 1)
         else:
             column = "（已弃用）"
         rows.append(("%s %s" % (_fmt_trim(point.get("mass"), 3), unit),
