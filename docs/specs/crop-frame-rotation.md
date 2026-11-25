@@ -70,7 +70,7 @@ Status: implemented 2026-10-31 · Scope: `src/epcraft` + `skills/epcraft-label` 
 2. `fig.png` 与改前逐像素相同（几何没动，只是换了表示）。
 3. 在 app 里存盘、关掉、重新打开该文件，角度读数不变。
 4. `sync` 立刻跑 = 0 ops。
-5. `tests/test_crop.py` 新增一条：写出的矩形节点里，角度可由 app 字段读出，且值等于 `atan2` 算出的角；`rect_corners` 读回的四个角与输入一致（容差 1e-6）。
+5. `tests/gel/test_crop.py` 新增一条：写出的矩形节点里，角度可由 app 字段读出，且值等于 `atan2` 算出的角；`rect_corners` 读回的四个角与输入一致（容差 1e-6）。
 
 ## 6. 不在范围
 

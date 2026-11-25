@@ -106,7 +106,7 @@ A running instance **without** `--control` can't be reached. Launch with `Vector
 3. **Save can be read half-written.** `document.save` returned, and one read straight after it hit a truncated file (`Expecting ',' … char 30695`), though another returned complete in 10 ms. Poll until the file is newer than the request **and** parses.
 4. **Default font** is "Source Sans 3". Always pass `font:"Arial"` (and set `font_family` in the writer).
 
-### More pitfalls (measured in V7 with the live executor, `src/epcraft/sync_exec.py`)
+### More pitfalls (measured in V7 with the live executor, `src/epcraft/vc/sync.py`)
 
 5. **Locked layers block creation only.** Objects in a locked layer still accept `edit.clear`, `object.move` (including an image inside a clip group in the locked `gel`), `object.setProps`, `paint.setStroke`, `path.setAnchors` and `text.setText`. Creation is what fails: with a locked current layer, `text.create` silently put the object in the previously current layer, the same as with a hidden one. `sync_exec` therefore unlocks/shows only the target layers of `create` ops, relocks them at the end (also on error), and then checks each new object's layer once (with a `layer.move` fallback).
 6. **Painting by id also changes the defaults for new art.** `paint.setStroke` / `paint.setFill` / `stroke.set` with `ids` also change the default paint, and an undo-group cancel doesn't restore it. Calling the same commands with nothing selected restores the defaults without adding history. `document.inspect` reports `paint` and `currentLayer`, which is enough to restore both.

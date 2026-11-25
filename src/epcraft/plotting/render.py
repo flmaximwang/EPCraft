@@ -35,7 +35,7 @@ import re
 import struct
 import tempfile
 
-from .. import text_layout
+from ..gfx import text_layout
 
 # ---------------------------------------------------------------- colours and type sizes
 

@@ -1,13 +1,10 @@
 """Run the full EPCraft regression suite from a checkout."""
 
-from . import (
-    test_cli,
-    test_core,
-    test_ep4xa_acceptance,
-    test_marker_redetect,
-    test_workbench_io,
-    test_workflow,
-)
+from .cli import test_cli, test_workflow
+from .core import test_core
+from .densitometry import test_ep4xa_acceptance
+from .gel import test_marker_redetect
+from .vc import test_workbench_io
 
 
 def main():

@@ -552,29 +552,29 @@ render 的其它开关（全是 stage 1；出图后也可以在 Crop 画板上�
 
 | 模块 | 承担 |
 |---|---|
-| `src/epcraft/magick_io.py` | magick 外呼、PPM 读取 |
-| `src/epcraft/gel_detect.py` | 认胶面：背景平面、暗度/蓝度判据、连通域、竖边倾角 |
-| `src/epcraft/gel_area.py` | stage 1：按预设定标定形、高度核对 |
-| `src/epcraft/geometry.py` | 旋转几何 |
-| `src/epcraft/crop.py` | Crop 画板：stage 1 框 ↔ 四角、预览 JPEG 与版式、读回框（`read_frame`）、`frame_delta`、按框重裁（`crop_face`） |
+| `src/epcraft/gfx/magick.py` | magick 外呼、PPM 读取 |
+| `src/epcraft/gel/detect.py` | 认胶面：背景平面、暗度/蓝度判据、连通域、竖边倾角 |
+| `src/epcraft/gel/area.py` | stage 1：按预设定标定形、高度核对 |
+| `src/epcraft/gfx/geometry.py` | 旋转几何 |
+| `src/epcraft/gel/crop.py` | Crop 画板：stage 1 框 ↔ 四角、预览 JPEG 与版式、读回框（`read_frame`）、`frame_delta`、按框重裁（`crop_face`） |
 | `src/epcraft/config.py` | markers / lanes / 胶体预设的读取与校验 |
-| `src/epcraft/lane_select.py` | `--trim-lanes` 语法、保留段与拼缝版式 |
-| `src/epcraft/text_layout.py` | 字体、文字量宽、标签的角度与墨迹框（`box_offsets` / `anchor_for`，页边距与落位都用它） |
-| `src/epcraft/well_grid.py` | 泳道种子：按加样孔定相的等距梳子（§6） |
-| `src/epcraft/profiles.py` | 剖面、叫带、标定、报告 v2（§7） |
-| `src/epcraft/mw_report.py` | MW 数学、标签 → MW 槽位展开、终端表与写盘 |
-| `src/epcraft/workbench.py` | Workbench 模型：建（`from_image`）、画、读回（`from_document`）、校验、泳道名匹配 |
-| `src/epcraft/figure.py` | Figure / Profiles 画板、整份文档（`build_document`）、sync 增量计划（`plan_sync`） |
-| `src/epcraft/doc_edit.py` | `edit` 的改动计划（`plan_edit`：trim、marker 泳道、泳道名），出与 `plan_sync` 同一套 op |
-| `src/epcraft/vc_file.py` | `.vectorcraft` 读写（内联 / blobs / gzip 三种编码；对象从 `src/epcraft/templates/kinds.vectorcraft` 深拷贝） |
-| `src/epcraft/vc_control.py` | 控制口客户端：连接/启动、对话框、存盘轮询、导出核对、撤销组 |
-| `src/epcraft/sync_exec.py` | 把 `plan_sync` 的操作落到活文档上 |
-| `src/epcraft/env_check.py` | `doctor` |
-| `src/epcraft/canvas_cli.py` | 公开层级命令：`launch`、`figure export`、`workbench export` / `import` 的参数、路径保护与错误边界 |
-| `src/epcraft/workbench_io.py` | Workbench JSON 的导出 / 导入与整份校验（§13） |
+| `src/epcraft/gel/lanes.py` | `--trim-lanes` 语法、保留段与拼缝版式 |
+| `src/epcraft/gfx/text_layout.py` | 字体、文字量宽、标签的角度与墨迹框（`box_offsets` / `anchor_for`，页边距与落位都用它） |
+| `src/epcraft/gel/wells.py` | 泳道种子：按加样孔定相的等距梳子（§6） |
+| `src/epcraft/gel/profiles.py` | 剖面、叫带、标定、报告 v2（§7） |
+| `src/epcraft/gel/mw.py` | MW 数学、标签 → MW 槽位展开、终端表与写盘 |
+| `src/epcraft/figure/workbench.py` | Workbench 模型：建（`from_image`）、画、读回（`from_document`）、校验、泳道名匹配 |
+| `src/epcraft/figure/figure.py` | Figure / Profiles 画板、整份文档（`build_document`）、sync 增量计划（`plan_sync`） |
+| `src/epcraft/vc/doc_edit.py` | `edit` 的改动计划（`plan_edit`：trim、marker 泳道、泳道名），出与 `plan_sync` 同一套 op |
+| `src/epcraft/vc/file.py` | `.vectorcraft` 读写（内联 / blobs / gzip 三种编码；对象从 `src/epcraft/templates/kinds.vectorcraft` 深拷贝） |
+| `src/epcraft/vc/control.py` | 控制口客户端：连接/启动、对话框、存盘轮询、导出核对、撤销组 |
+| `src/epcraft/vc/sync.py` | 把 `plan_sync` 的操作落到活文档上 |
+| `src/epcraft/cli/doctor.py` | `doctor` |
+| `src/epcraft/cli/canvas.py` | 公开层级命令：`launch`、`figure export`、`workbench export` / `import` 的参数、路径保护与错误边界 |
+| `src/epcraft/figure/workbench_io.py` | Workbench JSON 的导出 / 导入与整份校验（§13） |
 | `tests/` | 仓库回归测试，从仓库根运行 `PYTHONPATH=src python3 -m tests`。覆盖假控制口上的 sync、裁切框几何与读回、CLI 分发以及 Workbench JSON 往返与校验。 |
 
-## 13. Workbench 数据交换（`src/epcraft/workbench_io.py`）
+## 13. Workbench 数据交换（`src/epcraft/figure/workbench_io.py`）
 
 两个公开命令，读写的是**泳道数据**，不是 render 的配置（`lanes.json` / `markers.json`，§1），也不是 MW 报告（`fig.mw.json`，§7）：
 

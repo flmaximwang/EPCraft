@@ -241,9 +241,9 @@ The chain lives in the same installed package as labeling; these are its modules
 
 | Module | Role |
 |---|---|
-| `src/epcraft/densitometry.py` | densitometry math: `measure` (areas on both baselines), `parse_std` / `parse_lanes` / `parse_load`, `build_curve` (both fits), `format_curve`, `quantify` (area → mass through the stored fit), `format_quant`, JSON writing |
-| `src/epcraft/dens_plot.py` | the two PNGs: `plot_bands` / `plot_curve`. headless Matplotlib layout and display coordinates |
-| `src/epcraft/densitometry_cli.py` | argparse and handlers for `densitometry` (alias `dens`): flags, path guards, error boundary |
+| `src/epcraft/densitometry/` | densitometry math: `measure` (areas on both baselines), `parse_std` / `parse_lanes` / `parse_load`, `build_curve` (both fits), `format_curve`, `quantify` (area → mass through the stored fit), `format_quant`, JSON writing |
+| `src/epcraft/plotting/` | the two PNGs: `plot_bands` / `plot_curve`. headless Matplotlib layout and display coordinates |
+| `src/epcraft/cli/densitometry.py` | argparse and handlers for `densitometry` (alias `dens`): flags, path guards, error boundary |
 | `tests/` | Repository regressions for area and fit math, both PNGs, and quantification including range refusals, `--load`, lane shares and CLI output. Run `PYTHONPATH=src python3 -m tests` from the repository root. |
 
-Design contract: `docs/specs/ep-craft-densitometry.md` (historical file name and contents are preserved; the CLI name in it belongs to the pre-split runtime).
+Design contract: `docs/specs/densitometry.md`.

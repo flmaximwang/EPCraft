@@ -251,19 +251,19 @@ Both build an MVG script in a `tempfile` file, call `magick -size WxH xc:white -
 |---|---|
 | `src/epcraft/densitometry/` | math: `measure` / `build_curve` / `quantify` / parsing / formatting |
 | `src/epcraft/plotting/` | optional Matplotlib `[plot]` renderers → PNG |
-| `src/epcraft/densitometry_cli.py` | `densitometry` parser + handlers (argparse only, no math) |
-| `tests/test_densitometry.py` | math suite (synthetic reports with analytically known areas) |
-| `tests/test_dens_plot.py` | pixel tests on the two PNGs |
-| `src/epcraft/canvas_cli.py` | `add_commands`: register the group |
-| `src/epcraft/gel_photo.py` | `CANVAS_COMMANDS` gains `densitometry` and `dens` |
-| `tests/test_cli.py` | parser shape + one-line error boundary for the new commands |
-| `tests/test_core.py` / `tests/__main__.py` | call the test suites |
+| `src/epcraft/cli/densitometry.py` | `densitometry` parser + handlers (argparse only, no math) |
+| `tests/densitometry/test_densitometry.py` | math suite (synthetic reports with analytically known areas) |
+| `tests/plotting/test_dens_plot.py` | pixel tests on the two PNGs |
+| `src/epcraft/cli/canvas.py` | `add_commands`: register the group |
+| `src/epcraft/cli/gel_photo.py` | `CANVAS_COMMANDS` gains `densitometry` and `dens` |
+| `tests/cli/test_cli.py` | parser shape + one-line error boundary for the new commands |
+| `tests/core/test_core.py` / `tests/__main__.py` | call the test suites |
 | `skills/epcraft-quantify/SKILL.md`, `README.md` | command table, workflow step, "Not covered" |
 | `skills/epcraft-quantify/references/quantification-conventions.md` | quantification workflow, baseline/fit policy, JSON keys |
 
 ## 7. Tests (analytic, no user files)
 
-Synthetic report v2 built in memory (`_synthetic_report(...)` inside `tests/test_densitometry.py`): uniform `y`, `dy = 0.01 cm`, `gray = 200 + slope·y − Σ A_k·exp(−½((y−c_k)/σ_k)²) + deterministic texture`.
+Synthetic report v2 built in memory (`_synthetic_report(...)` inside `tests/densitometry/test_densitometry.py`): uniform `y`, `dy = 0.01 cm`, `gray = 200 + slope·y − Σ A_k·exp(−½((y−c_k)/σ_k)²) + deterministic texture`.
 
 1. Single Gaussian band, flat background: `area_flank` ≈ `A·σ·√(2π)` within 2 %; `area_global` within 6 % (the top-hat dip is real). The synthetic case is sized so the ink at the window edge is still above `min_ink` (σ = 0.06 cm, `A` = 30) — otherwise the assertion measures the threshold, not the baseline.
 2. Sloping background (40 gray levels over the profile): flank within 2 %, global off by ≥ 10 % — asserts *why* flank exists.
@@ -277,7 +277,7 @@ Synthetic report v2 built in memory (`_synthetic_report(...)` inside `tests/test
 10. JSON round trip: `write_json` → `load_report`-style read of `dens`/`curve`/`quant` keeps every field; UTF-8, no `\u` escapes.
 11. Idempotence: `measure` twice → byte-identical JSON (no timestamps); `curve` twice → identical.
 
-`tests/test_dens_plot.py`: build a 6-band synthetic `dens` and a `curve`, render to a scratch dir, then assert (a) PNG exists with the requested `size`, (b) it is not blank (≥ 2 % of pixels differ from white), (c) sampling the panel's shaded window rows finds the fill colour and sampling rows outside the window finds white/background, (d) `plot-curve` draws the fitted line across the axes (a column inside the range has non-white pixels at the line's row), (e) an `out` path that is a directory or has no `.png` suffix raises `RuntimeError`/`ValueError`, (f) no temp file survives (glob the scratch dir).
+`tests/plotting/test_dens_plot.py`: build a 6-band synthetic `dens` and a `curve`, render to a scratch dir, then assert (a) PNG exists with the requested `size`, (b) it is not blank (≥ 2 % of pixels differ from white), (c) sampling the panel's shaded window rows finds the fill colour and sampling rows outside the window finds white/background, (d) `plot-curve` draws the fitted line across the axes (a column inside the range has non-white pixels at the line's row), (e) an `out` path that is a directory or has no `.png` suffix raises `RuntimeError`/`ValueError`, (f) no temp file survives (glob the scratch dir).
 
 ## 8. Docs
 
@@ -298,4 +298,4 @@ Synthetic report v2 built in memory (`_synthetic_report(...)` inside `tests/test
 
 1. **§4.7 replicate error bars (settled, `ep-bqv.7`)**: `curve.points[].sd` is the sample SD of replicate **areas** (`volume`, `gray·cm`), not mass. Standard points with `n > 1` therefore carry horizontal **x-error bars** (`±sd` along the area axis, clipped to the main axes, with caps) and no y-error bars. Points with `n = 1` and dropped points carry no bar. Error bars on sample points are out of scope for this epic.
 2. **§4.6 fit direction**: `quantify` evaluates the stored `fit_params` forward (`mass = intercept + slope · area` for `linear`, `mass = scale · area^exponent` for `power`), consistent with §2.6, §5, and §7.8–7.9. Where §4.6 informally referred to the "inverse of the fit", the forward area → mass evaluation is authoritative.
-3. **§7 synthetic Gaussian tolerances**: Under the specified 0.30 cm top-hat baseline, 0.03 cm smoothing, 0.15 cm flank ramp, and midpoint clamp (§§2.3–2.4, 4.2–4.3), a single Gaussian at σ = 0.06 cm, A = 30 integrates to approximately −3.1 % (`area_flank`) and −42.4 % (`area_global`), and two equal Gaussians 0.06 cm apart integrate to approximately −33.3 % each due to midpoint truncation. The algorithm is kept as specified and `tests/test_densitometry.py` assertions are calibrated to those measured bounds (flank within 2 % at σ = 0.03 cm, within 5 % at σ = 0.06 cm; global visibly depressed; close pair asserts the midpoint clamp).
+3. **§7 synthetic Gaussian tolerances**: Under the specified 0.30 cm top-hat baseline, 0.03 cm smoothing, 0.15 cm flank ramp, and midpoint clamp (§§2.3–2.4, 4.2–4.3), a single Gaussian at σ = 0.06 cm, A = 30 integrates to approximately −3.1 % (`area_flank`) and −42.4 % (`area_global`), and two equal Gaussians 0.06 cm apart integrate to approximately −33.3 % each due to midpoint truncation. The algorithm is kept as specified and `tests/densitometry/test_densitometry.py` assertions are calibrated to those measured bounds (flank within 2 % at σ = 0.03 cm, within 5 % at σ = 0.06 cm; global visibly depressed; close pair asserts the midpoint clamp).
