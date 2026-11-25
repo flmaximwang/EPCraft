@@ -1,6 +1,6 @@
 # Spec: ep-craft — Densitometry (quantify protein from an SDS-PAGE gel)
 
-Status: agreed · Scope: `src/ep_craft` + `skills/ep-craft` · Written 2026-11-23 · Updated 2026-11-24 (ep-bqv.7 errata) · Builds on `specs/ep-craft-gel-prior.md`, `specs/ep-craft-crop-artboard.md`
+Status: agreed · Scope: `src/ep_craft` + `skills/ep-craft` · Written 2026-11-23 · Updated 2026-11-24 (ep-bqv.7 errata) · Builds on `docs/specs/ep-craft-gel-prior.md`, `docs/specs/ep-craft-crop-artboard.md`
 
 ## 1. Problem
 

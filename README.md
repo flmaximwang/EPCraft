@@ -136,8 +136,7 @@ From the repository root, run `PYTHONPATH=src python3 -m tests` with ImageMagick
 | `src/epcraft/` | Installable package shared by both skills, with runtime modules, bundled `data/` and `templates/` |
 | [`tests/`](tests/) | Repository regression suites and fixtures |
 | [`pyproject.toml`](pyproject.toml) | Packaging: console script `epcraft`, package data, setuptools build |
-| [`specs/`](specs/) | Design specs (VectorCraft output, editable output, gel prior, skill split) |
-| [`tickets/`](tickets/) | Work breakdown for the VectorCraft output |
+| [`docs/specs/`](docs/specs/) | Long-term design specs (gel prior, VectorCraft output, crop artboard, densitometry, etc.) |
 
 ## Acknowledgements and citing
 

@@ -2,8 +2,8 @@
 
 本文只覆盖**标注**（出图 + `fig.mw.json`）。蛋白质质量定量是姊妹 skill `epcraft-quantify`，它的输入合同就是本文 §7 的 report v2；本文不再包含 densitometry 章节。
 
-权威设计在 `specs/ep-craft-vectorcraft.md`；VectorCraft 文件格式与控制口命令（实测）在 `references/vectorcraft.md`。
-本文写的是**现在代码实际怎么做**，数字来自 `tickets/ep-craft-vectorcraft.md` 各张票的收尾记录。
+权威设计在 `docs/specs/ep-craft-vectorcraft.md`；VectorCraft 文件格式与控制口命令（实测）在 `references/vectorcraft.md`。
+本文写的是**现在代码实际怎么做**，历史任务收尾数字已归档至 beads（`ep-50e`）。
 
 ## 1. 两个 JSON —— 字段表
 
