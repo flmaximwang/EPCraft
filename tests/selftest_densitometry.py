@@ -13,6 +13,8 @@ import ast
 import json
 import math
 import os
+from pathlib import Path
+import sys
 import tempfile
 
 from epcraft import densitometry
@@ -532,20 +534,25 @@ def check_json_io():
 # ---------------------------------------------------------------- 11) module purity
 
 def check_purity():
-    """`densitometry.py` is math + JSON only: no subprocess, no ImageMagick, no gel_photo (§2.11)."""
-    path = os.path.join(os.path.dirname(os.path.abspath(densitometry.__file__)), "densitometry.py")
-    with open(path, encoding="utf-8") as f:
-        tree = ast.parse(f.read(), path)
-    imported = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported.update(alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.level == 0:
-            imported.add((node.module or "").split(".")[0])
-    for forbidden in ("subprocess", "magick_io", "gel_photo", "dens_plot", "profiles"):
-        assert forbidden not in imported, "densitometry.py 不该 import %s" % forbidden
-    stdlib = getattr(__import__("sys"), "stdlib_module_names", set())
-    assert imported <= set(stdlib), "densitometry.py 导入了非 stdlib 模块：%s" % (imported - set(stdlib),)
+    """The offline densitometry package uses only stdlib and its own modules (§2.11)."""
+    root = Path(densitometry.__file__).parent
+    stdlib_names = getattr(sys, "stdlib_module_names", None)
+    stdlib = (stdlib_names - {"subprocess"}) if stdlib_names is not None else None
+    for path in sorted(root.rglob("*.py")):
+        relative = path.relative_to(root)
+        imported = set()
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), str(path))):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                if node.level:
+                    assert node.level <= len(relative.parts), (relative, node.lineno, node.module)
+                elif node.module:
+                    imported.add(node.module.split(".")[0])
+        for forbidden in ("subprocess", "magick_io", "gel_photo", "dens_plot", "profiles"):
+            assert forbidden not in imported, (relative, forbidden)
+        if stdlib is not None:
+            assert imported <= stdlib, (relative, imported - stdlib)
     return True
 
 
