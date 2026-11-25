@@ -814,15 +814,7 @@ def check_fit_line_linear():
         assert lines, "没有找到按 slope/intercept 绘制的拟合线"
         xs_all = [float(x) for ln in lines for x in ln.get_xdata()]
         lo, hi = min(xs_all), max(xs_all)
-        vmin = curve["range"]["volume_min"]
-        vmax = curve["range"]["volume_max"]
-        span = vmax - vmin
-        assert lo <= vmin - 0.05 * span + 0.03 * span, \
-            "拟合线左端 %.4f 没有覆盖 -10%% 延伸（vmin %.4f）" % (lo, vmin)
-        assert hi >= vmax + 0.05 * span - 0.03 * span, \
-            "拟合线右端 %.4f 没有覆盖 +10%% 延伸（vmax %.4f）" % (hi, vmax)
-        assert lo >= vmin - 0.12 * span - 1e-9, "拟合线左端越界：%.4f" % lo
-        assert hi <= vmax + 0.12 * span + 1e-9, "拟合线右端越界：%.4f" % hi
+        assert (lo, hi) == main.get_xlim()
         for ln in lines:
             xs, ys = _line_xy(ln)
             expected = _arr([_model(curve, x) for x in xs])
@@ -865,8 +857,8 @@ def check_fit_line_power():
     return True
 
 
-def check_dropped_points_do_not_expand_axes():
-    """Dropped points on either side leave the standard range and its extensions unchanged."""
+def check_dropped_points_inside_padded_axes():
+    """Include even the outermost dropped points and pad both ends by 10% of the full span."""
     curve = _linear_curve()
     for lane, area in ((7, 0.1), (8, 40.0)):
         curve["points"].append(dict(curve["points"][0], mass=1000.0, volume=area,
@@ -874,11 +866,12 @@ def check_dropped_points_do_not_expand_axes():
     with tempfile.TemporaryDirectory() as td:
         _, fig, _, _ = _render_file(td, "limits.png", curve)
         main, _resid = _pair(fig)
-        vmin, vmax = (curve["range"][key] for key in ("volume_min", "volume_max"))
-        pad = 0.10 * (vmax - vmin)
-        assert main.get_xlim() == (vmin - pad, vmax + pad)
-        assert main.get_ylim()[1] < 1000.0
-        assert all(vmin - pad <= marker["x"] <= vmax + pad for marker in _markers(main))
+        pad = 0.10 * (40.0 - 0.1)
+        assert main.get_xlim() == (0.1 - pad, 40.0 + pad)
+        assert main.get_ylim()[1] > 1000.0
+        for area in (0.1, 40.0):
+            hits = _marker_at(_markers(main), area, 1000.0, 1e-9, 1e-9, "circle")
+            assert len(hits) == 1 and not hits[0]["filled"]
     return True
 
 
@@ -1089,7 +1082,7 @@ def _check_sample_positions(fig, curve, quant):
     assert all(max(line.get_xdata()) <= vmin or min(line.get_xdata()) >= vmax for line in dashed)
     xlo, xhi = main.get_xlim()
     ylo, yhi = main.get_ylim()
-    areas = []
+    areas = [point["volume"] for point in curve["points"]]
     remaining = list(markers)
     for lane in quant["lanes"]:
         for band in lane["bands"]:
@@ -1115,9 +1108,9 @@ def _check_sample_positions(fig, curve, quant):
             assert [t.get_text() for t in fig.texts].count(label) == 1, label
     assert all("extrapolated" not in text.get_text() for text in fig.texts)
     assert not remaining
-    extension = 0.1 * (vmax - vmin)
-    assert xlo == min([vmin - extension] + areas)
-    assert xhi == max([vmax + extension] + areas)
+    extension = 0.1 * (max(areas) - min(areas))
+    assert xlo == min(areas) - extension
+    assert xhi == max(areas) + extension
 
 
 def check_quant_markers():
@@ -1473,7 +1466,7 @@ CHECKS = (
     check_size_blank_and_rerun,
     check_fit_line_linear,
     check_fit_line_power,
-    check_dropped_points_do_not_expand_axes,
+    check_dropped_points_inside_padded_axes,
     check_points_and_dropped,
     check_error_bars,
     check_bar_free_without_replicates,

@@ -307,9 +307,6 @@ def curve_layout(curve, quant=None, width=1020):
     quants = _quant_lanes(quant) if quant is not None else []
     rng = curve.get("range") if isinstance(curve.get("range"), dict) else {}
     vmin, vmax = _used_range(curve, rng)
-    span = vmax - vmin
-    ext_lo = vmin - 0.10 * span
-    ext_hi = vmax + 0.10 * span
 
     points = []
     for point in curve["points"]:
@@ -347,11 +344,13 @@ def curve_layout(curve, quant=None, width=1020):
                             "mass_sd": band["mass_sd"], "out": fit_only,
                             "outside": outside, "label": label})
 
-    sample_areas = [s["area"] for s in samples]
-    drawn_lo = min([ext_lo] + sample_areas)
-    drawn_hi = max([ext_hi] + sample_areas)
-    x_range = (drawn_lo, drawn_hi)
-    points = [p for p in points if p["used"] or drawn_lo <= p["volume"] <= drawn_hi]
+    areas = [p["volume"] for p in points] + [s["area"] for s in samples]
+    area_min, area_max = min(areas), max(areas)
+    x_pad = 0.10 * ((area_max - area_min) or (vmax - vmin))
+    x_range = (area_min - x_pad, area_max + x_pad)
+    drawn_lo, drawn_hi = x_range
+    if fit == "power":
+        drawn_lo = max(0.0, drawn_lo)
     masses = [p["mass"] for p in points] + [s["mass"] for s in samples]
     fit_ends = [fn(drawn_lo), fn(drawn_hi)]
     y_lo = min([0.0] + masses)
@@ -447,7 +446,7 @@ def curve_layout(curve, quant=None, width=1020):
     return {"width": w, "height": height, "axes": axes, "main_box": main_box,
             "resid_box": resid_box, "x_range": x_range, "y_range": y_range, "rel_range": rel_range,
             "fitted": {"volume_min": vmin, "volume_max": vmax,
-                       "extension_min": ext_lo, "extension_max": ext_hi,
+                       "extension_min": drawn_lo, "extension_max": drawn_hi,
                        "drawn_min": drawn_lo, "drawn_max": drawn_hi},
             "fit": fit, "eval": fn, "equation": eqn,
             "points": out_points, "dropped": [p for p in out_points if not p["used"]],
