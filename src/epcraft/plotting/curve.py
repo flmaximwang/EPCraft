@@ -353,10 +353,9 @@ def curve_layout(curve, quant=None, width=1020):
         drawn_lo = max(0.0, drawn_lo)
     masses = [p["mass"] for p in points] + [s["mass"] for s in samples]
     fit_ends = [fn(drawn_lo), fn(drawn_hi)]
-    y_lo = min([0.0] + masses)
-    y_hi = max([0.0] + masses + fit_ends)
-    y_pad = 0.08 * (y_hi - y_lo or 1.0)
-    y_range = (y_lo - y_pad if y_lo < 0.0 else 0.0, y_hi + y_pad)
+    y_lo, y_hi = min(masses + fit_ends), max(masses + fit_ends)
+    y_pad = 0.10 * (y_hi - y_lo or max(abs(y_lo), 1.0))
+    y_range = (y_lo - y_pad, y_hi + y_pad)
     rel_hi = max([15.0, 1.2 * max([abs(r["rel_pct"]) for r in residuals] + [0.0])])
     rel_range = (-rel_hi, rel_hi)
 
@@ -630,7 +629,7 @@ def _draw_curve_main(fig, geo):
     ax.tick_params(axis="x", bottom=False, labelbottom=False)
     lo, hi = geo["y_range"]
     digits = _tick_digits(_nice_step(hi - lo, 6))
-    yticks = sorted({0.0, *(v for v in _ticks(lo, hi, 6) if lo <= v <= hi)})
+    yticks = [v for v in _ticks(lo, hi, 6) if lo <= v <= hi]
     ax.set_yticks(yticks)
     ax.set_yticklabels([_eqnum(v, digits) for v in yticks])
     for label in ax.get_yticklabels():

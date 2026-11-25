@@ -815,22 +815,25 @@ def check_fit_line_linear():
         xs_all = [float(x) for ln in lines for x in ln.get_xdata()]
         lo, hi = min(xs_all), max(xs_all)
         assert (lo, hi) == main.get_xlim()
+        assert main.get_ylim()[0] > 0, "正值数据的纵轴被强制扩到零"
         for ln in lines:
             xs, ys = _line_xy(ln)
             expected = _arr([_model(curve, x) for x in xs])
             assert float(abs(ys - expected).max()) <= \
                 1e-6 * max(1.0, float(abs(expected).max())), \
                 "拟合线不在 y = intercept + slope*x 上"
-        # Force the left extension to cross the bottom of the axes. The artist's
-        # data must still follow the model below zero so clipping preserves its slope.
+        # The same padding rule applies when the left extension crosses zero.
         curve["fit_params"]["intercept"] = -10.0
         (_w, _h), fig, _caught, _out = _render_file(td, "lin-crossing.png", curve)
         main, _resid = _pair(fig)
         extensions = [line for line in _fit_line(main, curve) if _is_dashed(line)]
         assert len(extensions) == 2, "拟合线两端的虚线必须沿用同一个模型"
-        left = min(extensions, key=lambda line: min(line.get_xdata()))
-        assert min(left.get_ydata()) < main.get_ylim()[0] < max(left.get_ydata()), \
-            "左侧虚线应由坐标轴裁切，不能把端点压到零线上"
+        y_values = [point["mass"] for point in curve["points"]]
+        y_values.extend(_model(curve, x) for x in main.get_xlim())
+        low, high = min(y_values), max(y_values)
+        assert low < 0 < high
+        pad = 0.10 * (high - low)
+        assert main.get_ylim() == (low - pad, high + pad)
     return True
 
 
@@ -1153,8 +1156,6 @@ def check_sample_fit_bars():
                     "SD 棒半高 %.3f ≠ mass_sd %.3f" % ((hi - lo) / 2.0, band["mass_sd"])
                 bars += 1
         assert bars >= 2, "fixture 只画出 %d 条样品 SD 棒" % bars
-        assert main.get_ylim()[0] <= 1e-9 + 1e-12, \
-            "主轴 y 范围没有从 0 开始：%r" % (main.get_ylim(),)
 
         # Caps: both ends of every sample fit bar carry a cap marker, as the replicate bars do.
         from matplotlib.container import ErrorbarContainer
