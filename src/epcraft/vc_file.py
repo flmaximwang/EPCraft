@@ -318,6 +318,32 @@ def clip(doc, name, rect, content):
     return g
 
 
+def clip_quad(doc, name, corners, content):
+    """剪切组（四边形）：corners = [TL, TR, BR, BL] pt，只露出 content 落在这个四边形里的部分。
+
+    与 clip() 同一套结构（模板剪切组 + 一条带 "clipping": true 的闭合路径）；
+    轴对齐的矩形（TL.y == TR.y、BL.x == TL.x、没有斜边）直接交给 clip()，输出与旧版逐字节相同。
+    真正的四边形没有 live 矩形形状可写（live.shape "rectangle" 只能表达矩形），所以去掉 live ——
+    剪切按路径几何走，与模板里那条矩形路径的实测行为一致（references/vectorcraft.md §1/§2）。
+    """
+    if len(corners) != 4:
+        raise RuntimeError("clip_quad 要 4 个角 TL TR BR BL（收到 %d）" % len(corners))
+    (x0, y0), (x1, y1), (x2, y2), (x3, y3) = [(float(x), float(y)) for x, y in corners]
+    if abs(y1 - y0) <= 1e-9 and abs(y2 - y3) <= 1e-9 and abs(x0 - x3) <= 1e-9 and abs(x1 - x2) <= 1e-9:
+        return clip(doc, name, (x0, y0, x1 - x0, y3 - y0), content)
+    g = copy.deepcopy(doc["tpl"]["clip"])
+    g["id"] = _id(doc)
+    g["name"] = name
+    path = next(c for c in g["kind"]["children"] if c["kind"].get("clipping"))
+    path = copy.deepcopy(path)
+    path["id"] = _id(doc)
+    path.pop("name", None)
+    path["kind"]["path"]["subpaths"] = [{"anchors": [{"p": [x, y]} for x, y in corners], "closed": True}]
+    path["kind"].pop("live", None)
+    g["kind"]["children"] = [path, content]
+    return g
+
+
 def rect(doc, name, corners, rgb=(0.0, 0.0, 0.0), width=0.5):
     """矩形（闭合 4 锚点路径，live.shape "rectangle"；无填充、实线描边、不是剪切路径）。
 

@@ -5,7 +5,9 @@
 输入只有两样：workbench 模型（cm，胶面左上角为原点）和文档里那张胶面图（PNG 字节）。
 render（探测出来的线）和 sync（用户改过的线）走同一份代码。
 
-1. 剖面：积分窗 [top, bottom] 内每一像素行，取 x ∈ [L, R] 的平均灰度（列中心落在区间里的像素）。
+1. 剖面：积分窗 [top, bottom] 内每一像素行，取 x ∈ [L(y), R(y)] 的平均灰度（列中心落在区间里的像素）。
+   泳道通常是矩形（L、R 是全窗常数），也可以是梯形：分隔线不竖直时，L/R 随 y 线性变化
+   （sample_lane 逐行插值；矩形泳道退回同一次 span，算术与旧版逐位相同）。
 2. 基线与墨量：沿用 stage 3 实测调好的 top-hat —— 基线 = 宽窗滑动均值，ink = 基线 − 灰度
    （越暗越大）；窗宽、平滑、最小峰距改用 cm 表示，所以与胶面图的分辨率无关。
 3. 条带：平滑后原始灰度的局部变暗，**局部**显著度（比两侧浅点深多少）≥ K_NOISE × 该泳道背景噪声，
@@ -50,24 +52,82 @@ def gel_gray(png):
 
 # ---------------------------------------------------------------- 剖面与条带
 
-def lane_profile(gray, w, h, px_per_cm, left_cm, right_cm, top_cm, bottom_cm):
-    """→ (y_cm 列表, 平均灰度列表)。行/列都取「像素中心落在区间里」的；窄到一列都不含时取最近一列。"""
-    def span(a_cm, b_cm, n):
-        lo = max(0, int(-(-(a_cm * px_per_cm - 0.5) // 1)))       # ceil(a·ppc − 0.5)
-        hi = min(n - 1, int((b_cm * px_per_cm - 0.5) // 1))         # floor(b·ppc − 0.5)
-        if hi < lo:
-            c = min(n - 1, max(0, int(round((a_cm + b_cm) / 2.0 * px_per_cm - 0.5))))
-            lo = hi = c
-        return lo, hi
-    xa, xb = span(left_cm, right_cm, w)
-    ya, yb = span(top_cm, bottom_cm, h)
-    nx = float(xb - xa + 1)
+QUAD_KEYS = ("left_top_cm", "left_bottom_cm", "right_top_cm", "right_bottom_cm")
+
+
+def is_quad(lane):
+    """泳道是否把梯形几何带全了（四个端点都在；矩形泳道只有 left_cm / right_cm）。"""
+    return all(lane.get(k) is not None for k in QUAD_KEYS)
+
+
+def lane_centre_cm(lane, y_cm=0.0, height_cm=None):
+    """泳道在 y 处的中点 x（cm）。矩形泳道 = (left+right)/2（与旧版逐位相同）；梯形按该行插值。"""
+    l, r = lane_bounds(lane, y_cm, height_cm)
+    return (l + r) / 2.0
+
+
+def lane_bounds(lane, y_cm=0.0, height_cm=None):
+    """泳道在 y 处的两条边界 x（cm）→ (L, R)。矩形泳道与 y 无关；梯形泳道按 y 线性插值。
+
+    lane 的 `*_top_cm` 是 y=0 处的端点、`*_bottom_cm` 是 y=height_cm 处的端点（与 from_document 同一口径）；
+    height_cm 省略时梯形泳道**必须**给出 y 用不到的高度 —— 这里退回 top 值并报错，免得悄悄算错。
+    """
+    left_t, right_t = float(lane["left_cm"]), float(lane["right_cm"])
+    if not is_quad(lane):
+        return left_t, right_t
+    if float(y_cm) == 0.0:                       # 胶顶那一行就是 top 值，不需要知道胶面高
+        return left_t, right_t
+    if height_cm is None or float(height_cm) <= 0:
+        raise RuntimeError("梯形泳道要么给 height_cm（胶面高，cm），要么用 sample_lane 的逐行采样")
+    t = min(1.0, max(0.0, float(y_cm) / float(height_cm)))
+    return (left_t + (float(lane["left_bottom_cm"]) - left_t) * t,
+            right_t + (float(lane["right_bottom_cm"]) - right_t) * t)
+
+
+def _span(a_cm, b_cm, n, px_per_cm):
+    """区间 [a, b] 里列中心落在其中的像素下标 → (lo, hi)；窄到一列都不含时取最近一列。"""
+    lo = max(0, int(-(-(a_cm * px_per_cm - 0.5) // 1)))       # ceil(a·ppc − 0.5)
+    hi = min(n - 1, int((b_cm * px_per_cm - 0.5) // 1))         # floor(b·ppc − 0.5)
+    if hi < lo:
+        c = min(n - 1, max(0, int(round((a_cm + b_cm) / 2.0 * px_per_cm - 0.5))))
+        lo = hi = c
+    return lo, hi
+
+
+def sample_lane(gray, w, h, px_per_cm, lane, top_cm, bottom_cm, height_cm=None):
+    """泳道在积分窗内的灰度剖面 → (y_cm 列表, 平均灰度列表)。**唯一的泳道采样入口**。
+
+    lane = 模型里的那条泳道（`left_cm`/`right_cm` = 矩形；梯形再加 `left_top_cm` 等四个端点）。
+    矩形泳道：一次算出列区间，逐行求和 —— 与旧版 lane_profile 逐位相同（回归保护）。
+    梯形泳道：每条分隔线 x(y) 线性插值，逐行取该行自己的 [L(y), R(y)]，列数随之变化。
+    y 一律取像素中心 ((y+0.5)/px_per_cm)，与旧版一致。
+    """
+    if not is_quad(lane):
+        xa, xb = _span(float(lane["left_cm"]), float(lane["right_cm"]), w, px_per_cm)
+        ya, yb = _span(top_cm, bottom_cm, h, px_per_cm)
+        nx = float(xb - xa + 1)
+        ys, gs = [], []
+        for y in range(ya, yb + 1):
+            row = y * w
+            ys.append((y + 0.5) / px_per_cm)
+            gs.append(sum(gray[row + x] for x in range(xa, xb + 1)) / nx)
+        return ys, gs
+    hg = float(height_cm) if height_cm is not None else float(h) / float(px_per_cm)
+    ya, yb = _span(top_cm, bottom_cm, h, px_per_cm)
     ys, gs = [], []
     for y in range(ya, yb + 1):
-        row = y * w
-        ys.append((y + 0.5) / px_per_cm)
-        gs.append(sum(gray[row + x] for x in range(xa, xb + 1)) / nx)
+        y_cm = (y + 0.5) / px_per_cm
+        l_cm, r_cm = lane_bounds(lane, y_cm, hg)
+        xa, xb = _span(l_cm, r_cm, w, px_per_cm)
+        ys.append(y_cm)
+        gs.append(sum(gray[y * w + x] for x in range(xa, xb + 1)) / float(xb - xa + 1))
     return ys, gs
+
+
+def lane_profile(gray, w, h, px_per_cm, left_cm, right_cm, top_cm, bottom_cm, height_cm=None):
+    """矩形泳道的剖面（标量口径，旧签名）：→ (y_cm 列表, 平均灰度列表)。sample_lane 的一层壳。"""
+    return sample_lane(gray, w, h, px_per_cm, {"left_cm": left_cm, "right_cm": right_cm},
+                        top_cm, bottom_cm, height_cm)
 
 
 def ink_trace(gs, px_per_cm):
@@ -345,7 +405,7 @@ def analyze(model, png, lane_names, overrides=None, raw=None):
     if len(pairs) < 2:
         notes.append("标定点不足 2 条（%d 条 band 线）：样品分子量无法估计" % len(pairs))
     for i, ln in enumerate(model["lanes"], 1):
-        ys, gs = lane_profile(gray, w, h, ppc, ln["left_cm"], ln["right_cm"], top, bottom)
+        ys, gs = sample_lane(gray, w, h, ppc, ln, top, bottom, model["gel"]["height_cm"])
         base, ink, sm = ink_trace(gs, ppc)
         marker = i == model["marker_lane"]
         if marker:            # 带由 band 线给（吸附最近的极小补量测），不在 marker 道上叫峰（spec ep-9ji D4）
@@ -364,9 +424,11 @@ def analyze(model, png, lane_names, overrides=None, raw=None):
                       if not any(abs(bd["y_cm"] - sy) <= MIN_SEP_CM + 1e-9 for sy in suppress)]
             merged += [(measure_band(ys, gs, ay, ppc, noise), True) for ay in adds]
             merged.sort(key=lambda x: x[0]["y_cm"])           # 自上而下（手加带照它的 y 落位）
-            cx = (ln["left_cm"] + ln["right_cm"]) / 2.0
             bands = []
             for bd, manual in merged:
+                # 分子量插值按**这条带所在那一行**的泳道中心取 x（梯形泳道斜着时中心随 y 移动）；
+                # 矩形泳道这一步就是 (left+right)/2，与旧版逐位相同。
+                cx = lane_centre_cm(ln, bd["y_cm"], model["gel"]["height_cm"])
                 mw, ex = estimate(bd["y_cm"], cx, [(cx, cal)])
                 bands.append(dict(bd, mw_kda=None if mw is None else round(mw, 2),
                                   extrapolated=bool(ex), manual=manual))
@@ -375,14 +437,19 @@ def analyze(model, png, lane_names, overrides=None, raw=None):
         if bands:
             max(bands, key=lambda x: x["prominence"])["strongest"] = True
         name = lane_names[i - 1] if i - 1 < len(lane_names) else None
-        lanes.append({
-            "lane": i, "label": name, "marker": marker, "trimmed": bool(ln["trimmed"]),
-            "band_source": "lines" if marker else "called",
-            "left_cm": round(ln["left_cm"], 4), "right_cm": round(ln["right_cm"], 4),
+        ld = {"lane": i, "label": name, "marker": marker, "trimmed": bool(ln["trimmed"]),
+              "band_source": "lines" if marker else "called",
+              "left_cm": round(ln["left_cm"], 4), "right_cm": round(ln["right_cm"], 4)}
+        if is_quad(ln):                                    # 梯形泳道：四个端点都写（口径同 workbench）
+            ld.update(left_top_cm=round(ln["left_cm"], 4), left_bottom_cm=round(ln["left_bottom_cm"], 4),
+                      right_top_cm=round(ln["right_cm"], 4), right_bottom_cm=round(ln["right_bottom_cm"], 4))
+            notes.append("泳道 %d 是梯形：胶顶 %.3f–%.3f cm → 胶底 %.3f–%.3f cm"
+                         % (i, ln["left_cm"], ln["right_cm"], ln["left_bottom_cm"], ln["right_bottom_cm"]))
+        lanes.append(dict(ld, **{
             "noise": round(noise, 3),
             "profile": {"y_cm": [round(y, 4) for y in ys], "gray": [round(g, 2) for g in gs],
                         "baseline": [round(v, 2) for v in base], "ink": [round(v, 2) for v in ink]},
-            "bands": [dict(x, strongest=x.get("strongest", False)) for x in bands]})
+            "bands": [dict(x, strongest=x.get("strongest", False)) for x in bands]}))
         if name is None:
             notes.append("泳道 %d 还没有名字" % i)
     return {

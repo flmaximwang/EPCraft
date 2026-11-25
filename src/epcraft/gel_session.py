@@ -329,7 +329,7 @@ def peak_override_state(model, ticks, reset_lanes=()):
             if 1 <= lane <= n and lane not in reset_lanes}
     warns, by_lane = [], {}
     for x, y, _n in ticks:
-        lane = workbench.lane_at(model, x)
+        lane = workbench.lane_at(model, x, y)              # 按刻度自己那一行归道（梯形泳道斜边）
         if lane is None:
             warns.append("样品带刻度 y=%.2f cm 的中点不在任何泳道里 —— 忽略（原样保留）" % y)
         elif lane == model["marker_lane"]:

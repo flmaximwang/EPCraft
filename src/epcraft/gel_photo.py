@@ -561,7 +561,7 @@ def cmd_probe(args):
                              float(ga["width_cm"]), (), sd["pitch_cm"] / 2.0, sd["pitch_cm"] / 2.0)
     profs = []
     for i, ln in enumerate(cells, 1):
-        a, b = ln["left_cm"], ln["right_cm"]
+        a, b = ln["left_cm"], ln["right_cm"]            # probe 的种子泳道是矩形的
         ys, gs = profiles.lane_profile(gray, w, h, ppc, a, b, top, bot)
         profs.append((ys, gs))
         _b, _ink, sm = profiles.ink_trace(gs, ppc)
