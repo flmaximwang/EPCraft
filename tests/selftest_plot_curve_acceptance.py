@@ -1003,6 +1003,13 @@ def check_annotation():
         assert re.search(r"\bn\b|point", low), "注释里没有点数 n"
         # English figure text: no CJK anywhere (µ is not CJK).  Lane fallback is tested below.
         assert not _CJK.search(text), "图里出现了中日韩字符：%r" % _CJK.findall(text)
+        assert "± SE" not in text
+        curve["unit"] = "mg/mL"
+        curve["fit_params"].update(slope_sd=0.0196, intercept_sd=0.0802)
+        _, fig, _, _ = _render_file(td, "ann-se.png", curve, width=600)
+        text = _all_text(fig)
+        assert "concentration = (3.762 ± 0.0196) · area - (1.497 ± 0.0802)" in text
+        assert "Coefficients ± SE" in text
     return True
 
 

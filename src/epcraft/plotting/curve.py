@@ -53,6 +53,14 @@ def _tick_digits(step):
     return max(0, min(6, 2 - int(math.floor(math.log10(step)))))
 
 
+def _coefficient_text(value, standard_error):
+    """Format a fitted coefficient and its optional standard error."""
+    if isinstance(standard_error, (int, float)) and not isinstance(standard_error, bool):
+        if math.isfinite(standard_error) and standard_error >= 0.0:
+            return f"({value:.4g} ± {standard_error:.4g})"
+    return _trim_num(f"{value:.2f}")
+
+
 def _check_curve(curve):
     """Validate what the plot reads of a curve.json (§4.5) → (fit, fn, equation, r2)."""
     if not isinstance(curve, dict) or curve.get("kind") != CURVE_KIND:
@@ -72,12 +80,10 @@ def _check_curve(curve):
             def fn(volume):
                 return intercept + slope * float(volume)
 
-            if intercept < 0.0:
-                eqn = "mass = %s · area - %s" % (_trim_num("%.2f" % slope),
-                                                _trim_num("%.2f" % -intercept))
-            else:
-                eqn = "mass = %s + %s · area" % (_trim_num("%.2f" % intercept),
-                                                _trim_num("%.2f" % slope))
+            slope_term = _coefficient_text(slope, fp.get("slope_sd"))
+            intercept_term = _coefficient_text(abs(intercept), fp.get("intercept_sd"))
+            sign = "-" if intercept < 0.0 else "+"
+            eqn = f"mass = {slope_term} · area {sign} {intercept_term}"
         else:
             scale = float(fp["scale"])
             exponent = float(fp["exponent"])
@@ -375,6 +381,8 @@ def curve_layout(curve, quant=None, width=1020):
                "%d %s%s" % (n_used, "point" if n_used == 1 else "points",
                              (" (%d dropped)" % n_drop) if n_drop else ""),
                "%s baseline" % base_txt.capitalize()]
+    if "±" in eqn:
+        details.append("Coefficients ± SE")
     try:
         m_lo = _trim_num("%.3f" % float(rng["mass_min"]))
         m_hi = _trim_num("%.3f" % float(rng["mass_max"]))
@@ -591,7 +599,10 @@ def _draw_curve_text(fig, geo):
               va="top", font=font, clip_width=room)
     for i, line in enumerate(geo["annotation_lines"]):
         color = TEXT_RGB if i == 0 else MUTED_RGB
-        _fig_text(fig, LEFT_PAD, geo["footer_y"] + i * ANN_STEP, line, ANN_FONT, color,
+        size = ANN_FONT
+        if i == 0:
+            size *= min(1.0, room / _text_width(font, ANN_FONT, line))
+        _fig_text(fig, LEFT_PAD, geo["footer_y"] + i * ANN_STEP, line, size, color,
                   va="top", font=font, clip_width=room)
 
 
