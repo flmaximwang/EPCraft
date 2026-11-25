@@ -735,7 +735,7 @@ def _e2e_files(td):
     dens_path = _write_json(dens, os.path.join(td, "fig.dens.json"))
     curve = _curve_json(dens)
     curve_path = _write_json(curve, os.path.join(td, "fig.curve.json"))
-    quant = densitometry.quantify(dens, curve, load={7: 2.0, 8: 2.0, 9: 2.0},
+    quant = densitometry.quantify(dens, curve, [densitometry.parse_sample("Samples=7:1,8,9")],
                                   dens_path=dens_path, curve_path=curve_path)
     quant_path = _write_json(quant, os.path.join(td, "fig.quant.json"))
     return dens_path, curve_path, quant_path, quant
@@ -785,10 +785,14 @@ def check_cli_plot_end_to_end():
         assert "Samples" in band_texts, "用户给的 --group Samples 没画成 tile"
 
         # (b) quant 样品方块只保留 (7,1) 与 (9,1)：7.2 与未分组的 8.1 不画。
+        dens_obj = _dens()
         by_pair = {}
-        for lane in quant["lanes"]:
+        for lane in dens_obj["lanes"]:
             for band in lane["bands"]:
-                by_pair[(int(lane["lane"]), band["index"])] = float(band["area"])
+                by_pair[(int(lane["lane"]), band["index"])] = float(band["area_flank"])
+        for series in quant["samples"]:
+            for member in series["members"]:
+                by_pair[(int(member["lane"]), member["band"])] = float(member["area"])
         want = {round(by_pair[(7, 1)], 3), round(by_pair[(9, 1)], 3)}
         got = {round(area, 3) for area in _sample_marker_areas(curves[0])}
         assert got == want, ("curve 图的样品方块应是 --group 选中的 (7,1)/(9,1) 面积 %r，"

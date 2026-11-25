@@ -129,13 +129,53 @@ def _check_curve(curve):
 
 
 def _quant_lanes(quant):
-    """Validate a quant.json (§4.6) for the sample markers → [(lane dict, [band dict])]."""
+    """Validate a quant.json (§4.6 / ep-srz) for the sample markers → [(lane dict, [band dict])].
+
+    Supports both the ep-srz series format (`samples[].members[]` with `equiv`/`equiv_sd`)
+    and the legacy per-lane format (`lanes[].bands[]` with `mass`/`mass_sd`).
+    """
     if not isinstance(quant, dict) or quant.get("kind") != QUANT_KIND:
         raise RuntimeError("不是 %s 文件（kind=%r）"
                            % (QUANT_KIND, quant.get("kind") if isinstance(quant, dict) else None))
+
+    if isinstance(quant.get("samples"), list):
+        out = []
+        for series in quant["samples"]:
+            if not isinstance(series, dict):
+                raise RuntimeError("quant 的 samples 里有不是对象的条目")
+            for member in series.get("members") or []:
+                if not isinstance(member, dict):
+                    raise RuntimeError("quant 的 members 里有不是对象的条目")
+                try:
+                    no = int(member["lane"])
+                except (KeyError, TypeError, ValueError):
+                    raise RuntimeError("quant 的成员缺少整数 lane（收到 %r）" % (member.get("lane"),))
+                try:
+                    area = float(member["area"])
+                except (KeyError, TypeError, ValueError):
+                    raise RuntimeError("quant 的泳道 %d 缺少数字 area（收到 %r）"
+                                       % (no, member.get("area")))
+                if not math.isfinite(area):
+                    raise RuntimeError("quant 的泳道 %d 的 area 不是有限数" % no)
+                equiv = member.get("equiv")
+                if equiv is not None:
+                    try:
+                        equiv = float(equiv)
+                    except (TypeError, ValueError):
+                        raise RuntimeError("quant 的泳道 %d 的 equiv 不是数字（收到 %r）" % (no, equiv))
+                equiv_sd = member.get("equiv_sd")
+                oor = bool(member.get("out_of_range"))
+                out_band = oor or equiv is None
+                dropped_member = member.get("used") is False
+                out.append(({"lane": no, "label": series.get("name")},
+                            [{"index": member.get("band"), "area": area, "mass": equiv,
+                              "mass_sd": equiv_sd, "out": out_band,
+                              "dropped": dropped_member, "series": series.get("name")}]))
+        return out
+
     lanes = quant.get("lanes")
     if not isinstance(lanes, list):
-        raise RuntimeError("quant 里没有 lanes 列表（不是 quant.json？）")
+        raise RuntimeError("quant 里没有 samples 或 lanes 列表（不是 quant.json？）")
     out = []
     for lane in lanes:
         if not isinstance(lane, dict):
@@ -426,7 +466,9 @@ def curve_layout(curve, quant=None, width=1020, *, selected_bands=None):
             label = "L%d.%s" % (no, idx) if len(bands) > 1 and idx is not None else "L%d" % no
             samples.append({"lane": no, "band": idx, "area": area, "mass": mass,
                             "mass_sd": band["mass_sd"], "out": fit_only,
-                            "outside": outside, "label": label})
+                            "outside": outside, "label": label,
+                            "dropped": bool(band.get("dropped")),
+                            "series": band.get("series")})
 
     areas = [p["volume"] for p in points] + [s["area"] for s in samples]
     area_min, area_max = min(areas), max(areas)
@@ -519,8 +561,10 @@ def curve_layout(curve, quant=None, width=1020, *, selected_bands=None):
     legend_parts = ["standard"]
     if dropped:
         legend_parts.append("dropped")
-    if any(not s["out"] for s in samples):
+    if any(not s["out"] and not s.get("dropped") for s in samples):
         legend_parts.append("sample")
+    if any(s.get("dropped") for s in samples):
+        legend_parts.append("dropped sample")
     if any(s["outside"] for s in samples):
         legend_parts.append("extrapolated sample")
     if any(s["out"] and not s["outside"] for s in samples):
@@ -782,13 +826,24 @@ def _draw_curve_main(fig, geo):
 
     sample_handles = {}
     for s in geo["samples"]:
-        kind = ("extrapolated sample" if s["outside"] else
-                "unquantified sample" if s["out"] else "sample")
+        if s.get("dropped"):
+            kind = "dropped sample"
+            facecolor = "white"
+            edgecolor = _mcolor(DROP_RGB)
+            edgewidth = 1.8
+        else:
+            series_name = _safe_ascii(s["series"], 24) if s.get("series") else ""
+            base_kind = f"sample: {series_name}" if series_name else "sample"
+            kind = ("extrapolated sample" if s["outside"] else
+                    "unquantified sample" if s["out"] else base_kind)
+            facecolor = "white" if s["out"] else _mcolor(SAMPLE_RGB)
+            edgecolor = _mcolor(OOR_RGB if s["out"] else SAMPLE_STROKE_RGB)
+            edgewidth = 1.8 if s["out"] else 0.8
         handle, = ax.plot([s["area"]], [s["mass"]], marker="s",
                           markersize=SAMPLE_HALF * 2 * 72 / DPI, linestyle="none",
-                          markerfacecolor="white" if s["out"] else _mcolor(SAMPLE_RGB),
-                          markeredgecolor=_mcolor(OOR_RGB if s["out"] else SAMPLE_STROKE_RGB),
-                          markeredgewidth=1.8 if s["out"] else 0.8, zorder=5,
+                          markerfacecolor=facecolor,
+                          markeredgecolor=edgecolor,
+                          markeredgewidth=edgewidth, zorder=5,
                           clip_on=False)
         sample_handles.setdefault(kind, handle)
 
@@ -815,7 +870,8 @@ def _draw_curve_main(fig, geo):
     for s, own in zip(geo["samples"], sample_boxes):
         tx, ty, align, box = _place_label(s["label"], MARK_FONT, s["x"], s["y"], boxes,
                                           font, geo["main_box"], skip=own)
-        _fig_text(fig, tx, ty, s["label"], MARK_FONT, OOR_RGB if s["out"] else SAMPLE_RGB,
+        label_rgb = DROP_RGB if s.get("dropped") else (OOR_RGB if s["out"] else SAMPLE_RGB)
+        _fig_text(fig, tx, ty, s["label"], MARK_FONT, label_rgb,
                   ha=align, font=font)
         boxes.append(box)
 

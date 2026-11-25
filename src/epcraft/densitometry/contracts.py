@@ -42,7 +42,10 @@ _SKIP_NOTE_RE = re.compile(re.escape(SKIP_NOTE).replace("%d", "(\\d+)").replace(
 
 # ONE template for the "no residual scatter" note: a fit without a usable `residual_sd` gets no
 # invented uncertainty, and this sentence says why (ep-c1i §4).  It is emitted only when at least
-# one band actually received a mass — otherwise there was no uncertainty to withhold and the note
+# one band actually received a value — otherwise there was no uncertainty to withhold and the note
 # would describe nothing the reader can see.
 NO_SCATTER_NOTE = ("标曲没有可用的残差散布（fit_params 缺 residual_sd / sxx / mean_x 或 n ≤ 2），"
-                   "样本质量与浓度的不确定度不给数")
+                   "标曲不确定度不给数")
+
+REPORT_KIND = "ep-craft-densitometry-report"
+

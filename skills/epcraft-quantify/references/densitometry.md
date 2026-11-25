@@ -18,7 +18,7 @@ Every step reads the previous step's file, so the chain can be inspected one ste
 epcraft densitometry measure fig.mw.json                   # areas, both baselines
 epcraft densitometry curve --dens fig.dens.json --std "2=20,3=10,4=5"
 epcraft densitometry plot --dens fig.dens.json --curve fig.curve.json   # both PNGs at once
-epcraft densitometry quantify --dens fig.dens.json --curve fig.curve.json [--load "9=2,10=2"]
+epcraft densitometry quantify --dens fig.dens.json --curve fig.curve.json [--sample "SampleA=12,13,14"] [--sample-band 14,19] [--drop-sample 13] [--load-cv 3] [--report [PATH]]
 epcraft densitometry plot-bands --dens fig.dens.json [--baseline flank|global|both]
 epcraft densitometry plot-curve --curve fig.curve.json [--quant fig.quant.json]
 ```
@@ -160,7 +160,9 @@ Shares stay point estimates: `rel_pct` and `frac_pct_among_lanes` get no `±`, b
 
 ## 7. Reading `quant.json`
 
-`quantify --dens fig.dens.json --curve fig.curve.json [--load "9=2,10=2"]`: `--load` gives how many µL were loaded per lane (`lane=µL`) and affects `conc` only. Standard lanes (those appearing in `curve.points[].entries`) are skipped automatically and `notes` says how many were skipped. Lane order follows the dens.
+`quantify --dens fig.dens.json --curve fig.curve.json [--sample "NAME=LANE[:BAND][@RATIO],…"] [--sample-band LO,HI] [--drop-sample LANES] [--load-cv PCT] [--report [PATH]]`: Standard lanes (those appearing in `curve.points[].entries`) are skipped automatically and `notes` says how many were skipped. Lane order follows the dens.
+
+When `--sample` is omitted, `quantify` produces `lanes[]` only (exact backward-compatible schema). When `--sample` is supplied (repeatable), each series declares lanes belonging to one sample (`LANE[:BAND][@RATIO]`; `@RATIO` is the sample/standard equivalent volume ratio, defaulting to `1` for equal-volume BSA equivalent; within a series, `@RATIO` is all-or-none). `--sample-band LO,HI` selects the single band in each lane whose `mw_kda` falls inside `[LO, HI]` when `:BAND` is omitted (errors if 0 or >1 bands match). `--drop-sample` marks member lanes `used: false` while retaining them in `members[]` (and plotting them hollow in `plot-curve`). For `n_used == 1`, `est.method` is `"single"` with `conc_sd`/`sem` `null` (no `±`). For `n_used >= 2`, `quantify` records both `mean` (inverse-variance weighted mean and `sem = sd / sqrt(n_used)`) and `ratio` (through-origin WLS slope `equiv ~ ratio`, plus `k >= 3` free-intercept nonlinearity check). Shared calibration uncertainty and optional `--load-cv` are reported separately in `est.common_pct` and never folded into `sem`. `--report [PATH]` writes a standalone markdown report (`<out stem>.report.md` by default).
 
 The terminal block is a reading aid, not the data: a header line `[定量] 基线 flank · linear · ug（标曲 6–20 ug，3 点，r² 1.0000）；跳过 3 条标准道；±1 SD 来自拟合`, then one line per sample lane — `泳道  5 X  带1 45.0 kDa  面积 2.1  14.03 ± 1.2 ug (100%) │ 合计 14.03 ± 1.2 ug  浓度 7.015 ± 0.6 ug/uL  占全胶 64%` — then the `注：` lines. The `±` part appears only when the band or lane has an SD (§6b); without one the same slot prints just `14.03 ug`. The header's last clause names the basis and appears only when `quant.json` carries an `uncertainty` block. A lane with several bands joins its band texts with ` · ` (`… 面积 4.5  14.869 ± 1.2 ug · —  超出标曲范围（面积 1.75 < 1.78）：多加点或浓缩后再跑`). A band that gets no number either keeps its `带N … 面积 …` head and then prints `— 标曲给出的质量不为正：试 --drop 最低标准点或 --fit power`, or — when its area is outside the range — prints only `—  超出标曲范围（面积 0.003 < 0.871）：多加点或浓缩后再跑` with no band number and no MW (the `注：` line that follows names the lane and band); the comparison uses 3 significant digits, the same as the note. A rejected band also removes the lane's `│` tail, since `mass_total` is `null`. The header's standard range, point count and `r²` come from `curve.json` for display only — `quant.json` does not store them.
 
@@ -216,8 +218,9 @@ They are three different quantities and must not be merged into one "purity": fo
 | Key | Meaning |
 |---|---|
 | `unit` / `baseline` / `fit` | copied from the curve, naming which parameter set was used |
-| `source.dens` / `source.curve` / `source.load` | both input paths plus `--load` verbatim |
-| `lanes[]` | `lane`, `label`, `load_ul` (`null` without `--load`), `bands[]`, `mass_total`, `mass_total_sd`, `conc`, `conc_sd`, `out_of_range`, `out_of_range_bands`, `frac_pct_among_lanes` |
+| `source.dens` / `source.curve` / `source.sample` / `source.sample_band` / `source.drop_sample` / `source.load_cv` | both input paths plus `--sample`, `--sample-band`, `--drop-sample`, `--load-cv` when provided |
+| `lanes[]` | `lane`, `label`, `load_ul`, `bands[]`, `mass_total`, `mass_total_sd`, `conc`, `conc_sd`, `out_of_range`, `out_of_range_bands`, `frac_pct_among_lanes` |
+| `samples[]` | (present when `--sample` is given) per series: `name`, `band_mw`, `members[]` (`lane`, `band`, `ratio`, `area`, `equiv`, `equiv_sd`, `conc`, `conc_sd`, `out_of_range`, `used`), `est` (`method`, `conc`, `conc_sd`, `sem`, `common_pct`, `n`, `n_used`, `r2`, `slope_sd`, `intercept`, `mean`, `ratio`, `notes`), `frac_pct_among_lanes` |
 | `lanes[].bands[]` | `index`, `y_cm`, `mw_kda`, `area` (the curve baseline's column), `mass`, `mass_sd`, `out_of_range`, `rel_pct` |
 | `mass_total` / `mass_total_sd` / `conc` / `conc_sd` | the lane's known masses summed (`null` as soon as one band in the lane is out of range **or** its fitted mass is not positive, §6) and the root sum of squares of their `mass_sd`s (`null` whenever `mass_total` is); `conc = mass_total ÷ load_ul` and `conc_sd = mass_total_sd ÷ load_ul` (`null` without `--load` or when the matching total is `null`). §6b has the formulas |
 | `out_of_range` / `out_of_range_bands` | whether any band in the lane is **out of range**, and the `index` of those bands; an empty list means all areas are inside (a band inside the range whose fitted mass came out ≤ 0 is not listed here — it has `mass: null` with `out_of_range: false`) |
@@ -241,9 +244,9 @@ The chain lives in the same installed package as labeling; these are its modules
 
 | Module | Role |
 |---|---|
-| `src/epcraft/densitometry/` | densitometry math: `measure` (areas on both baselines), `parse_std` / `parse_lanes` / `parse_load`, `build_curve` (both fits), `format_curve`, `quantify` (area → mass through the stored fit), `format_quant`, JSON writing |
+| `src/epcraft/densitometry/` | densitometry math: `measure` (areas on both baselines), `parse_std` / `parse_lanes` / `parse_sample` / `parse_sample_band` / `parse_drop_sample`, `build_curve` (both fits), `format_curve`, `quantify` (area → mass/equiv through the stored fit + sample series `mean`/`ratio`/`single`), `format_quant`, `format_quant_report`, JSON/MD writing |
 | `src/epcraft/plotting/` | the two PNGs: `plot_bands` / `plot_curve`. headless Matplotlib layout and display coordinates |
 | `src/epcraft/cli/densitometry.py` | argparse and handlers for `densitometry` (alias `dens`): flags, path guards, error boundary |
-| `tests/` | Repository regressions for area and fit math, both PNGs, and quantification including range refusals, `--load`, lane shares and CLI output. Run `PYTHONPATH=src python3 -m tests` from the repository root. |
+| `tests/` | Repository regressions for area and fit math, both PNGs, and quantification including range refusals, sample series (`--sample`, `--drop-sample`, `--load-cv`, `--report`), lane shares and CLI output. Run `PYTHONPATH=src python3 -m tests` from the repository root. |
 
 Design contract: `docs/specs/densitometry.md`.

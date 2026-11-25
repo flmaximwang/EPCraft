@@ -519,33 +519,74 @@ def _quant_out_path(curve, out):
     return target
 
 
-def cmd_quantify(args):
-    """dens.json + curve.json (+ `--load`) → quant.json, then print the table (spec §3.3).
+def _report_md_path(quant_out, report_arg):
+    """Markdown report output path: `<quant stem>.report.md` when `--report` has no value."""
+    if report_arg is True:
+        if quant_out.lower().endswith(densitometry.QUANT_SUFFIX):
+            stem = quant_out[:-len(densitometry.QUANT_SUFFIX)]
+        else:
+            stem = os.path.splitext(quant_out)[0]
+        target = stem + ".report.md"
+    else:
+        target = os.path.abspath(report_arg)
+    if os.path.isdir(target):
+        raise ValueError("--report 指向的是目录 %s（要写文件路径）" % target)
+    parent = os.path.dirname(target) or "."
+    if not os.path.isdir(parent):
+        raise ValueError("报告输出目录 %s 不存在（不自动创建，先建好它）" % parent)
+    return target
 
-    Every refusal stays one `[!] …` line with exit 2: `load_json` / `quantify` / `parse_load` raise
-    RuntimeError, the path helpers raise ValueError, and `gel_photo.main` catches both.
-    """
+
+def cmd_quantify(args):
+    """dens.json + curve.json + `--sample` → quant.json (+ optional `--report` .md)."""
     dens = densitometry.load_json(args.dens, densitometry.KIND)
     curve = densitometry.load_json(args.curve, densitometry.CURVE_KIND)
     out = _quant_out_path(args.curve, args.out)
     _refuse_overwrite(out, (args.dens, args.curve))
-    load = densitometry.parse_load(args.load)
-    quant = densitometry.quantify(dens, curve, load, dens_path=args.dens, curve_path=args.curve,
-                                  load_text=args.load)
+    samples = [densitometry.parse_sample(s) for s in args.sample]
+    sample_band = densitometry.parse_sample_band(args.sample_band)
+    drop_sample = densitometry.parse_drop_sample(args.drop_sample)
+    quant = densitometry.quantify(
+        dens, curve, samples,
+        drop_sample=drop_sample,
+        sample_band=sample_band,
+        load_cv=args.load_cv,
+        dens_path=args.dens,
+        curve_path=args.curve,
+    )
+    report_out = None
+    if args.report is not None:
+        report_out = _report_md_path(out, args.report)
+        _refuse_overwrite(report_out, (args.dens, args.curve, out))
     densitometry.write_json(quant, out)
+    if report_out is not None:
+        with open(report_out, "w", encoding="utf-8") as fh:
+            fh.write(densitometry.format_quant_report(quant, curve=curve))
     print(densitometry.format_quant(quant, curve=curve))
     print("[i] 写出 %s" % out)
+    if report_out is not None:
+        print("[i] 写出报告 %s" % report_out)
     return 0
 
 
 def _add_quantify(actions):
-    """`quantify` — area → mass against the standard curve (spec §3.3)."""
+    """`quantify` — series concentration quantification with sample_standard_ratio."""
     p = actions.add_parser("quantify",
-                           help="Convert band areas to protein mass with the standard curve")
+                           help="Quantify sample series against the standard curve")
     p.add_argument("--dens", required=True, help="dens.json written by `measure`")
     p.add_argument("--curve", required=True, help="curve.json written by `curve`")
     p.add_argument("--out", help="quant.json path (default: fig.curve.json → fig.quant.json)")
-    p.add_argument("--load", help="volume loaded per lane in uL, e.g. 9=2,10=2 (default: unknown)")
+    p.add_argument("--sample", action="append", required=True,
+                   metavar="NAME=LANE[:BAND][@RATIO],...",
+                   help="sample series to quantify (repeatable); @RATIO is sample_standard_ratio")
+    p.add_argument("--sample-band", metavar="LO,HI",
+                   help="kDa window to pick the target band when :BAND is omitted, e.g. 55,80")
+    p.add_argument("--drop-sample", action="append", default=[], metavar="LANES",
+                   help="sample lane(s) to exclude from series merge (repeatable or comma-separated)")
+    p.add_argument("--load-cv", type=float, metavar="PCT",
+                   help="optional loading volume CV (%%) folded into common_pct")
+    p.add_argument("--report", nargs="?", const=True, default=None, metavar="PATH",
+                   help="write standalone Markdown report (default: <out stem>.report.md)")
     p.set_defaults(func=cmd_quantify)
 
 

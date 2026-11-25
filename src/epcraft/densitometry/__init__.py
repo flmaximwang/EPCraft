@@ -45,21 +45,23 @@ this module's attribute at call time.
 from .bands import _flank_levels, _ramp_at, _ramp_dict, area_of, flank_ramp, smooth, walk_window
 from .contracts import (BASELINES, CURVE_KIND, CURVE_SUFFIX, DOC_SUFFIX, FITS, FLANK_CM, FUZZ,
                         KIND, MAX_DY_SPREAD, MIN_INK, NO_SCATTER_NOTE, QUANT_KIND, QUANT_SUFFIX,
-                        REPORT_PATH_KEY, REPORT_SUFFIX, SKIP_NOTE, SMOOTH_CM, UNITS, VERSION,
-                        WINDOW_TEXT)
+                        REPORT_KIND, REPORT_PATH_KEY, REPORT_SUFFIX, SKIP_NOTE, SMOOTH_CM, UNITS,
+                        VERSION, WINDOW_TEXT)
 from .curve import _linfit, _profile_arrays, build_curve, format_curve, parse_std
 from .json_io import load_json, load_report, report_path, write_json
 from .lanes import parse_lanes
 from .layout import _dwidth
 from .measure import measure
-from .quantify import format_quant, parse_load, quantify
+from .quantify import (format_quant, format_quant_report, parse_drop_sample, parse_sample,
+                       parse_sample_band, quantify)
 
 __all__ = [
     "BASELINES", "CURVE_KIND", "CURVE_SUFFIX", "DOC_SUFFIX", "FITS", "FLANK_CM", "FUZZ", "KIND",
-    "MAX_DY_SPREAD", "MIN_INK", "NO_SCATTER_NOTE", "QUANT_KIND", "QUANT_SUFFIX", "REPORT_PATH_KEY",
-    "REPORT_SUFFIX", "SKIP_NOTE", "SMOOTH_CM", "UNITS", "VERSION", "WINDOW_TEXT",
-    "area_of", "build_curve", "flank_ramp", "format_curve", "format_quant", "load_json",
-    "load_report", "measure", "parse_lanes", "parse_load", "parse_std", "quantify", "report_path",
-    "smooth", "walk_window", "write_json",
+    "MAX_DY_SPREAD", "MIN_INK", "NO_SCATTER_NOTE", "QUANT_KIND", "QUANT_SUFFIX", "REPORT_KIND",
+    "REPORT_PATH_KEY", "REPORT_SUFFIX", "SKIP_NOTE", "SMOOTH_CM", "UNITS", "VERSION", "WINDOW_TEXT",
+    "area_of", "build_curve", "flank_ramp", "format_curve", "format_quant", "format_quant_report",
+    "load_json", "load_report", "measure", "parse_drop_sample", "parse_lanes", "parse_sample",
+    "parse_sample_band", "parse_std", "quantify", "report_path", "smooth", "walk_window",
+    "write_json",
     "_dwidth", "_flank_levels", "_linfit", "_profile_arrays", "_ramp_at", "_ramp_dict",
 ]
